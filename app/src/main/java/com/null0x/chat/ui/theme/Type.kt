@@ -1,4 +1,4 @@
-package com.null0x.primalis.ui.theme
+package com.null0x.chat.ui.theme
 
 import androidx.compose.material3.Typography
 import androidx.compose.ui.text.TextStyle

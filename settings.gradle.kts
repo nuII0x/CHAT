@@ -19,8 +19,9 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        maven(url = "https://raw.githubusercontent.com/guardianproject/gpmaven/master")
     }
 }
 
-rootProject.name = "Primalis"
+rootProject.name = "Chat"
 include(":app")

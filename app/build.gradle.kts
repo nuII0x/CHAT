@@ -4,11 +4,11 @@ plugins {
 }
 
 android {
-    namespace = "com.null0x.primalis"
+    namespace = "com.null0x.chat"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.null0x.primalis"
+        applicationId = "com.null0x.chat"
         minSdk = 24
         targetSdk = 34
         versionCode = 1
@@ -40,13 +40,16 @@ android {
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.activity.compose)
 
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.compose.ui)
     implementation(libs.androidx.compose.ui.graphics)
     implementation(libs.androidx.compose.ui.tooling.preview)
+    implementation("androidx.compose.material:material-icons-extended")
     implementation(libs.androidx.compose.material3)
+    implementation("info.guardianproject:tor-android:0.4.8.18")
 
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
