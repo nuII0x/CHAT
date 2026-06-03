@@ -8,15 +8,15 @@ import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
 object SimpleCipher {
-    private const val V2_PREFIX = "PC2:"
+    private const val V2_PREFIX = "RS2:"
     private const val NONCE_BYTES = 12
     private const val TAG_BITS = 128
     private const val MAX_CIPHER_BYTES = 128 * 1024
+    private const val MAX_CIPHER_TEXT_CHARS = 192 * 1024
     private val random = SecureRandom()
-    private val legacyKey = "chat-chat-key".toByteArray(Charsets.UTF_8)
     private val key = SecretKeySpec(
         MessageDigest.getInstance("SHA-256")
-            .digest("PrimoChat transport message key v2".toByteArray(Charsets.UTF_8)),
+            .digest("RotaSegura Tor-only transport message key v2".toByteArray(Charsets.UTF_8)),
         "AES"
     )
 
@@ -34,10 +34,11 @@ object SimpleCipher {
         if (clean.startsWith(V2_PREFIX)) {
             return decryptV2(clean.removePrefix(V2_PREFIX))
         }
-        return decryptLegacy(clean)
+        return null
     }
 
     private fun decryptV2(cipherText: String): String? {
+        if (cipherText.length > MAX_CIPHER_TEXT_CHARS) return null
         return runCatching {
             val input = Base64.decode(cipherText, Base64.DEFAULT)
             if (input.size <= NONCE_BYTES || input.size > MAX_CIPHER_BYTES) return null
@@ -49,15 +50,4 @@ object SimpleCipher {
         }.getOrNull()
     }
 
-    private fun decryptLegacy(cipherText: String): String? {
-        return runCatching {
-            val input = Base64.decode(cipherText, Base64.DEFAULT)
-            if (input.size > MAX_CIPHER_BYTES) return null
-            val out = ByteArray(input.size)
-            for (i in input.indices) {
-                out[i] = (input[i].toInt() xor legacyKey[i % legacyKey.size].toInt()).toByte()
-            }
-            String(out, Charsets.UTF_8)
-        }.getOrNull()
-    }
 }

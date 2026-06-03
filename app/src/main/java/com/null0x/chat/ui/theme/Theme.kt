@@ -7,21 +7,65 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 
 private val DarkColorScheme = darkColorScheme(
-    primary = SignalBlue80,
-    secondary = FreshGreen80,
-    tertiary = WarmCoral80,
+    primary = AppOnSurfaceDark,
+    onPrimary = AppBackgroundDark,
+    primaryContainer = AppPrimaryContainerDark,
+    onPrimaryContainer = AppOnSurfaceDark,
+    secondary = AppOnSurfaceDark,
+    onSecondary = AppBackgroundDark,
+    secondaryContainer = AppSecondaryContainerDark,
+    onSecondaryContainer = AppOnSurfaceDark,
+    tertiary = AppOnSurfaceDark,
+    onTertiary = AppBackgroundDark,
+    tertiaryContainer = AppTertiaryContainerDark,
+    onTertiaryContainer = AppOnSurfaceDark,
     background = AppBackgroundDark,
+    onBackground = AppOnSurfaceDark,
     surface = AppSurfaceDark,
-    surfaceVariant = AppSurfaceVariantDark
+    onSurface = AppOnSurfaceDark,
+    surfaceVariant = AppSurfaceVariantDark,
+    onSurfaceVariant = AppOnSurfaceVariantDark,
+    outline = AppOutlineDark,
+    outlineVariant = AppSurfaceVariantDark,
+    inverseSurface = AppSurfaceLight,
+    inverseOnSurface = AppOnSurfaceLight,
+    inversePrimary = AppOnSurfaceLight,
+    surfaceTint = AppOnSurfaceDark,
+    error = AppOnSurfaceDark,
+    onError = AppBackgroundDark,
+    errorContainer = AppSurfaceVariantDark,
+    onErrorContainer = AppOnSurfaceDark
 )
 
 private val LightColorScheme = lightColorScheme(
-    primary = SignalBlue40,
-    secondary = FreshGreen40,
-    tertiary = WarmCoral40,
+    primary = AppOnSurfaceLight,
+    onPrimary = AppSurfaceLight,
+    primaryContainer = AppPrimaryContainerLight,
+    onPrimaryContainer = AppOnSurfaceLight,
+    secondary = AppOnSurfaceLight,
+    onSecondary = AppSurfaceLight,
+    secondaryContainer = AppSecondaryContainerLight,
+    onSecondaryContainer = AppOnSurfaceLight,
+    tertiary = AppOnSurfaceLight,
+    onTertiary = AppSurfaceLight,
+    tertiaryContainer = AppTertiaryContainerLight,
+    onTertiaryContainer = AppOnSurfaceLight,
     background = AppBackgroundLight,
+    onBackground = AppOnSurfaceLight,
     surface = AppSurfaceLight,
-    surfaceVariant = AppSurfaceVariantLight
+    onSurface = AppOnSurfaceLight,
+    surfaceVariant = AppSurfaceVariantLight,
+    onSurfaceVariant = AppOnSurfaceVariantLight,
+    outline = AppOutlineLight,
+    outlineVariant = AppSurfaceVariantLight,
+    inverseSurface = AppOnSurfaceLight,
+    inverseOnSurface = AppSurfaceLight,
+    inversePrimary = AppBackgroundDark,
+    surfaceTint = AppOnSurfaceLight,
+    error = AppOnSurfaceLight,
+    onError = AppSurfaceLight,
+    errorContainer = AppSurfaceVariantLight,
+    onErrorContainer = AppOnSurfaceLight
 )
 
 @Composable

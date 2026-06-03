@@ -1,106 +1,471 @@
 package com.null0x.chat.ui.chat
 
+import android.app.Activity
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.content.ContextWrapper
+import android.content.Intent
+import android.view.WindowManager
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.PagerDefaults
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.Send
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Done
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.animateContentSize
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
+import androidx.compose.ui.draw.alpha
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.map
 import com.null0x.chat.model.DeliveryState
 import com.null0x.chat.model.Message
+import com.null0x.chat.network.TorManager
 import com.null0x.chat.viewmodel.ChatViewModel
+import android.widget.Toast
+import androidx.compose.material3.AlertDialog
+
+private val ChatHeaderHeight = 86.dp
 
 @Composable
 fun ChatScreen(vm: ChatViewModel, onBack: () -> Unit) {
     var input by rememberSaveable { mutableStateOf("") }
-    val peerName = vm.chatTitleFor(vm.targetUsername)
-    BackHandler(onBack = onBack)
+    var profileRoute by rememberSaveable { mutableStateOf("") }
+    var showProfile by rememberSaveable { mutableStateOf(false) }
+    var showExportConsent by rememberSaveable { mutableStateOf(false) }
+    var showChatSettings by rememberSaveable { mutableStateOf(false) }
+    var selectedMessage by remember { mutableStateOf<Message?>(null) }
+    var selectableMessageIds by remember { mutableStateOf(emptySet<String>()) }
+    val context = LocalContext.current
+    val networkStatus by TorManager.status.collectAsState()
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val composerFocusRequester = remember { FocusRequester() }
+    val peers = remember(vm.startedConversations.toList(), vm.targetUsername) {
+        val ordered = vm.startedConversations.map { it.trim() }.filter { it.isNotBlank() }.toMutableList()
+        val current = vm.targetUsername.trim()
+        if (current.isNotBlank() && !ordered.contains(current)) {
+            ordered.add(0, current)
+        }
+        ordered.distinct()
+    }
+    val selectedIndex = peers.indexOf(vm.targetUsername).let { if (it >= 0) it else 0 }
+    val pagerState = rememberPagerState(
+        initialPage = selectedIndex,
+        pageCount = { if (peers.isEmpty()) 1 else peers.size }
+    )
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
-    ) {
-        ChatHeader(
-            title = peerName,
-            subtitle = vm.targetUsername,
-            onBack = onBack,
-            onClear = { vm.clearConversation(vm.targetUsername) },
-            onClearEverywhere = { vm.clearConversationEverywhere(vm.targetUsername) }
-        )
-        MessageList(messages = vm.messages)
-        MessageComposer(
-            input = input,
-            onInputChange = { input = it },
-            onSend = {
-                val text = input.trim()
-                if (text.isNotBlank()) {
-                    vm.send(text)
-                    input = ""
+    BackHandler(onBack = onBack)
+    SecureChatWindow(context, allowScreenshots = vm.isCurrentChatScreenshotsEnabled())
+    ChatKeyboardInsets(context)
+
+    LaunchedEffect(peers, vm.targetUsername) {
+        val target = vm.targetUsername.trim()
+        val index = peers.indexOf(target)
+        if (index >= 0 && pagerState.currentPage != index) {
+            pagerState.scrollToPage(index)
+        }
+    }
+
+    LaunchedEffect(peers, pagerState) {
+        snapshotFlow { peers.getOrNull(pagerState.settledPage) }
+            .filterNotNull()
+            .map { it.trim() }
+            .distinctUntilChanged()
+            .collect { username ->
+                if (username.isNotBlank() && username != vm.targetUsername) {
+                    vm.selectTarget(username)
                 }
             }
+    }
+
+    val headerUser = peers.getOrNull(pagerState.currentPage)?.trim().orEmpty().ifBlank { vm.targetUsername }
+    val chatNetworkLabel = chatNetworkLabel(networkStatus)
+    val unreadHintCount = vm.unreadEntryCountFor(headerUser)
+    val currentChatLoaded = vm.isCurrentChatLoaded()
+
+    LaunchedEffect(headerUser) {
+        composerFocusRequester.requestFocus()
+        keyboardController?.hide()
+    }
+
+    LaunchedEffect(headerUser, input) {
+        val target = headerUser.trim()
+        if (target.isBlank()) return@LaunchedEffect
+        if (input.isBlank()) {
+            vm.updateLocalTyping(target, false)
+            return@LaunchedEffect
+        }
+        vm.updateLocalTyping(target, true)
+        delay(1_000)
+        vm.updateLocalTyping(target, false)
+    }
+
+    LaunchedEffect(headerUser) {
+        val target = headerUser.trim()
+        if (target.isBlank()) return@LaunchedEffect
+        while (true) {
+            vm.refreshLocalChatPresence(target)
+            delay(15_000)
+        }
+    }
+
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val density = LocalDensity.current
+        val scope = rememberCoroutineScope()
+        val screenWidthPx = with(density) { maxWidth.toPx() }.coerceAtLeast(1f)
+        val closeThreshold = screenWidthPx * 0.18f
+        val flingThreshold = 700f
+        val offsetX = remember(screenWidthPx) { Animatable(screenWidthPx) }
+        var dragX by remember { mutableFloatStateOf(0f) }
+        val openingProgress = ((screenWidthPx - offsetX.value) / screenWidthPx).coerceIn(0f, 1f)
+
+        LaunchedEffect(screenWidthPx) {
+            offsetX.animateTo(
+                targetValue = 0f,
+                animationSpec = tween(durationMillis = 360, easing = FastOutSlowInEasing)
+            )
+        }
+
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .offset { IntOffset(offsetX.value.toInt(), 0) }
+                .draggable(
+                    orientation = Orientation.Horizontal,
+                    state = rememberDraggableState { delta ->
+                        dragX += delta
+                        scope.launch {
+                            val nextOffset = (offsetX.value + delta).coerceIn(-screenWidthPx, screenWidthPx)
+                            offsetX.snapTo(nextOffset)
+                        }
+                    },
+                    onDragStopped = { velocity ->
+                        val shouldClose = kotlin.math.abs(dragX) >= closeThreshold ||
+                            kotlin.math.abs(velocity) >= flingThreshold
+                        val direction = when {
+                            kotlin.math.abs(velocity) >= flingThreshold -> velocity
+                            else -> dragX
+                        }
+
+                        if (shouldClose) {
+                            val target = if (direction >= 0f) screenWidthPx else -screenWidthPx
+                            scope.launch {
+                                offsetX.animateTo(target, animationSpec = tween(durationMillis = 170))
+                                onBack()
+                            }
+                        } else {
+                            scope.launch {
+                                offsetX.animateTo(0f, animationSpec = tween(durationMillis = 170))
+                            }
+                        }
+                        dragX = 0f
+                    }
+                )
+                .background(MaterialTheme.colorScheme.background)
+        ) {
+            Scaffold(
+                modifier = Modifier.fillMaxSize(),
+                topBar = {
+                    Column {
+                        ChatHeader(
+                            title = vm.chatTitleFor(headerUser),
+                            subtitle = chatNetworkLabel,
+                            sourceTitle = "Chats",
+                            sourceSubtitle = chatNetworkLabel,
+                            sourceEmoji = vm.profileEmojiSymbol,
+                            targetEmoji = vm.emojiForRoute(headerUser),
+                            openingProgress = openingProgress,
+                            onBack = onBack,
+                            onClear = { vm.clearConversation(headerUser) },
+                            onOpenProfile = {
+                                profileRoute = headerUser
+                                showProfile = true
+                            },
+                            onCopyRoute = {
+                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                clipboard.setPrimaryClip(ClipData.newPlainText("Rota contato", maskedRouteLabel(headerUser)))
+                                Toast.makeText(context, "Token da rota copiado", Toast.LENGTH_SHORT).show()
+                            },
+                            onOpenSettings = { showChatSettings = true },
+                            onExportConversation = { showExportConsent = true }
+                        )
+                        if (unreadHintCount > 0) {
+                            UnreadHintBar(
+                                count = unreadHintCount,
+                                onDismiss = { vm.clearUnreadEntryHint(headerUser) }
+                            )
+                        }
+                    }
+                }
+            ) { innerPadding ->
+                HorizontalPager(
+                    state = pagerState,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(top = innerPadding.calculateTopPadding()),
+                    beyondViewportPageCount = 2,
+                    flingBehavior = PagerDefaults.flingBehavior(state = pagerState),
+                    userScrollEnabled = false
+                ) { page ->
+                    val user = peers.getOrNull(page)?.trim().orEmpty()
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(bottom = innerPadding.calculateBottomPadding())
+                    ) {
+                        MessageList(
+                            messages = vm.messagesFor(user),
+                            privacyNotices = vm.privacyNotices(),
+                            loaded = currentChatLoaded && user == vm.targetUsername,
+                            unreadHintCount = unreadHintCount,
+                            selectableMessageIds = selectableMessageIds,
+                            onMessageClick = { selectedMessage = it },
+                            modifier = Modifier.fillMaxSize(),
+                            bottomContentPadding = 154.dp
+                        )
+                        val marker = vm.emojiForRoute(headerUser)
+                            .ifBlank { compactOnionRoute(vm.chatTitleFor(headerUser)).take(1).ifBlank { "?" }.uppercase() }
+                        if (user == headerUser && marker.isNotBlank() && vm.isPartnerChatOpen(headerUser)) {
+                            PartnerMarkerBadge(
+                                marker = marker,
+                                typing = vm.isPartnerTyping(headerUser),
+                                modifier = Modifier
+                                    .align(Alignment.BottomStart)
+                                    .padding(start = 18.dp, bottom = 86.dp)
+                            )
+                        }
+                    }
+                }
+            }
+
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .imePadding()
+            ) {
+                MessageComposer(
+                    input = input,
+                    focusRequester = composerFocusRequester,
+                    onInputChange = { input = it },
+                    onSend = {
+                        val text = input.trim()
+                        if (text.isNotBlank()) {
+                            vm.updateLocalTyping(headerUser, false)
+                            vm.sendTo(headerUser, text)
+                            input = ""
+                        }
+                    }
+                )
+            }
+        }
+    }
+
+    if (showProfile) {
+        val profile = vm.publicProfileFor(profileRoute.ifBlank { vm.targetUsername })
+        LaunchedEffect(profile.route) {
+            if (profile.route.isNotBlank()) {
+                vm.requestPublicProfile(profile.route)
+            }
+        }
+        ContactPublicProfileDialog(
+            profile = profile,
+            onSaveLocalName = { route, name -> vm.setLocalNameForRoute(route, name) },
+            onDismiss = { showProfile = false }
+        )
+    }
+
+    if (showExportConsent) {
+        ExportConsentDialog(
+            onRequestPermission = {
+                val target = headerUser
+                if (target.isNotBlank()) {
+                    vm.sendTo(target, "Pedido de permissao para exportar historico da conversa.")
+                }
+                showExportConsent = false
+            },
+            onDismiss = { showExportConsent = false }
+        )
+    }
+
+    if (showChatSettings) {
+        ChatSettingsDialog(
+            keepViewedMessages = vm.isCurrentChatLocalKeepViewedMessagesEnabled(),
+            screenshotsEnabled = vm.isCurrentChatLocalScreenshotsEnabled(),
+            onKeepViewedMessagesChange = vm::updateCurrentChatKeepViewedMessagesPreference,
+            onScreenshotsEnabledChange = vm::updateCurrentChatScreenshotsPreference,
+            onDismiss = { showChatSettings = false }
+        )
+    }
+
+    selectedMessage?.let { message ->
+        MessageDetailDialog(
+            message = message,
+            selectionEnabled = selectableMessageIds.contains(message.id),
+            onToggleSelection = {
+                selectableMessageIds = if (selectableMessageIds.contains(message.id)) {
+                    selectableMessageIds - message.id
+                } else {
+                    selectableMessageIds + message.id
+                }
+            },
+            onDismiss = { selectedMessage = null }
         )
     }
 }
 
 @Composable
+private fun SecureChatWindow(context: Context, allowScreenshots: Boolean) {
+    DisposableEffect(context, allowScreenshots) {
+        val window = context.findActivity()?.window
+        if (!allowScreenshots) {
+            window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        }
+        onDispose {
+            if (!allowScreenshots) {
+                window?.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ChatKeyboardInsets(context: Context) {
+    DisposableEffect(context) {
+        val window = context.findActivity()?.window
+        val previousSoftInputMode = window?.attributes?.softInputMode
+        window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
+        onDispose {
+            if (window != null && previousSoftInputMode != null) {
+                window.setSoftInputMode(previousSoftInputMode)
+            }
+        }
+    }
+}
+
+private fun Context.findActivity(): Activity? {
+    var current = this
+    while (current is ContextWrapper) {
+        if (current is Activity) return current
+        current = current.baseContext
+    }
+    return null
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
 private fun ChatHeader(
     title: String,
     subtitle: String,
+    sourceTitle: String,
+    sourceSubtitle: String,
+    sourceEmoji: String,
+    targetEmoji: String,
+    openingProgress: Float,
     onBack: () -> Unit,
     onClear: () -> Unit,
-    onClearEverywhere: () -> Unit
+    onOpenProfile: () -> Unit,
+    onCopyRoute: () -> Unit,
+    onOpenSettings: () -> Unit,
+    onExportConversation: () -> Unit
 ) {
     var showMenu by rememberSaveable { mutableStateOf(false) }
-    Surface(color = MaterialTheme.colorScheme.primary) {
+    val sourceAlpha = (1f - openingProgress).coerceIn(0f, 1f)
+    val targetAlpha = openingProgress.coerceIn(0f, 1f)
+    Surface(
+        color = Color.Black,
+        tonalElevation = 3.dp
+    ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 8.dp, vertical = 10.dp),
+                .height(ChatHeaderHeight)
+                .padding(horizontal = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            IconButton(onClick = onBack) {
+            IconButton(
+                onClick = onBack,
+                modifier = Modifier.alpha(targetAlpha)
+            ) {
                 Icon(
                     imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                     contentDescription = "Voltar",
@@ -110,36 +475,85 @@ private fun ChatHeader(
             Surface(
                 shape = CircleShape,
                 color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.18f),
-                modifier = Modifier.size(38.dp)
+                modifier = Modifier
+                    .size(38.dp)
+                    .combinedClickable(
+                        onClick = onOpenProfile,
+                        onLongClick = onCopyRoute
+                    )
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     Text(
-                        text = title.trim().take(1).ifBlank { "P" }.uppercase(),
+                        modifier = Modifier.alpha(sourceAlpha),
+                        text = sourceEmoji.ifBlank { sourceTitle.trim().take(1).ifBlank { "P" }.uppercase() },
+                        color = MaterialTheme.colorScheme.onPrimary,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        modifier = Modifier.alpha(targetAlpha),
+                        text = targetEmoji.ifBlank { title.trim().take(1).ifBlank { "P" }.uppercase() },
                         color = MaterialTheme.colorScheme.onPrimary,
                         fontWeight = FontWeight.Bold
                     )
                 }
             }
             Spacer(Modifier.width(10.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = title,
-                    color = MaterialTheme.colorScheme.onPrimary,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Text(
-                    text = subtitle,
-                    color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.78f),
-                    style = MaterialTheme.typography.bodySmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+                    .combinedClickable(
+                        onClick = onOpenProfile,
+                        onLongClick = onCopyRoute
+                    ),
+                verticalArrangement = Arrangement.Center
+            ) {
+                Box(modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        modifier = Modifier.alpha(sourceAlpha),
+                        text = sourceTitle,
+                        color = MaterialTheme.colorScheme.onPrimary,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Clip
+                    )
+                    Text(
+                        modifier = Modifier.alpha(targetAlpha),
+                        text = title,
+                        color = MaterialTheme.colorScheme.onPrimary,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Clip
+                    )
+                }
+                Box(modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        modifier = Modifier.alpha(sourceAlpha),
+                        text = sourceSubtitle,
+                        color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.78f),
+                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp),
+                        maxLines = 2,
+                        softWrap = true,
+                        overflow = TextOverflow.Clip
+                    )
+                    Text(
+                        modifier = Modifier.alpha(targetAlpha),
+                        text = subtitle,
+                        color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.78f),
+                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp),
+                        maxLines = 2,
+                        softWrap = true,
+                        overflow = TextOverflow.Clip
+                    )
+                }
             }
             Box {
-                IconButton(onClick = { showMenu = true }) {
+                IconButton(
+                    onClick = { showMenu = true },
+                    modifier = Modifier.alpha(targetAlpha)
+                ) {
                     Icon(
                         imageVector = Icons.Filled.MoreVert,
                         contentDescription = "Menu",
@@ -151,6 +565,13 @@ private fun ChatHeader(
                     onDismissRequest = { showMenu = false }
                 ) {
                     DropdownMenuItem(
+                        text = { Text("Exportar conversa") },
+                        onClick = {
+                            showMenu = false
+                            onExportConversation()
+                        }
+                    )
+                    DropdownMenuItem(
                         text = { Text("Limpar conversa") },
                         onClick = {
                             showMenu = false
@@ -158,10 +579,16 @@ private fun ChatHeader(
                         }
                     )
                     DropdownMenuItem(
-                        text = { Text("Limpar nos dois lados") },
+                        text = { Text("Configuração") },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.Filled.Settings,
+                                contentDescription = null
+                            )
+                        },
                         onClick = {
                             showMenu = false
-                            onClearEverywhere()
+                            onOpenSettings()
                         }
                     )
                 }
@@ -171,40 +598,435 @@ private fun ChatHeader(
 }
 
 @Composable
-private fun ColumnScope.MessageList(messages: List<Message>) {
-    if (messages.isEmpty()) {
-        Box(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth(),
-            contentAlignment = Alignment.Center
-        ) {
+private fun ExportConsentDialog(
+    onRequestPermission: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Exportar conversa") },
+        text = {
             Text(
-                text = "Sem mensagens ainda",
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                style = MaterialTheme.typography.bodyMedium
+                text = "Exportar o historico envolve mensagens dos dois lados. Sem consentimento da outra pessoa, isso nao deve ser feito."
             )
+        },
+        confirmButton = {
+            TextButton(onClick = onRequestPermission) {
+                Text("pedir permissão para exportar histórico da conversa")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancelar")
+            }
         }
-        return
-    }
+    )
+}
 
-    LazyColumn(
-        modifier = Modifier
-            .weight(1f)
-            .fillMaxWidth()
-            .padding(horizontal = 8.dp),
-        reverseLayout = true,
-        contentPadding = PaddingValues(vertical = 8.dp)
+@Composable
+private fun ChatSettingsDialog(
+    keepViewedMessages: Boolean,
+    screenshotsEnabled: Boolean,
+    onKeepViewedMessagesChange: (Boolean) -> Unit,
+    onScreenshotsEnabledChange: (Boolean) -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Configuração do chat") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    text = "Ajuste as opções deste chat por aqui.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                ChatSettingsRow(
+                    title = "Histórico ao sair",
+                    subtitle = if (keepViewedMessages) "Manter conversa ao fechar" else "Apagar conversa ao fechar",
+                    checked = keepViewedMessages,
+                    onCheckedChange = onKeepViewedMessagesChange
+                )
+                ChatSettingsRow(
+                    title = "Print da tela",
+                    subtitle = if (screenshotsEnabled) "Permitido neste chat" else "Bloqueado neste chat",
+                    checked = screenshotsEnabled,
+                    onCheckedChange = onScreenshotsEnabledChange
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Fechar")
+            }
+        }
+    )
+}
+
+@Composable
+private fun ChatSettingsRow(
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    Surface(
+        modifier = Modifier.clickable { onCheckedChange(!checked) },
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        tonalElevation = 1.dp
     ) {
-        itemsIndexed(items = messages, key = { _, item -> item.id }) { index, _ ->
-            val item = messages[messages.lastIndex - index]
-            MessageBubble(item)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.widthIn(max = 220.dp)) {
+                Text(
+                    text = title,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Switch(
+                checked = checked,
+                onCheckedChange = onCheckedChange
+            )
         }
     }
 }
 
 @Composable
-private fun MessageBubble(msg: Message) {
+private fun ContactPublicProfileDialog(
+    profile: ChatViewModel.PublicProfile,
+    onSaveLocalName: (String, String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var localName by rememberSaveable(profile.route) { mutableStateOf(profile.localName) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Perfil da rota") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (profile.emoji.isNotBlank()) {
+                    Text(
+                        text = profile.emoji,
+                        style = MaterialTheme.typography.headlineMedium
+                    )
+                }
+                Text(
+                    text = "Nomeie a rota para reconhecer mais rápido depois.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = "Nome local: ${profile.displayName}",
+                    maxLines = 2,
+                    softWrap = true,
+                    overflow = TextOverflow.Clip
+                )
+                Text(
+                    text = maskedRouteLabel(profile.route),
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 2,
+                    softWrap = true,
+                    overflow = TextOverflow.Clip
+                )
+                Text(
+                    text = "Origem: ${profile.source}",
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 2,
+                    softWrap = true,
+                    overflow = TextOverflow.Clip
+                )
+                if (profile.bio.isNotBlank()) {
+                    Text(
+                        text = "Bio",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        text = profile.bio,
+                        maxLines = 8,
+                        softWrap = true,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Spacer(Modifier.size(4.dp))
+                OutlinedTextField(
+                    value = localName,
+                    onValueChange = { localName = it },
+                    singleLine = true,
+                    label = { Text("Nomear rota") },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp)
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                onSaveLocalName(profile.route, localName)
+                onDismiss()
+            }) { Text("Salvar") }
+        },
+        dismissButton = {
+            Row {
+                TextButton(onClick = {
+                    localName = ""
+                    onSaveLocalName(profile.route, "")
+                    onDismiss()
+                }) { Text("Remover nome") }
+                TextButton(onClick = onDismiss) { Text("Cancelar") }
+            }
+        }
+    )
+}
+
+@Composable
+private fun MessageList(
+    messages: List<Message>,
+    privacyNotices: List<ChatViewModel.PrivacyNotice>,
+    loaded: Boolean,
+    unreadHintCount: Int,
+    selectableMessageIds: Set<String>,
+    onMessageClick: (Message) -> Unit,
+    modifier: Modifier = Modifier,
+    bottomContentPadding: androidx.compose.ui.unit.Dp = 10.dp
+) {
+    if (messages.isEmpty() && privacyNotices.isEmpty()) {
+        Box(
+            modifier = modifier
+                .fillMaxSize()
+                .padding(bottom = bottomContentPadding),
+            contentAlignment = Alignment.Center
+        ) {
+            Surface(
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant,
+                tonalElevation = 1.dp
+            ) {
+                Text(
+                    text = "Sem mensagens ainda",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 14.dp)
+                )
+            }
+        }
+        return
+    }
+
+    val timelineItems = remember(messages, privacyNotices) {
+        (
+            messages.map { TimelineItem.MessageItem(it) } +
+                privacyNotices.map { TimelineItem.PrivacyNoticeItem(it) }
+        ).sortedBy { it.timestamp }
+    }
+    val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+    var previousTimelineSize by remember { mutableStateOf(0) }
+    var previousMessageSize by remember { mutableStateOf(0) }
+    var hiddenNewMessages by remember { mutableStateOf(0) }
+    LaunchedEffect(loaded, timelineItems.size, messages.size, unreadHintCount) {
+        if (!loaded || timelineItems.isEmpty()) return@LaunchedEffect
+        val lastVisibleIndex = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
+        val wasAtBottom = previousTimelineSize == 0 ||
+            lastVisibleIndex >= (previousTimelineSize - 1).coerceAtLeast(0)
+        val messageDelta = (messages.size - previousMessageSize).coerceAtLeast(0)
+        val incomingDelta = if (messageDelta > 0) {
+            messages.takeLast(messageDelta).count { !it.isMine }
+        } else {
+            0
+        }
+        val targetIndex = when {
+            unreadHintCount > 0 -> (timelineItems.size - unreadHintCount).coerceIn(0, timelineItems.lastIndex)
+            previousTimelineSize == 0 -> timelineItems.lastIndex
+            timelineItems.size > previousTimelineSize && wasAtBottom -> timelineItems.lastIndex
+            else -> timelineItems.lastIndex
+        }
+        when {
+            previousTimelineSize == 0 -> listState.scrollToItem(targetIndex)
+            timelineItems.size > previousTimelineSize && wasAtBottom -> {
+                hiddenNewMessages = 0
+                listState.animateScrollToItem(targetIndex)
+            }
+            timelineItems.size > previousTimelineSize && messageDelta > incomingDelta -> {
+                hiddenNewMessages = 0
+                listState.animateScrollToItem(timelineItems.lastIndex)
+            }
+            timelineItems.size > previousTimelineSize && incomingDelta > 0 -> {
+                hiddenNewMessages += incomingDelta
+            }
+        }
+        previousTimelineSize = timelineItems.size
+        previousMessageSize = messages.size
+    }
+
+    LaunchedEffect(listState, timelineItems.size) {
+        snapshotFlow {
+            val lastVisibleIndex = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
+            lastVisibleIndex >= timelineItems.lastIndex
+        }.collect { isAtBottom ->
+            if (isAtBottom) hiddenNewMessages = 0
+        }
+    }
+
+    Box(modifier = modifier.fillMaxSize()) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 10.dp),
+            reverseLayout = false,
+            contentPadding = PaddingValues(top = 10.dp, bottom = bottomContentPadding)
+        ) {
+            itemsIndexed(
+                items = timelineItems,
+                key = { index, item -> "${item.id}:${item.timestamp}:$index" }
+            ) { _, item ->
+                when (item) {
+                    is TimelineItem.MessageItem -> {
+                        MessageBubble(
+                            msg = item.message,
+                            allowTextSelection = selectableMessageIds.contains(item.message.id),
+                            onClick = { onMessageClick(item.message) }
+                        )
+                    }
+                    is TimelineItem.PrivacyNoticeItem -> PrivacyNoticeDivider(item.notice.text)
+                }
+            }
+        }
+        if (hiddenNewMessages > 0) {
+            NewMessagesBadge(
+                count = hiddenNewMessages,
+                onClick = {
+                    hiddenNewMessages = 0
+                    scope.launch {
+                        listState.animateScrollToItem(timelineItems.lastIndex)
+                    }
+                },
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 86.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun NewMessagesBadge(count: Int, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    Surface(
+        modifier = modifier.clickable(onClick = onClick),
+        shape = CircleShape,
+        color = MaterialTheme.colorScheme.primary,
+        tonalElevation = 4.dp
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Filled.KeyboardArrowDown,
+                contentDescription = "Ir para novas mensagens",
+                tint = MaterialTheme.colorScheme.onPrimary,
+                modifier = Modifier.size(18.dp)
+            )
+            Text(
+                text = count.toString(),
+                color = MaterialTheme.colorScheme.onPrimary,
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Bold
+            )
+        }
+    }
+}
+
+private sealed class TimelineItem {
+    abstract val id: String
+    abstract val timestamp: Long
+
+    data class MessageItem(val message: Message) : TimelineItem() {
+        override val id: String = "message:${message.id}"
+        override val timestamp: Long = message.timestamp
+    }
+
+    data class PrivacyNoticeItem(val notice: ChatViewModel.PrivacyNotice) : TimelineItem() {
+        override val id: String = "privacy:${notice.id}"
+        override val timestamp: Long = notice.timestamp
+    }
+}
+
+@Composable
+private fun PrivacyNoticeDivider(text: String) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 18.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Surface(
+            modifier = Modifier.weight(1f),
+            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
+        ) {
+            Spacer(Modifier.size(1.dp))
+        }
+        Text(
+            text = text,
+            modifier = Modifier.padding(horizontal = 10.dp),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.74f),
+            maxLines = 3
+        )
+        Surface(
+            modifier = Modifier.weight(1f),
+            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
+        ) {
+            Spacer(Modifier.size(1.dp))
+        }
+    }
+}
+
+@Composable
+private fun UnreadHintBar(count: Int, onDismiss: () -> Unit) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        tonalElevation = 1.dp,
+        shape = RoundedCornerShape(14.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = if (count == 1) "1 mensagem nao lida" else "$count mensagens nao lidas",
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            TextButton(onClick = onDismiss) {
+                Text("Certo")
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun MessageBubble(
+    msg: Message,
+    allowTextSelection: Boolean,
+    onClick: () -> Unit
+) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = if (msg.isMine) Arrangement.End else Arrangement.Start
@@ -212,24 +1034,40 @@ private fun MessageBubble(msg: Message) {
         Surface(
             modifier = Modifier
                 .padding(vertical = 3.dp)
-                .widthIn(max = 312.dp),
+                .widthIn(max = 312.dp)
+                .clickable(onClick = onClick),
             color = if (msg.isMine) {
                 MaterialTheme.colorScheme.primaryContainer
             } else {
                 MaterialTheme.colorScheme.surfaceVariant
             },
-            shape = RoundedCornerShape(12.dp)
+            shape = RoundedCornerShape(16.dp),
+            tonalElevation = 1.dp
         ) {
-            Column {
-                Text(
-                    text = msg.text,
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                    color = if (msg.isMine) {
-                        MaterialTheme.colorScheme.onPrimaryContainer
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
+            Column(modifier = Modifier.animateContentSize()) {
+                if (allowTextSelection) {
+                    SelectionContainer {
+                        Text(
+                            text = msg.text,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
+                            color = if (msg.isMine) {
+                                MaterialTheme.colorScheme.onPrimaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            }
+                        )
                     }
-                )
+                } else {
+                    Text(
+                        text = msg.text,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
+                        color = if (msg.isMine) {
+                            MaterialTheme.colorScheme.onPrimaryContainer
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        }
+                    )
+                }
                 if (msg.isMine) {
                     Row(
                         modifier = Modifier
@@ -240,7 +1078,7 @@ private fun MessageBubble(msg: Message) {
                         val tint = when (msg.delivery) {
                             DeliveryState.Pending -> MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.65f)
                             DeliveryState.Sent -> MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.85f)
-                            DeliveryState.Delivered -> Color(0xFF22C55E)
+                            DeliveryState.Delivered -> MaterialTheme.colorScheme.onSurface
                             DeliveryState.Failed -> MaterialTheme.colorScheme.error
                         }
                         when (msg.delivery) {
@@ -275,39 +1113,170 @@ private fun MessageBubble(msg: Message) {
 }
 
 @Composable
+private fun MessageDetailDialog(
+    message: Message,
+    selectionEnabled: Boolean,
+    onToggleSelection: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (message.isMine) "Mensagem enviada" else "Mensagem recebida") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("Horário: ${formatTimestamp(message.timestamp)}")
+                Text("Status: ${if (message.isMine) "Enviada por você" else "Recebida"}")
+                Text("Texto: ${message.text}")
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("Fechar") }
+        },
+        dismissButton = {
+            if (message.isMine) {
+                TextButton(onClick = onToggleSelection) {
+                    Text(if (selectionEnabled) "Bloquear seleção" else "Liberar seleção")
+                }
+            }
+        }
+    )
+}
+
+private fun formatTimestamp(timestamp: Long): String {
+    return java.text.SimpleDateFormat("dd/MM/yyyy HH:mm", java.util.Locale.getDefault())
+        .format(java.util.Date(timestamp))
+}
+
+private fun formatMessageDirection(message: Message): String {
+    return if (message.isMine) "Enviada" else "Recebida"
+}
+
+private fun exportChatHistory(context: Context, title: String, messages: List<Message>) {
+    if (messages.isEmpty()) {
+        Toast.makeText(context, "Sem histórico para exportar", Toast.LENGTH_SHORT).show()
+        return
+    }
+
+    val body = messages.joinToString(separator = "\n\n") { message ->
+        "${formatMessageDirection(message)} • ${formatTimestamp(message.timestamp)}\n${message.text}"
+    }
+    val intent = Intent(Intent.ACTION_SEND)
+        .setType("text/plain")
+        .putExtra(Intent.EXTRA_SUBJECT, "Histórico - $title")
+        .putExtra(Intent.EXTRA_TEXT, body)
+    context.startActivity(Intent.createChooser(intent, "Exportar histórico"))
+}
+
+@Composable
 private fun MessageComposer(
     input: String,
+    focusRequester: FocusRequester,
     onInputChange: (String) -> Unit,
     onSend: () -> Unit
 ) {
-    Surface(tonalElevation = 2.dp) {
-        Row(
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        tonalElevation = 3.dp,
+        shape = RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp),
+        color = MaterialTheme.colorScheme.surface
+    ) {
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .imePadding()
-                .padding(horizontal = 10.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.Bottom
+                .padding(horizontal = 12.dp, vertical = 10.dp)
         ) {
-            OutlinedTextField(
-                value = input,
-                onValueChange = onInputChange,
-                modifier = Modifier.weight(1f),
-                maxLines = 4,
-                shape = RoundedCornerShape(18.dp),
-                placeholder = { Text("Mensagem") },
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                keyboardActions = KeyboardActions(onSend = { onSend() })
-            )
-            Spacer(Modifier.width(8.dp))
-            Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primary) {
-                IconButton(onClick = onSend) {
-                    Icon(
-                        Icons.AutoMirrored.Outlined.Send,
-                        contentDescription = "Enviar",
-                        tint = MaterialTheme.colorScheme.onPrimary
-                    )
+            Row(verticalAlignment = Alignment.Bottom) {
+                OutlinedTextField(
+                    value = input,
+                    onValueChange = onInputChange,
+                    modifier = Modifier
+                        .weight(1f)
+                        .focusRequester(focusRequester),
+                    maxLines = 4,
+                    shape = RoundedCornerShape(20.dp),
+                    placeholder = { Text("Mensagem") },
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                    keyboardActions = KeyboardActions(onSend = { onSend() })
+                )
+                Spacer(Modifier.width(8.dp))
+                Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primary) {
+                    IconButton(onClick = onSend) {
+                        Icon(
+                            Icons.AutoMirrored.Outlined.Send,
+                            contentDescription = "Enviar",
+                            tint = MaterialTheme.colorScheme.onPrimary
+                        )
+                    }
                 }
             }
         }
     }
+}
+
+@Composable
+private fun PartnerMarkerBadge(marker: String, typing: Boolean, modifier: Modifier = Modifier) {
+    Box(modifier = modifier, contentAlignment = Alignment.BottomCenter) {
+        if (typing) {
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .offset(y = (-20).dp),
+                shape = RoundedCornerShape(999.dp),
+                color = MaterialTheme.colorScheme.primary,
+                tonalElevation = 3.dp
+            ) {
+                Text(
+                    text = "...",
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 2.dp),
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onPrimary
+                )
+            }
+        }
+        Surface(
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
+            tonalElevation = 1.dp
+        ) {
+            Text(
+                text = marker.ifBlank { "?" },
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+        }
+    }
+}
+
+private fun compactOnionRoute(value: String): String {
+    val clean = value.trim()
+    if (!clean.startsWith("onion:", ignoreCase = true)) return clean
+    val route = clean.substringAfter(':')
+    val separator = route.lastIndexOf(':')
+    if (separator <= 0 || separator == route.lastIndex) return clean
+    val host = route.substring(0, separator)
+    val port = route.substring(separator + 1)
+    if (host.length <= 28) return "onion:$host:$port"
+    return "onion:${host.take(12)}...${host.takeLast(10)}:$port"
+}
+
+private fun chatNetworkLabel(status: TorManager.Status): String {
+    return if (status is TorManager.Status.Ready) "conectado" else "desconectado"
+}
+
+private fun maskedRouteLabel(value: String): String {
+    val clean = value.trim()
+    if (!clean.startsWith("onion:", ignoreCase = true)) return clean
+    val route = clean.substringAfter(':')
+    val separator = route.lastIndexOf(':')
+    if (separator <= 0 || separator == route.lastIndex) return clean
+    val host = route.substring(0, separator)
+        .removeSuffix(".onion")
+        .lowercase()
+    val port = route.substring(separator + 1)
+        .takeIf { candidate -> candidate.all { it.isDigit() } }
+        ?: "5000"
+    return "$host#$port"
 }

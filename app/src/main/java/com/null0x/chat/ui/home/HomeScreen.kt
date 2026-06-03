@@ -6,93 +6,147 @@ import android.content.Context
 import android.widget.Toast
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.ChatBubble
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Contacts
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.VpnKey
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.outlined.ChatBubble
+import androidx.compose.material.icons.outlined.ChatBubbleOutline
+import androidx.compose.material.icons.outlined.Contacts
+import androidx.compose.material.icons.outlined.Person
+import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.null0x.chat.network.TorManager
+import com.null0x.chat.security.AppSecurityManager
 import com.null0x.chat.viewmodel.ChatViewModel
-import com.null0x.chat.viewmodel.ChatViewModel.SnapState
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import android.graphics.Bitmap
+import com.google.zxing.BarcodeFormat
+import com.google.zxing.qrcode.QRCodeWriter
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
-private enum class HomeTab(val title: String, val icon: ImageVector) {
-    Chats("Chats", Icons.Filled.Chat),
-    Contacts("Contatos", Icons.Filled.Contacts),
-    Profile("Perfil", Icons.Filled.Person),
-    Settings("Configurações", Icons.Filled.Settings)
+private enum class HomeTab(
+    val title: String,
+    val selectedIcon: ImageVector,
+    val unselectedIcon: ImageVector
+) {
+    Chats("Chats", Icons.Filled.ChatBubble, Icons.Outlined.ChatBubbleOutline),
+    Contacts("Contatos", Icons.Filled.Contacts, Icons.Outlined.Contacts),
+    Profile("Perfil", Icons.Filled.Person, Icons.Outlined.Person),
+    Settings("Configurações", Icons.Filled.Settings, Icons.Outlined.Settings)
+}
+
+private val HomeHeaderHeight = 86.dp
+
+private sealed interface PendingProfileChange {
+    data class Identity(val name: String, val emoji: String) : PendingProfileChange
+    data class Bio(val bio: String) : PendingProfileChange
 }
 
 @Composable
-fun HomeScreen(vm: ChatViewModel, onOpenChat: (String) -> Unit) {
+fun HomeScreen(vm: ChatViewModel, onLockApp: () -> Unit, onOpenChat: (String) -> Unit) {
+    val context = LocalContext.current
     val torStatus by TorManager.status.collectAsState()
     val publicRoute = vm.currentPublicRoute()
-    var tab by rememberSaveable { mutableStateOf(HomeTab.Chats) }
-    var query by rememberSaveable { mutableStateOf("") }
-    var showProfileDialog by rememberSaveable { mutableStateOf(false) }
-    val conversations = vm.conversationPreviews()
-    val filteredConversations = conversations.filter {
-        val clean = query.trim()
-        clean.isBlank() ||
-            it.displayName.contains(clean, ignoreCase = true) ||
-            it.username.contains(clean, ignoreCase = true) ||
-            it.lastMessage.contains(clean, ignoreCase = true)
+    val pagerState = rememberPagerState(initialPage = HomeTab.Chats.ordinal) { HomeTab.entries.size }
+    val scope = rememberCoroutineScope()
+    val tabIndex by remember {
+        derivedStateOf {
+            val resolvedPage = if (pagerState.isScrollInProgress) {
+                pagerState.targetPage
+            } else {
+                pagerState.settledPage
+            }
+            resolvedPage.coerceIn(0, HomeTab.entries.lastIndex)
+        }
     }
+    val tab = HomeTab.entries[tabIndex]
+    var query by rememberSaveable { mutableStateOf("") }
+    var searchSummary by remember { mutableStateOf<ChatViewModel.SearchSummary?>(null) }
+    var showProfileDialog by rememberSaveable { mutableStateOf(false) }
+    var pendingProfileChange by remember { mutableStateOf<PendingProfileChange?>(null) }
+    var profileAuthError by rememberSaveable { mutableStateOf("") }
+    val publicRouteToken = remember(publicRoute) { vm.routeTokenFor(publicRoute) }
+    val conversations = vm.conversationPreviews()
+    val cleanQuery = query.trim()
+    val visibleConversations = searchSummary?.conversations ?: conversations
 
     LaunchedEffect(torStatus) {
         if (torStatus is TorManager.Status.Idle || torStatus is TorManager.Status.Error) {
@@ -100,101 +154,141 @@ fun HomeScreen(vm: ChatViewModel, onOpenChat: (String) -> Unit) {
         }
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
-    ) {
-        AppHeader(
-            title = tab.title,
-            profileName = vm.profileName,
-            username = vm.myUsername,
-            torStatus = torStatus,
-            onTorClick = {
-                when (torStatus) {
-                    is TorManager.Status.Ready,
-                    is TorManager.Status.Starting -> vm.stopTor()
-                    else -> vm.startTor()
+    Scaffold(
+        modifier = Modifier.fillMaxSize(),
+        topBar = {
+            AppHeader(
+                title = tab.title,
+                torStatus = torStatus,
+                onLockApp = onLockApp
+            )
+        },
+        bottomBar = {
+            BottomDock(
+                selected = tab,
+                onSelect = {
+                    scope.launch {
+                        pagerState.animateScrollToPage(it.ordinal)
+                    }
                 }
-            },
-            onSettings = { tab = HomeTab.Settings }
-        )
-
-        Box(
+            )
+        }
+    ) { innerPadding ->
+        HorizontalPager(
+            state = pagerState,
             modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth()
+                .fillMaxSize()
+                .padding(innerPadding),
+            beyondViewportPageCount = 1
         ) {
-            when (tab) {
+            when (HomeTab.entries[it]) {
                 HomeTab.Chats -> ChatsTab(
                     query = query,
-                    onQueryChange = { query = it },
-                    conversations = filteredConversations,
-                    conversationsCount = conversations.size,
-                    peersCount = vm.peers.size,
-                    unreadCountFor = vm::unreadCountFor,
+                    onQueryChange = {
+                        query = it
+                        searchSummary = null
+                    },
+                    conversations = visibleConversations,
+                    searchSummary = searchSummary,
                     myUsername = vm.myUsername,
-                    hasSearch = query.isNotBlank(),
+                    profileEmoji = vm.profileEmojiSymbol,
+                    hasSearch = searchSummary != null,
+                    onSearch = {
+                        scope.launch {
+                            searchSummary = if (cleanQuery.isBlank()) {
+                                null
+                            } else {
+                                vm.searchExactMessages(cleanQuery)
+                            }
+                        }
+                    },
                     onSelect = {
                         vm.selectTarget(it)
                         onOpenChat(it)
                     },
                     onClear = vm::clearConversation,
-                    onRemove = vm::removeConversation,
-                    onClearEverywhere = vm::clearConversationEverywhere
+                    onRemove = vm::removeConversation
                 )
                 HomeTab.Contacts -> ContactsTab(
-                    routeName = vm.uniqueRouteName,
-                    onRouteNameChange = vm::updateUniqueRouteName,
+                    routeName = vm.contactRouteInput,
+                    onRouteNameChange = vm::updateContactRouteInput,
                     routeLookup = vm.routeLookup,
-                    routeSuggestions = vm.routeSuggestions,
                     routeStatus = vm.routeStatus,
-                    onRegisterRouteName = vm::registerUniqueRouteName,
-                    onSearchRouteName = vm::searchUniqueRouteName,
-                    peers = vm.peers,
-                    displayNameFor = vm::displayNameFor,
+                    onSearchRouteName = vm::addContactRouteFromInput,
+                    contacts = vm.conversationPreviews(),
+                    onAddContact = vm::addContact,
                     onSelect = {
                         vm.selectTarget(it)
                         onOpenChat(it)
-                    }
+                    },
+                    onRemoveContact = vm::removeConversation
                 )
                 HomeTab.Profile -> ProfileTab(
                     profileName = vm.profileName,
+                    profileEmoji = vm.profileEmojiSymbol,
                     username = vm.myUsername,
                     publicRoute = publicRoute,
-                    conversationsCount = conversations.size,
-                    peersCount = vm.peers.size,
-                    torStatus = torStatus
+                    publicRouteToken = publicRouteToken,
+                    profileBio = vm.profileBioText,
+                    onProfileEmojiSave = { emoji ->
+                        profileAuthError = ""
+                        pendingProfileChange = PendingProfileChange.Identity(vm.profileName, emoji)
+                    },
+                    onProfileBioSave = { bio ->
+                        profileAuthError = ""
+                        pendingProfileChange = PendingProfileChange.Bio(bio)
+                    }
                 )
                 HomeTab.Settings -> SettingsTab(
-                    profileName = vm.profileName,
+                    profileEmoji = vm.profileEmojiSymbol,
                     username = vm.myUsername,
-                    publicRoute = publicRoute,
-                    torStatus = torStatus,
                     keepViewedMessages = vm.isKeepViewedMessagesEnabled(),
                     onKeepViewedMessagesChange = vm::updateKeepViewedMessagesPreference,
-                    onEditProfile = { showProfileDialog = true },
-                    onTorClick = {
-                        when (torStatus) {
-                            is TorManager.Status.Ready,
-                            is TorManager.Status.Starting -> vm.stopTor()
-                            else -> vm.startTor()
-                        }
-                    }
+                    screenshotsEnabled = vm.isScreenshotsEnabled(),
+                    onScreenshotsEnabledChange = vm::updateScreenshotsPreference,
+                    onEditProfile = { showProfileDialog = true }
                 )
             }
         }
-
-        BottomDock(selected = tab, onSelect = { tab = it })
     }
 
     if (showProfileDialog) {
         ProfileDialog(
             currentName = vm.profileName,
             onDismiss = { showProfileDialog = false },
-            onSave = {
-                vm.updateProfileName(it)
+            onSave = { name ->
+                profileAuthError = ""
+                pendingProfileChange = PendingProfileChange.Identity(name, vm.profileEmojiSymbol)
                 showProfileDialog = false
+            }
+        )
+    }
+
+    pendingProfileChange?.let { change ->
+        PasswordConfirmDialog(
+            title = "Confirmar edição pública",
+            message = "Digite a senha alfanumérica para publicar alterações no perfil.",
+            error = profileAuthError,
+            onDismiss = {
+                pendingProfileChange = null
+                profileAuthError = ""
+            },
+            onConfirm = { password ->
+                val result = AppSecurityManager.verifyPassword(context, password)
+                if (result.isSuccess) {
+                    when (change) {
+                        is PendingProfileChange.Identity -> {
+                            vm.updateProfileName(change.name)
+                            vm.updateProfileEmoji(change.emoji)
+                        }
+                        is PendingProfileChange.Bio -> vm.updateProfileBio(change.bio)
+                    }
+                    pendingProfileChange = null
+                    profileAuthError = ""
+                    Toast.makeText(context, "Perfil atualizado", Toast.LENGTH_SHORT).show()
+                } else {
+                    profileAuthError = "Senha errada, tente novamente"
+                }
             }
         )
     }
@@ -203,51 +297,48 @@ fun HomeScreen(vm: ChatViewModel, onOpenChat: (String) -> Unit) {
 @Composable
 private fun AppHeader(
     title: String,
-    profileName: String,
-    username: String,
     torStatus: TorManager.Status,
-    onTorClick: () -> Unit,
-    onSettings: () -> Unit
+    onLockApp: () -> Unit
 ) {
-    Surface(color = MaterialTheme.colorScheme.primary) {
-        Row(
+    Surface(
+        color = Color.Black,
+        tonalElevation = 3.dp
+    ) {
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically
+                .height(HomeHeaderHeight)
+                .padding(horizontal = 14.dp),
         ) {
-            InitialAvatar(text = profileName, prominent = true)
-            Spacer(Modifier.width(10.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = title,
-                    color = MaterialTheme.colorScheme.onPrimary,
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1
-                )
-                Text(
-                    text = username,
-                    color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.80f),
-                    style = MaterialTheme.typography.bodySmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                TorInlineStatus(status = torStatus)
-            }
-            Text(
-                text = "Tor",
-                color = if (torStatus is TorManager.Status.Ready) Color(0xFFB5F0C8) else MaterialTheme.colorScheme.onPrimary,
-                style = MaterialTheme.typography.labelLarge,
-                fontWeight = FontWeight.SemiBold,
+            Row(
                 modifier = Modifier
-                    .clickable(onClick = onTorClick)
-                    .padding(horizontal = 8.dp, vertical = 6.dp)
-            )
-            IconButton(onClick = onSettings) {
+                    .fillMaxWidth()
+                    .padding(end = 52.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(
+                    modifier = Modifier
+                        .widthIn(max = 240.dp)
+                        .fillMaxHeight(),
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    Text(
+                        text = title,
+                        color = MaterialTheme.colorScheme.onPrimary,
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1
+                    )
+                    TorInlineStatus(status = torStatus)
+                }
+            }
+            IconButton(
+                onClick = onLockApp,
+                modifier = Modifier.align(Alignment.CenterEnd)
+            ) {
                 Icon(
-                    imageVector = Icons.Filled.Settings,
-                    contentDescription = "Ajustes",
+                    imageVector = Icons.Filled.VpnKey,
+                    contentDescription = "Trancar app",
                     tint = MaterialTheme.colorScheme.onPrimary
                 )
             }
@@ -257,14 +348,50 @@ private fun AppHeader(
 
 @Composable
 private fun BottomDock(selected: HomeTab, onSelect: (HomeTab) -> Unit) {
-    NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
-        HomeTab.entries.forEach { tab ->
-            NavigationBarItem(
-                selected = selected == tab,
-                onClick = { onSelect(tab) },
-                icon = { Icon(tab.icon, contentDescription = tab.title) },
-                label = { Text(tab.title, maxLines = 1, style = MaterialTheme.typography.labelSmall) }
-            )
+    val iconTint = if (MaterialTheme.colorScheme.surface.luminance() > 0.5f) {
+        Color.Black
+    } else {
+        Color.White
+    }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color.Transparent)
+    ) {
+        Spacer(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(1.dp)
+                .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f))
+        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.SpaceEvenly
+        ) {
+            HomeTab.entries.forEach { tab ->
+                val isSelected = selected == tab
+                val interactionSource = remember { MutableInteractionSource() }
+                Box(
+                    modifier = Modifier
+                        .width(64.dp)
+                        .height(56.dp)
+                        .clickable(
+                            interactionSource = interactionSource,
+                            indication = null,
+                            onClick = { onSelect(tab) }
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = if (isSelected) tab.selectedIcon else tab.unselectedIcon,
+                        contentDescription = tab.title,
+                        modifier = Modifier.size(24.dp),
+                        tint = iconTint
+                    )
+                }
+            }
         }
     }
 }
@@ -274,20 +401,16 @@ private fun ChatsTab(
     query: String,
     onQueryChange: (String) -> Unit,
     conversations: List<ChatViewModel.ConversationPreview>,
-    conversationsCount: Int,
-    peersCount: Int,
-    unreadCountFor: (String) -> Int,
+    searchSummary: ChatViewModel.SearchSummary?,
     myUsername: String,
+    profileEmoji: String,
     hasSearch: Boolean,
+    onSearch: () -> Unit,
     onSelect: (String) -> Unit,
     onClear: (String) -> Unit,
-    onRemove: (String) -> Unit,
-    onClearEverywhere: (String) -> Unit
+    onRemove: (String) -> Unit
 ) {
     var pendingRemovalUsername by remember { mutableStateOf<String?>(null) }
-    val visibleConversations = remember(conversations, pendingRemovalUsername) {
-        conversations.filter { it.username != pendingRemovalUsername }
-    }
 
     LaunchedEffect(pendingRemovalUsername) {
         val username = pendingRemovalUsername ?: return@LaunchedEffect
@@ -296,34 +419,39 @@ private fun ChatsTab(
         pendingRemovalUsername = null
     }
 
-    Column(modifier = Modifier.fillMaxSize()) {
-        SearchBar(
-            value = query,
-            onValueChange = onQueryChange,
-            conversationsCount = conversationsCount,
-            peersCount = peersCount
-        )
-        ConversationsPanel(
-            conversations = visibleConversations,
-            unreadCountFor = unreadCountFor,
-            myUsername = myUsername,
-            hasSearch = hasSearch,
-            onSelect = onSelect,
-            onClear = onClear,
-            onRemove = { username ->
-                pendingRemovalUsername?.let { previous ->
-                    if (previous != username) {
-                        onRemove(previous)
-                    }
-                }
-                pendingRemovalUsername = username
-            },
-            onClearEverywhere = onClearEverywhere
-        )
-        pendingRemovalUsername?.let {
-            UndoRemoveBar(
-                onUndo = { pendingRemovalUsername = null }
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val listHeight = (maxHeight - 150.dp).coerceAtLeast(260.dp)
+        Column(modifier = Modifier.fillMaxSize()) {
+            SearchBar(
+                value = query,
+                onValueChange = onQueryChange,
+                searchSummary = searchSummary,
+                onSearch = onSearch
             )
+            ConversationsPanel(
+                modifier = Modifier
+                    .height(listHeight)
+                    .imePadding(),
+                conversations = conversations.filter { it.username != pendingRemovalUsername },
+                myUsername = myUsername,
+                profileEmoji = profileEmoji,
+                hasSearch = hasSearch,
+                onSelect = onSelect,
+                onClear = onClear,
+                onRemove = { username ->
+                    pendingRemovalUsername?.let { previous ->
+                        if (previous != username) {
+                            onRemove(previous)
+                        }
+                    }
+                    pendingRemovalUsername = username
+                }
+            )
+            pendingRemovalUsername?.let {
+                UndoRemoveBar(
+                    onUndo = { pendingRemovalUsername = null }
+                )
+            }
         }
     }
 }
@@ -334,21 +462,24 @@ private fun UndoRemoveBar(onUndo: () -> Unit) {
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 12.dp, vertical = 10.dp),
-        shape = RoundedCornerShape(8.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        tonalElevation = 1.dp
     ) {
-        Row(
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically
+                .padding(horizontal = 14.dp, vertical = 12.dp)
         ) {
             Text(
                 text = "Conversa removida da lista",
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.align(Alignment.CenterStart),
                 style = MaterialTheme.typography.bodyMedium
             )
-            TextButton(onClick = onUndo) {
+            TextButton(
+                onClick = onUndo,
+                modifier = Modifier.align(Alignment.CenterEnd)
+            ) {
                 Text("Refazer")
             }
         }
@@ -360,18 +491,17 @@ private fun ContactsTab(
     routeName: String,
     onRouteNameChange: (String) -> Unit,
     routeLookup: ChatViewModel.RouteLookup?,
-    routeSuggestions: List<ChatViewModel.RouteLookup>,
     routeStatus: String,
-    onRegisterRouteName: () -> Unit,
     onSearchRouteName: () -> Unit,
-    peers: List<String>,
-    displayNameFor: (String) -> String,
-    onSelect: (String) -> Unit
+    contacts: List<ChatViewModel.ConversationPreview>,
+    onAddContact: (String) -> Unit,
+    onSelect: (String) -> Unit,
+    onRemoveContact: (String) -> Unit
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         item {
             SectionTitle("Adicionar contato")
@@ -379,24 +509,28 @@ private fun ContactsTab(
                 routeName = routeName,
                 onRouteNameChange = onRouteNameChange,
                 routeLookup = routeLookup,
-                routeSuggestions = routeSuggestions,
                 routeStatus = routeStatus,
-                onRegisterRouteName = onRegisterRouteName,
                 onSearchRouteName = onSearchRouteName,
+                contacts = contacts,
+                onAddContact = onAddContact,
                 onSelect = onSelect
             )
         }
-        item { SectionTitle("Rede local") }
-        if (peers.isEmpty()) {
-            item { EmptyInline("Nenhum contato online encontrado") }
+        item { SectionTitle("Contatos") }
+        if (contacts.isEmpty()) {
+            item {
+                ContactsEmptyState()
+            }
         } else {
-            itemsIndexed(peers, key = { _, item -> item }) { _, username ->
-                val name = displayNameFor(username)
+            itemsIndexed(contacts, key = { _, item -> item.username }) { _, item ->
                 ContactRow(
-                    name = name,
-                    username = username,
-                    source = "LAN",
-                    onClick = { onSelect(username) }
+                    name = item.displayName,
+                    username = item.username,
+                    emoji = item.emoji,
+                    onClick = { onSelect(item.username) },
+                    trailingActionLabel = "Excluir",
+                    trailingActionIcon = Icons.Filled.Delete,
+                    onTrailingAction = { onRemoveContact(item.username) }
                 )
             }
         }
@@ -406,108 +540,175 @@ private fun ContactsTab(
 @Composable
 private fun ProfileTab(
     profileName: String,
+    profileEmoji: String,
     username: String,
     publicRoute: String,
-    conversationsCount: Int,
-    peersCount: Int,
-    torStatus: TorManager.Status
+    publicRouteToken: String,
+    profileBio: String,
+    onProfileEmojiSave: (String) -> Unit,
+    onProfileBioSave: (String) -> Unit
 ) {
     val context = LocalContext.current
+    var bioDraft by rememberSaveable { mutableStateOf(profileBio) }
+    var showEmojiDialog by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(profileBio) {
+        if (profileBio != bioDraft) {
+            bioDraft = profileBio
+        }
+    }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 18.dp),
+        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 18.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         item {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                InitialAvatar(text = profileName, prominent = false, large = true)
-                Spacer(Modifier.width(14.dp))
-                Column(modifier = Modifier.weight(1f)) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(22.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant,
+                tonalElevation = 1.dp
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(modifier = Modifier.clickable { showEmojiDialog = true }) {
+                            InitialAvatar(text = profileName, emoji = profileEmoji, prominent = false, large = true)
+                        }
+                        Spacer(Modifier.width(14.dp))
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            Text(
+                                text = profileName.ifBlank { "RotaSegura" },
+                                style = MaterialTheme.typography.headlineSmall,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = maskedRouteLabel(username),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = Int.MAX_VALUE
+                            )
+                        }
+                    }
+                    val routeCopy = publicRoute.trim()
+                    val routeLabel = publicRouteToken.ifBlank { routeCopy }
+                    if (routeLabel.isNotBlank()) {
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                    clipboard.setPrimaryClip(ClipData.newPlainText("RotaSegura", routeLabel))
+                                    Toast.makeText(context, "Token da rota copiado", Toast.LENGTH_SHORT).show()
+                                },
+                            shape = RoundedCornerShape(16.dp),
+                            color = MaterialTheme.colorScheme.surface
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Text(
+                                    text = routeLabel,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                RouteTokenQr(token = routeLabel)
+                            }
+                        }
+                    }
                     Text(
-                        text = profileName.ifBlank { "DoveChat" },
-                        style = MaterialTheme.typography.headlineSmall,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                        text = "Bio do perfil",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold
                     )
-                    Text(
-                        text = username,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                    OutlinedTextField(
+                        value = bioDraft,
+                        onValueChange = { bioDraft = limitUtf8Bytes(it, 4 * 1024) },
+                        modifier = Modifier.fillMaxWidth(),
+                        minLines = 5,
+                        maxLines = 10,
+                        label = { Text("Escreva tudo que quiser") },
+                        placeholder = { Text("Até 4 KB visíveis para quem visitar a rota.") },
+                        shape = RoundedCornerShape(16.dp)
                     )
-                }
-            }
-        }
-        item {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                StatTile(label = "Conversas", value = conversationsCount.toString(), modifier = Modifier.weight(1f))
-                StatTile(label = "Contatos", value = peersCount.toString(), modifier = Modifier.weight(1f))
-            }
-        }
-        item {
-            SettingsRow(
-                title = "Rota segura",
-                subtitle = if (torStatus is TorManager.Status.Ready) {
-                    "Endereco: $publicRoute"
-                } else {
-                    torLabel(torStatus)
-                },
-                leading = Icons.Filled.Lock,
-                onClick = {
-                    if (torStatus is TorManager.Status.Ready && publicRoute.isNotBlank()) {
-                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                        clipboard.setPrimaryClip(ClipData.newPlainText("DoveChat Onion", publicRoute))
-                        Toast.makeText(context, "Endereco copiado", Toast.LENGTH_SHORT).show()
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "${bioDraft.toByteArray(Charsets.UTF_8).size.coerceAtMost(4 * 1024)} / 4096 bytes",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        TextButton(
+                            enabled = bioDraft != profileBio,
+                            onClick = { onProfileBioSave(bioDraft) }
+                        ) {
+                            Text("Salvar bio")
+                        }
                     }
                 }
-            )
+            }
         }
+    }
+    if (showEmojiDialog) {
+        EmojiDialog(
+            currentEmoji = profileEmoji,
+            onDismiss = { showEmojiDialog = false },
+            onSave = { emoji ->
+                onProfileEmojiSave(emoji)
+                showEmojiDialog = false
+            }
+        )
     }
 }
 
 @Composable
 private fun SettingsTab(
-    profileName: String,
+    profileEmoji: String,
     username: String,
-    publicRoute: String,
-    torStatus: TorManager.Status,
     keepViewedMessages: Boolean,
     onKeepViewedMessagesChange: (Boolean) -> Unit,
-    onEditProfile: () -> Unit,
-    onTorClick: () -> Unit
+    screenshotsEnabled: Boolean,
+    onScreenshotsEnabledChange: (Boolean) -> Unit,
+    onEditProfile: () -> Unit
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         item { SectionTitle("Conta") }
         item {
             SettingsRow(
                 title = "Perfil",
-                subtitle = "$profileName - $username",
+                subtitle = maskedRouteLabel(username),
                 leading = Icons.Filled.Person,
+                leadingEmoji = profileEmoji,
                 onClick = onEditProfile
             )
         }
-        item { SectionTitle("Privacidade e rede") }
+        item { SectionTitle("Privacidade") }
         item {
             SettingsSwitchRow(
                 title = "Manter historico de mensagens",
-                subtitle = "Desative para apagar automaticamente ao sair do chat",
+                subtitle = "Padrao para novas conversas",
                 checked = keepViewedMessages,
                 onCheckedChange = onKeepViewedMessagesChange
             )
         }
         item {
-            SettingsRow(
-                title = "Tor",
-                subtitle = if (torStatus is TorManager.Status.Ready) publicRoute else torLabel(torStatus),
-                leading = Icons.Filled.Lock,
-                onClick = onTorClick,
-                trailing = { TorStatusDot(torStatus) }
+            SettingsSwitchRow(
+                title = "Permitir print da tela",
+                subtitle = "Padrao para novas conversas",
+                checked = screenshotsEnabled,
+                onCheckedChange = onScreenshotsEnabledChange
             )
         }
     }
@@ -517,29 +718,39 @@ private fun SettingsTab(
 private fun SearchBar(
     value: String,
     onValueChange: (String) -> Unit,
-    conversationsCount: Int,
-    peersCount: Int
+    searchSummary: ChatViewModel.SearchSummary?,
+    onSearch: () -> Unit
 ) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 10.dp)
+            .padding(horizontal = 12.dp, vertical = 12.dp)
     ) {
         OutlinedTextField(
             value = value,
             onValueChange = onValueChange,
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
-            shape = RoundedCornerShape(14.dp),
+            shape = RoundedCornerShape(16.dp),
             leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
-            placeholder = { Text("Buscar") }
+            placeholder = { Text("Buscar mensagens exatas") }
         )
         Row(
-            modifier = Modifier.padding(top = 7.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            modifier = Modifier.padding(top = 8.dp),
+            horizontalArrangement = Arrangement.End
         ) {
-            InfoPill(text = "$conversationsCount conversas")
-            InfoPill(text = "$peersCount online")
+            TextButton(onClick = onSearch) {
+                Text("Pesquisar")
+            }
+        }
+        searchSummary?.let { summary ->
+            Row(
+                modifier = Modifier.padding(top = 2.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                InfoPill(text = pluralize(summary.conversationCount, "conversa", "conversas"))
+                InfoPill(text = pluralize(summary.resultCount, "resultado", "resultados"))
+            }
         }
     }
 }
@@ -547,14 +758,14 @@ private fun SearchBar(
 @Composable
 private fun InfoPill(text: String) {
     Surface(
-        shape = RoundedCornerShape(8.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant
+        shape = RoundedCornerShape(999.dp),
+        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
     ) {
         Text(
             text = text,
-            modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
             style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            color = MaterialTheme.colorScheme.primary
         )
     }
 }
@@ -562,24 +773,26 @@ private fun InfoPill(text: String) {
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ConversationsPanel(
+    modifier: Modifier = Modifier,
     conversations: List<ChatViewModel.ConversationPreview>,
-    unreadCountFor: (String) -> Int,
     myUsername: String,
+    profileEmoji: String,
     hasSearch: Boolean,
     onSelect: (String) -> Unit,
     onClear: (String) -> Unit,
-    onRemove: (String) -> Unit,
-    onClearEverywhere: (String) -> Unit
+    onRemove: (String) -> Unit
 ) {
     var menuUsername by rememberSaveable { mutableStateOf<String?>(null) }
 
     if (conversations.isEmpty()) {
-        EmptyState(myUsername = myUsername, hasSearch = hasSearch)
+        Box(modifier = modifier.fillMaxWidth()) {
+            EmptyState(myUsername = myUsername, profileEmoji = profileEmoji, hasSearch = hasSearch)
+        }
         return
     }
 
     LazyColumn(
-        modifier = Modifier.fillMaxSize(),
+        modifier = modifier.fillMaxWidth(),
         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
         verticalArrangement = Arrangement.spacedBy(2.dp)
     ) {
@@ -587,7 +800,6 @@ private fun ConversationsPanel(
             Box(modifier = Modifier.fillMaxWidth()) {
                 ConversationRow(
                     item = item,
-                    unread = unreadCountFor(item.username),
                     onClick = { onSelect(item.username) },
                     onLongClick = { menuUsername = item.username }
                 )
@@ -607,10 +819,6 @@ private fun ConversationsPanel(
                         menuUsername = null
                         onRemove(item.username)
                     })
-                    DropdownMenuItem(text = { Text("Limpar nos dois lados") }, onClick = {
-                        menuUsername = null
-                        onClearEverywhere(item.username)
-                    })
                 }
             }
         }
@@ -621,7 +829,6 @@ private fun ConversationsPanel(
 @Composable
 private fun ConversationRow(
     item: ChatViewModel.ConversationPreview,
-    unread: Int,
     onClick: () -> Unit,
     onLongClick: () -> Unit
 ) {
@@ -629,41 +836,45 @@ private fun ConversationRow(
         modifier = Modifier
             .fillMaxWidth()
             .combinedClickable(onClick = onClick, onLongClick = onLongClick),
-        shape = RoundedCornerShape(6.dp),
-        color = MaterialTheme.colorScheme.background
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surface,
+        tonalElevation = 1.dp
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 10.dp, vertical = 10.dp),
+                .padding(horizontal = 12.dp, vertical = 12.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            InitialAvatar(text = item.displayName)
-            Spacer(Modifier.width(11.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = item.displayName,
-                    style = MaterialTheme.typography.bodyLarge,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Text(
-                    text = snapLine(item),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                InitialAvatar(text = item.displayName, emoji = item.emoji)
+                Spacer(Modifier.width(11.dp))
+                Column(modifier = Modifier.widthIn(max = 220.dp)) {
+                    Text(
+                        text = item.displayName,
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 2,
+                        softWrap = true,
+                        overflow = TextOverflow.Clip
+                    )
+                    Text(
+                        text = snapLine(item),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
             }
-            Spacer(Modifier.width(8.dp))
             Column(horizontalAlignment = Alignment.End) {
                 Text(
                     text = formatTime(item.lastTimestamp),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                SnapCountBadge(unread = unread)
+                SnapCountBadge(unread = item.unreadCount)
             }
         }
     }
@@ -674,7 +885,7 @@ private fun SnapCountBadge(unread: Int) {
     if (unread <= 0) return
     Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)) {
         Row(
-            modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Icon(
@@ -695,35 +906,56 @@ private fun SnapCountBadge(unread: Int) {
 }
 
 private fun snapLine(item: ChatViewModel.ConversationPreview): String {
-    val state = when (item.snapState) {
-        SnapState.Entered -> "Entrou"
-        SnapState.Seen -> "Viu"
-        SnapState.Cleared -> "Saiu"
-    }
-    val textLabel = if (item.unreadCount > 0) "${item.unreadCount} balao(oes)" else "balao de texto"
-    return "$state - $textLabel"
+    return item.previewLine
 }
 
 @Composable
-private fun EmptyState(myUsername: String, hasSearch: Boolean) {
+private fun EmptyState(myUsername: String, profileEmoji: String, hasSearch: Boolean) {
     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Column(
+        Surface(
             modifier = Modifier.padding(24.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
+            shape = RoundedCornerShape(22.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant,
+            tonalElevation = 1.dp
         ) {
-            Text(
-                text = if (hasSearch) "Nada encontrado" else "Nenhuma conversa",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold
-            )
-            Spacer(Modifier.height(6.dp))
-            Text(
-                text = myUsername,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
+            Column(
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 18.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                InitialAvatar(
+                    text = if (hasSearch) "?" else myUsername,
+                    emoji = if (hasSearch) null else profileEmoji,
+                    prominent = false,
+                    large = true
+                )
+                Spacer(Modifier.height(14.dp))
+                Text(
+                    text = if (hasSearch) "Nada encontrado" else "Nenhuma conversa ainda",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    text = if (hasSearch) {
+                        "Tente outro nome, username ou rota."
+                    } else {
+                        "Suas conversas aparecerão aqui assim que alguém falar com você."
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 3,
+                    textAlign = TextAlign.Center
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = maskedRouteLabel(myUsername),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    softWrap = true,
+                    overflow = TextOverflow.Clip
+                )
+            }
         }
     }
 }
@@ -733,42 +965,84 @@ private fun RouteSearchPanel(
     routeName: String,
     onRouteNameChange: (String) -> Unit,
     routeLookup: ChatViewModel.RouteLookup?,
-    routeSuggestions: List<ChatViewModel.RouteLookup>,
     routeStatus: String,
-    onRegisterRouteName: () -> Unit,
     onSearchRouteName: () -> Unit,
+    contacts: List<ChatViewModel.ConversationPreview>,
+    onAddContact: (String) -> Unit,
     onSelect: (String) -> Unit
 ) {
+    var routeField by remember {
+        mutableStateOf(TextFieldValue(routeName))
+    }
+    LaunchedEffect(routeName) {
+        if (routeName != routeField.text) {
+            routeField = TextFieldValue(routeName)
+        }
+    }
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(8.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        tonalElevation = 1.dp
     ) {
-        Column(modifier = Modifier.padding(12.dp)) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            Text(
+                text = "Pesquise contatos apenas pela rota ou token da rota.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(10.dp))
             OutlinedTextField(
-                value = routeName,
-                onValueChange = onRouteNameChange,
-                modifier = Modifier.fillMaxWidth(),
+                value = routeField,
+                onValueChange = {
+                    routeField = it
+                    onRouteNameChange(it.text)
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .onFocusChanged {
+                        if (it.isFocused && routeField.text.isNotBlank()) {
+                            routeField = routeField.copy(selection = TextRange(0, routeField.text.length))
+                        }
+                    },
                 singleLine = true,
-                leadingIcon = { Icon(Icons.Filled.Add, contentDescription = null) },
-                label = { Text("Nome, usuário ou rota") }
+                shape = RoundedCornerShape(14.dp),
+                trailingIcon = {
+                    if (routeField.text.isNotBlank()) {
+                        IconButton(
+                            onClick = {
+                                routeField = TextFieldValue("")
+                                onRouteNameChange("")
+                            }
+                        ) {
+                            Icon(Icons.Filled.Close, contentDescription = "Limpar rota")
+                        }
+                    }
+                },
+                label = { Text("Rota") }
             )
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.End
             ) {
-                TextButton(onClick = onSearchRouteName) { Text("Buscar") }
-                Button(onClick = onRegisterRouteName) { Text("Registrar") }
+                TextButton(onClick = onSearchRouteName) { Text("Pesquisar") }
             }
             if (routeStatus.isNotBlank()) {
                 Text(
                     text = routeStatus,
-                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(top = 6.dp),
+                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp),
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            routeSuggestions.forEach { RouteLookupRow(routeLookup = it, onSelect = onSelect) }
-            routeLookup?.let { RouteLookupRow(routeLookup = it, onSelect = onSelect) }
+            routeLookup?.let { lookup ->
+                RouteLookupRow(
+                    routeLookup = lookup,
+                    alreadyAdded = contacts.any { contact -> contact.username == lookup.username },
+                    onAddContact = onAddContact,
+                    onSelect = onSelect
+                )
+            }
         }
     }
 }
@@ -776,13 +1050,19 @@ private fun RouteSearchPanel(
 @Composable
 private fun RouteLookupRow(
     routeLookup: ChatViewModel.RouteLookup,
+    alreadyAdded: Boolean,
+    onAddContact: (String) -> Unit,
     onSelect: (String) -> Unit
 ) {
     ContactRow(
         name = routeLookup.displayName,
         username = routeLookup.username,
-        source = routeLookup.source,
-        onClick = { onSelect(routeLookup.username) }
+        emoji = routeLookup.emoji,
+        onClick = { onSelect(routeLookup.username) },
+        trailingActionLabel = if (alreadyAdded) "Adicionado" else "Adicionar",
+        trailingActionIcon = Icons.Filled.Add,
+        trailingActionEnabled = !alreadyAdded,
+        onTrailingAction = { onAddContact(routeLookup.username) }
     )
 }
 
@@ -790,37 +1070,93 @@ private fun RouteLookupRow(
 private fun ContactRow(
     name: String,
     username: String,
-    source: String,
-    onClick: () -> Unit
+    emoji: String,
+    onClick: () -> Unit,
+    trailingActionLabel: String? = null,
+    trailingActionIcon: ImageVector? = null,
+    trailingActionEnabled: Boolean = true,
+    onTrailingAction: (() -> Unit)? = null
 ) {
     Surface(
-        shape = RoundedCornerShape(6.dp),
-        color = MaterialTheme.colorScheme.background,
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surface,
+        tonalElevation = 1.dp,
         modifier = Modifier
-            .fillMaxWidth()
+            .widthIn(max = 360.dp)
             .clickable(onClick = onClick)
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 10.dp),
+            modifier = Modifier
+                .widthIn(max = 360.dp)
+                .padding(horizontal = 12.dp, vertical = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            InitialAvatar(text = name)
-            Spacer(Modifier.width(11.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = name,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Text(
-                    text = "$source - $username",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                InitialAvatar(text = name, emoji = emoji)
+                Spacer(Modifier.width(11.dp))
+                Column(modifier = Modifier.widthIn(max = 190.dp)) {
+                    if (name.isNotBlank()) {
+                        Text(
+                            text = name,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            softWrap = false,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    Text(
+                        text = maskedRouteLabel(username),
+                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
             }
+            if (onTrailingAction != null && trailingActionLabel != null && trailingActionIcon != null) {
+                TextButton(
+                    onClick = onTrailingAction,
+                    enabled = trailingActionEnabled
+                ) {
+                    Icon(
+                        imageVector = trailingActionIcon,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(trailingActionLabel)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ContactsEmptyState() {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(22.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        tonalElevation = 1.dp
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 18.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = "Nenhum contato salvo",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text = "Pesquise uma rota acima e adicione no card do resultado.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center
+            )
         }
     }
 }
@@ -830,6 +1166,7 @@ private fun SettingsRow(
     title: String,
     subtitle: String,
     leading: ImageVector,
+    leadingEmoji: String? = null,
     onClick: () -> Unit,
     trailing: (@Composable () -> Unit)? = null
 ) {
@@ -837,31 +1174,46 @@ private fun SettingsRow(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick),
-        shape = RoundedCornerShape(8.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        tonalElevation = 1.dp
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 12.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 13.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Icon(
-                imageVector = leading,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(24.dp)
-            )
-            Spacer(Modifier.width(12.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(title, fontWeight = FontWeight.SemiBold)
-                Text(
-                    text = subtitle,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (leadingEmoji.isNullOrBlank()) {
+                    Icon(
+                        imageVector = leading,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(24.dp)
+                    )
+                } else {
+                    InitialAvatar(text = title, emoji = leadingEmoji)
+                }
+                Spacer(Modifier.width(12.dp))
+                Column(modifier = Modifier.widthIn(max = 220.dp)) {
+                    Text(title, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        text = subtitle,
+                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        softWrap = true,
+                        overflow = TextOverflow.Clip
+                    )
+                }
             }
-            trailing?.invoke()
+            if (trailing != null) {
+                Box(contentAlignment = Alignment.CenterEnd) {
+                    trailing()
+                }
+            }
         }
     }
 }
@@ -875,14 +1227,18 @@ private fun SettingsSwitchRow(
 ) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(8.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        tonalElevation = 1.dp
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 12.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 13.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Column(modifier = Modifier.weight(1f)) {
+            Column(modifier = Modifier.widthIn(max = 220.dp)) {
                 Text(title, fontWeight = FontWeight.SemiBold)
                 Text(
                     text = subtitle,
@@ -907,36 +1263,9 @@ private fun SectionTitle(text: String) {
 }
 
 @Composable
-private fun StatTile(label: String, value: String, modifier: Modifier = Modifier) {
-    Surface(
-        modifier = modifier,
-        shape = RoundedCornerShape(8.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant
-    ) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            Text(value, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-            Text(label, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-    }
-}
-
-@Composable
-private fun EmptyInline(text: String) {
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(8.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant
-    ) {
-        Text(
-            text = text,
-            modifier = Modifier.padding(14.dp),
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-    }
-}
-
-@Composable
 private fun TorInlineStatus(status: TorManager.Status) {
+    val label = torLabel(status)
+    if (label.isBlank()) return
     Row(
         modifier = Modifier.padding(top = 3.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -944,10 +1273,13 @@ private fun TorInlineStatus(status: TorManager.Status) {
         TorStatusDot(status)
         Spacer(Modifier.width(6.dp))
         Text(
-            text = torLabel(status),
-            color = if (status is TorManager.Status.Ready) Color(0xFFB5F0C8) else MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.85f),
+            text = label,
+            fontSize = 11.sp,
+            color = if (status is TorManager.Status.Ready) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.85f),
             style = MaterialTheme.typography.labelSmall,
-            maxLines = 1
+            maxLines = 2,
+            softWrap = true,
+            overflow = TextOverflow.Clip
         )
     }
 }
@@ -955,26 +1287,145 @@ private fun TorInlineStatus(status: TorManager.Status) {
 @Composable
 private fun TorStatusDot(status: TorManager.Status) {
     val dotColor = when (status) {
-        is TorManager.Status.Ready -> Color(0xFF48D873)
-        is TorManager.Status.Error -> Color(0xFFE05A47)
+        is TorManager.Status.Ready -> MaterialTheme.colorScheme.onSurface
+        is TorManager.Status.Error -> MaterialTheme.colorScheme.onSurfaceVariant
         is TorManager.Status.Starting,
-        is TorManager.Status.Idle -> Color(0xFFB7BDBA)
+        is TorManager.Status.Idle -> MaterialTheme.colorScheme.onSurfaceVariant
     }
     Surface(shape = CircleShape, color = dotColor, modifier = Modifier.size(8.dp)) {}
 }
 
 private fun torLabel(status: TorManager.Status): String {
     return when (status) {
-        is TorManager.Status.Starting -> "Iniciando Tor..."
-        is TorManager.Status.Ready -> "Conectado"
-        is TorManager.Status.Error -> "Erro"
-        is TorManager.Status.Idle -> "Desligado"
+        is TorManager.Status.Starting -> "Aguardando rede..."
+        is TorManager.Status.Ready -> ""
+        is TorManager.Status.Error -> "Aguardando rede..."
+        is TorManager.Status.Idle -> "Aguardando rede..."
     }
+}
+
+private fun pluralize(count: Int, singular: String, plural: String): String {
+    return if (count == 1) "1 $singular" else "$count $plural"
+}
+
+@Composable
+private fun PasswordConfirmDialog(
+    title: String,
+    message: String,
+    error: String,
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit
+) {
+    var password by rememberSaveable { mutableStateOf("") }
+    val submit = {
+        if (password.isNotBlank()) {
+            onConfirm(password)
+        }
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    text = message,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                OutlinedTextField(
+                    value = password,
+                    onValueChange = { password = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    label = { Text("Senha") },
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Password,
+                        imeAction = ImeAction.Done
+                    ),
+                    keyboardActions = KeyboardActions(onDone = { submit() }),
+                    shape = RoundedCornerShape(14.dp)
+                )
+                if (error.isNotBlank()) {
+                    Text(
+                        text = error,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = submit) { Text("Confirmar") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancelar") }
+        }
+    )
+}
+
+@Composable
+private fun RouteTokenQr(token: String) {
+    if (token.isBlank()) return
+    val bitmap = remember(token) { generateQrBitmap(token, 360) }
+    bitmap?.let {
+        Image(
+            bitmap = it.asImageBitmap(),
+            contentDescription = "QR do token",
+            modifier = Modifier.size(180.dp)
+        )
+    }
+}
+
+private fun generateQrBitmap(text: String, sizePx: Int): Bitmap? {
+    return runCatching {
+        val bitMatrix = QRCodeWriter().encode(text, BarcodeFormat.QR_CODE, sizePx, sizePx)
+        Bitmap.createBitmap(sizePx, sizePx, Bitmap.Config.ARGB_8888).apply {
+            for (x in 0 until sizePx) {
+                for (y in 0 until sizePx) {
+                    setPixel(
+                        x,
+                        y,
+                        if (bitMatrix[x, y]) android.graphics.Color.BLACK else android.graphics.Color.WHITE
+                    )
+                }
+            }
+        }
+    }.getOrNull()
+}
+
+private fun maskedRouteLabel(value: String): String {
+    val clean = value.trim()
+    if (!clean.startsWith("onion:", ignoreCase = true)) return clean
+    val route = clean.substringAfter(':')
+    val separator = route.lastIndexOf(':')
+    if (separator <= 0 || separator == route.lastIndex) return clean
+    val host = route.substring(0, separator)
+        .removeSuffix(".onion")
+        .lowercase()
+    val port = route.substring(separator + 1)
+        .takeIf { candidate -> candidate.all { it.isDigit() } }
+        ?: "5000"
+    return "$host#$port"
+}
+
+private fun limitUtf8Bytes(text: String, maxBytes: Int): String {
+    if (text.toByteArray(Charsets.UTF_8).size <= maxBytes) return text
+    var end = text.length
+    while (end > 0) {
+        val candidate = text.substring(0, end)
+        if (candidate.toByteArray(Charsets.UTF_8).size <= maxBytes) {
+            return candidate
+        }
+        end--
+    }
+    return ""
 }
 
 @Composable
 private fun InitialAvatar(
     text: String,
+    emoji: String? = null,
     prominent: Boolean = false,
     large: Boolean = false
 ) {
@@ -993,7 +1444,11 @@ private fun InitialAvatar(
     Surface(shape = CircleShape, color = color, modifier = Modifier.size(size)) {
         Box(contentAlignment = Alignment.Center) {
             Text(
-                text = text.trim().take(1).ifBlank { "P" }.uppercase(),
+                text = if (emoji.isNullOrBlank()) {
+                    text.trim().take(1).ifBlank { "P" }.uppercase()
+                } else {
+                    emoji
+                },
                 color = textColor,
                 fontWeight = FontWeight.Bold,
                 style = if (large) MaterialTheme.typography.headlineMedium else MaterialTheme.typography.bodyLarge
@@ -1013,17 +1468,57 @@ private fun ProfileDialog(
         onDismissRequest = onDismiss,
         title = { Text("Perfil") },
         text = {
-            OutlinedTextField(
-                value = name,
-                onValueChange = { name = it },
-                singleLine = true,
-                label = { Text("Nome do perfil") }
-            )
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    text = "Ajuste o nome exibido nas telas principais.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    singleLine = true,
+                    label = { Text("Nome do perfil") },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp)
+                )
+            }
         },
         confirmButton = {
             TextButton(onClick = {
                 val clean = name.trim()
                 if (clean.isNotBlank()) onSave(clean)
+            }) { Text("Salvar") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancelar") }
+        }
+    )
+}
+
+@Composable
+private fun EmojiDialog(
+    currentEmoji: String,
+    onDismiss: () -> Unit,
+    onSave: (String) -> Unit
+) {
+    var emoji by rememberSaveable { mutableStateOf(currentEmoji.ifBlank { "🙂" }) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Emoji do perfil") },
+        text = {
+            OutlinedTextField(
+                value = emoji,
+                onValueChange = { emoji = it.take(16) },
+                singleLine = true,
+                label = { Text("Emoji livre") },
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp)
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                onSave(emoji.trim().ifBlank { "🙂" })
             }) { Text("Salvar") }
         },
         dismissButton = {

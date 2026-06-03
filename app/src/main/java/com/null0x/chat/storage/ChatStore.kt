@@ -1,7 +1,6 @@
 package com.null0x.chat.storage
 
 import android.content.Context
-import android.util.Base64
 import com.null0x.chat.model.DeliveryState
 import com.null0x.chat.model.Message
 import java.io.File
@@ -21,7 +20,7 @@ class ChatStore(context: Context) {
 
         return file.readLines()
             .mapNotNull { line ->
-                val parts = line.split('|')
+                val parts = line.split('|', limit = 5)
                 if (parts.size < 2) return@mapNotNull null
                 val direction = parts[0]
                 val encodedText = parts[1]
@@ -52,6 +51,24 @@ class ChatStore(context: Context) {
     }
 
     @Synchronized
+    fun rememberPeer(peer: String) {
+        addPeerToIndex(peer)
+    }
+
+    @Synchronized
+    fun upsert(peer: String, message: Message) {
+        val current = load(peer).toMutableList()
+        val index = current.indexOfFirst { it.id == message.id && it.isMine == message.isMine }
+        if (index >= 0) {
+            current[index] = message
+        } else {
+            current.add(message)
+        }
+        writeAll(peer, current)
+        addPeerToIndex(peer)
+    }
+
+    @Synchronized
     fun updateDeliveryStatus(peer: String, messageId: String, status: DeliveryState) {
         if (messageId.isBlank()) return
         val current = load(peer)
@@ -66,14 +83,44 @@ class ChatStore(context: Context) {
             }
         }
         if (!changed) return
-        val file = chatFile(peer)
-        file.writeText("")
-        updated.forEach { append(peer, it) }
+        writeAll(peer, updated)
+    }
+
+    @Synchronized
+    fun hasMessage(peer: String, messageId: String, isMine: Boolean): Boolean {
+        if (messageId.isBlank()) return false
+        return load(peer).any { it.id == messageId && it.isMine == isMine }
+    }
+
+    @Synchronized
+    fun pendingOutgoing(limit: Int = 250): List<Pair<String, Message>> {
+        val out = mutableListOf<Pair<String, Message>>()
+        for (peer in knownPeers()) {
+            val pending = load(peer)
+                .filter { it.isMine && it.delivery != DeliveryState.Delivered }
+            pending.forEach { out.add(peer to it) }
+            if (out.size >= limit) break
+        }
+        return out.take(limit)
     }
 
     @Synchronized
     fun clear(peer: String) {
         chatFile(peer).delete()
+    }
+
+    @Synchronized
+    fun clearViewedMessages(peer: String) {
+        val current = load(peer)
+        if (current.isEmpty()) return
+        val kept = current.filter { message ->
+            message.isMine && message.delivery != DeliveryState.Sent && message.delivery != DeliveryState.Delivered
+        }
+        if (kept.isEmpty()) {
+            clear(peer)
+        } else {
+            writeAll(peer, kept)
+        }
     }
 
     @Synchronized
@@ -86,7 +133,31 @@ class ChatStore(context: Context) {
         if (peers.isEmpty()) {
             peersIndexFile.delete()
         } else {
-            peersIndexFile.writeText(peers.joinToString(separator = "\n"))
+            peersIndexFile.writeText(peers.joinToString(separator = "\n") { encodePeerIndexLine(it) })
+        }
+    }
+
+    @Synchronized
+    fun migratePeer(fromPeer: String, toPeer: String) {
+        val from = fromPeer.trim()
+        val to = toPeer.trim()
+        if (from.isBlank() || to.isBlank() || from == to) return
+
+        val merged = (load(to) + load(from))
+            .distinctBy { "${it.isMine}:${it.id}" }
+            .sortedBy { it.timestamp }
+        if (merged.isNotEmpty()) {
+            writeAll(to, merged)
+        }
+        chatFile(from).delete()
+
+        val peers = knownPeers()
+            .map { if (it == from) to else it }
+            .distinct()
+        if (peers.isEmpty()) {
+            peersIndexFile.delete()
+        } else {
+            peersIndexFile.writeText(peers.joinToString(separator = "\n") { encodePeerIndexLine(it) })
         }
     }
 
@@ -94,7 +165,7 @@ class ChatStore(context: Context) {
     fun knownPeers(): List<String> {
         if (!peersIndexFile.exists()) return emptyList()
         return peersIndexFile.readLines()
-            .map { it.trim() }
+            .map { line -> decodePeerIndexLine(line.trim()) }
             .filter { it.isNotBlank() }
             .distinct()
     }
@@ -109,13 +180,30 @@ class ChatStore(context: Context) {
     }
 
     private fun encodeText(text: String): String {
-        return Base64.encodeToString(text.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+        return LocalStoreCipher.encrypt(text)
     }
 
     private fun decodeText(text: String): String? {
-        return runCatching {
-            String(Base64.decode(text, Base64.DEFAULT), Charsets.UTF_8)
-        }.getOrNull()
+        return LocalStoreCipher.decrypt(text)
+    }
+
+    private fun encodePeerIndexLine(peer: String): String {
+        return LocalStoreCipher.encrypt(peer)
+    }
+
+    private fun decodePeerIndexLine(line: String): String {
+        if (line.isBlank()) return ""
+        return LocalStoreCipher.decrypt(line).orEmpty()
+    }
+
+    @Synchronized
+    private fun writeAll(peer: String, messages: List<Message>) {
+        val file = chatFile(peer)
+        val lines = messages.joinToString(separator = "\n") { message ->
+            val direction = if (message.isMine) "me" else "peer"
+            "$direction|${encodeText(message.text)}|${message.timestamp}|${message.id}|${message.delivery.name}"
+        }
+        file.writeText(if (lines.isBlank()) "" else "$lines\n")
     }
 
     @Synchronized
@@ -125,7 +213,7 @@ class ChatStore(context: Context) {
         val peers = knownPeers().toMutableList()
         if (!peers.contains(clean)) {
             peers.add(0, clean)
-            peersIndexFile.writeText(peers.joinToString(separator = "\n"))
+            peersIndexFile.writeText(peers.joinToString(separator = "\n") { encodePeerIndexLine(it) })
         }
     }
 }

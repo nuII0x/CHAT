@@ -50,6 +50,8 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended")
     implementation(libs.androidx.compose.material3)
     implementation("info.guardianproject:tor-android:0.4.8.18")
+    implementation("org.pgpainless:pgpainless-core:1.7.6")
+    implementation("com.google.zxing:core:3.5.3")
 
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
