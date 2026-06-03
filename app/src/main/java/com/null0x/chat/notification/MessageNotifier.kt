@@ -96,7 +96,7 @@ class MessageNotifier(private val context: Context) {
 
         val channel = NotificationChannel(
             channelId,
-            "Mensagens PrimoChat",
+            "Mensagens DoveChat",
             NotificationManager.IMPORTANCE_DEFAULT
         ).apply {
             description = "Notificacoes de novas mensagens"

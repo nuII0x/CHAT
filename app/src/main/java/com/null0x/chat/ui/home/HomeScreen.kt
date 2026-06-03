@@ -94,6 +94,12 @@ fun HomeScreen(vm: ChatViewModel, onOpenChat: (String) -> Unit) {
             it.lastMessage.contains(clean, ignoreCase = true)
     }
 
+    LaunchedEffect(torStatus) {
+        if (torStatus is TorManager.Status.Idle || torStatus is TorManager.Status.Error) {
+            vm.startTor()
+        }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -165,8 +171,8 @@ fun HomeScreen(vm: ChatViewModel, onOpenChat: (String) -> Unit) {
                     username = vm.myUsername,
                     publicRoute = publicRoute,
                     torStatus = torStatus,
-                    keepViewedMessages = vm.keepViewedMessages(),
-                    onKeepViewedMessagesChange = vm::setKeepViewedMessages,
+                    keepViewedMessages = vm.isKeepViewedMessagesEnabled(),
+                    onKeepViewedMessagesChange = vm::updateKeepViewedMessagesPreference,
                     onEditProfile = { showProfileDialog = true },
                     onTorClick = {
                         when (torStatus) {
@@ -418,7 +424,7 @@ private fun ProfileTab(
                 Spacer(Modifier.width(14.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = profileName.ifBlank { "PrimoChat" },
+                        text = profileName.ifBlank { "DoveChat" },
                         style = MaterialTheme.typography.headlineSmall,
                         fontWeight = FontWeight.Bold,
                         maxLines = 1,
@@ -452,7 +458,7 @@ private fun ProfileTab(
                 onClick = {
                     if (torStatus is TorManager.Status.Ready && publicRoute.isNotBlank()) {
                         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                        clipboard.setPrimaryClip(ClipData.newPlainText("PrimoChat Onion", publicRoute))
+                        clipboard.setPrimaryClip(ClipData.newPlainText("DoveChat Onion", publicRoute))
                         Toast.makeText(context, "Endereco copiado", Toast.LENGTH_SHORT).show()
                     }
                 }
@@ -636,7 +642,7 @@ private fun ConversationRow(
             Spacer(Modifier.width(11.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = if (item.displayName == item.username) item.username else item.displayName,
+                    text = item.displayName,
                     style = MaterialTheme.typography.bodyLarge,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 1,

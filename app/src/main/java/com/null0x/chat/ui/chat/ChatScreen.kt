@@ -54,7 +54,7 @@ import com.null0x.chat.viewmodel.ChatViewModel
 @Composable
 fun ChatScreen(vm: ChatViewModel, onBack: () -> Unit) {
     var input by rememberSaveable { mutableStateOf("") }
-    val peerName = vm.displayNameFor(vm.targetUsername)
+    val peerName = vm.chatTitleFor(vm.targetUsername)
     BackHandler(onBack = onBack)
 
     Column(

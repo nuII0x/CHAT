@@ -65,7 +65,7 @@ object ChatNodeManager {
         private set
 
     @Volatile
-    var profileName: String = "PrimoChat"
+    var profileName: String = "DoveChat"
         private set
 
     fun start(context: Context) {
@@ -80,7 +80,7 @@ object ChatNodeManager {
             profileName = appContext.getSharedPreferences("profile", Context.MODE_PRIVATE)
                 .getString("display_name", null)
                 ?.takeIf { it.isNotBlank() }
-                ?: "PrimoChat"
+                ?: "DoveChat"
             node.setDisplayName(profileName)
             scope.launch {
                 TorManager.status.collectLatest { status ->
@@ -157,7 +157,7 @@ object ChatNodeManager {
     }
 
     fun setProfileName(context: Context, name: String) {
-        val cleanName = name.trim().ifBlank { "PrimoChat" }
+        val cleanName = name.trim().ifBlank { "DoveChat" }
         profileName = cleanName
         context.applicationContext.getSharedPreferences("profile", Context.MODE_PRIVATE)
             .edit()

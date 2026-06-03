@@ -35,7 +35,7 @@ class P2PNode(
     @Volatile
     private var publicRoute: String = ""
     @Volatile
-    private var displayName: String = "PrimoChat"
+    private var displayName: String = "DoveChat"
     private var socksHost: String = "127.0.0.1"
     @Volatile
     private var socksPort: Int = 9050
@@ -43,7 +43,7 @@ class P2PNode(
     private var socksEnabled: Boolean = false
 
     fun setDisplayName(name: String) {
-        displayName = name.trim().ifBlank { "PrimoChat" }
+        displayName = name.trim().ifBlank { "DoveChat" }
     }
 
     fun setTransportViaSocks(enabled: Boolean, host: String = "127.0.0.1", port: Int = 9050) {

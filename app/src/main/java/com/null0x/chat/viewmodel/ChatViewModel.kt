@@ -121,7 +121,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     var inChat by mutableStateOf(false)
         private set
 
-    var profileName by mutableStateOf("PrimoChat")
+    var profileName by mutableStateOf("DoveChat")
         private set
 
     var needsProfileSetup by mutableStateOf(false)
@@ -171,12 +171,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun setKeepViewedMessages(enabled: Boolean) {
+    fun updateKeepViewedMessagesPreference(enabled: Boolean) {
         keepViewedMessages = enabled
         profilePrefs.edit().putBoolean("keep_viewed_messages", enabled).apply()
     }
 
-    fun keepViewedMessages(): Boolean = keepViewedMessages
+    fun isKeepViewedMessagesEnabled(): Boolean = keepViewedMessages
 
     /**
      * Atualiza o nome de perfil em tempo de execução.
@@ -219,6 +219,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     fun displayNameFor(username: String): String {
         return nodeManager.displayNameFor(username)
+    }
+
+    fun chatTitleFor(username: String): String {
+        val display = displayNameFor(username)
+        if (display != username) return display
+        return compactOnionLabel(username)
     }
 
     fun currentPublicRoute(): String {
@@ -305,7 +311,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             val last = items.lastOrNull()
             ConversationPreview(
                 username = username,
-                displayName = displayNameFor(username),
+                displayName = chatTitleFor(username),
                 lastMessage = last?.text?.take(80) ?: "Sem mensagens",
                 lastTimestamp = last?.timestamp ?: 0L,
                 unreadCount = unreadByPeer[username] ?: 0,
@@ -419,6 +425,16 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val current = messages[index]
         if (current.delivery == state) return
         messages[index] = current.copy(delivery = state)
+    }
+
+    private fun compactOnionLabel(value: String): String {
+        if (!value.startsWith("onion:", ignoreCase = true)) return value
+        val raw = value.removePrefix("onion:")
+        val host = raw.substringBeforeLast(':', missingDelimiterValue = raw)
+            .removeSuffix(".onion")
+            .trim()
+        if (host.isBlank()) return "onion"
+        return if (host.length <= 10) host else host.take(10) + "..."
     }
 
     private fun handleCommand(commandLine: String, target: String) {
