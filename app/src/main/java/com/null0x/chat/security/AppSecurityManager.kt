@@ -62,11 +62,12 @@ object AppSecurityManager {
         }
         val prefs = contextRef.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val hasPgpSetup = !prefs.getString(PGP_SECRET_RING_KEY, null).isNullOrBlank()
-        LocalStoreCipher.clearKeys()
+        LocalStoreCipher.clearAllKeys()
         if (!hasPgpSetup) {
             _state.value = GateState.SetupRequired
             return
         }
+        installPublicEncryptionKey(prefs)
         if (prefs.getBoolean(MANUAL_LOCK_KEY, false)) {
             _state.value = GateState.Locked
             return
@@ -154,7 +155,9 @@ object AppSecurityManager {
     }
 
     fun lock() {
-        LocalStoreCipher.clearKeys()
+        LocalStoreCipher.clearDecryptionKeys()
+        appContext?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            ?.let { prefs -> installPublicEncryptionKey(prefs) }
         appContext?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             ?.edit()
             ?.putBoolean(MANUAL_LOCK_KEY, true)
@@ -217,6 +220,14 @@ object AppSecurityManager {
             .digest(deviceEntropy(context))
             .joinToString("") { "%02x".format(it.toInt() and 0xFF) }
         return "RotaSegura <$fingerprint>"
+    }
+
+    private fun installPublicEncryptionKey(prefs: android.content.SharedPreferences) {
+        val secretArmor = prefs.getString(PGP_SECRET_RING_KEY, null) ?: return
+        val publicKeyRing = runCatching {
+            PGPainless.extractCertificate(readSecretKeyRing(secretArmor))
+        }.getOrNull() ?: return
+        LocalStoreCipher.installEncryptionKey(publicKeyRing)
     }
 
     private fun encryptPgpText(publicKeyRing: PGPPublicKeyRing, plain: String): String {

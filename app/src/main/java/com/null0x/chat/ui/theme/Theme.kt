@@ -5,6 +5,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.graphics.Color
 
 private val DarkColorScheme = darkColorScheme(
     primary = AppOnSurfaceDark,
@@ -68,12 +69,58 @@ private val LightColorScheme = lightColorScheme(
     onErrorContainer = AppOnSurfaceLight
 )
 
+private val PinkColorScheme = lightColorScheme(
+    primary = AppPinkPrimary,
+    onPrimary = Color.White,
+    primaryContainer = AppPinkPrimaryContainer,
+    onPrimaryContainer = AppPinkOnSurface,
+    secondary = AppPinkSecondary,
+    onSecondary = Color.White,
+    secondaryContainer = AppPinkSecondaryContainer,
+    onSecondaryContainer = AppPinkOnSurface,
+    tertiary = AppPinkTertiary,
+    onTertiary = Color.White,
+    tertiaryContainer = AppPinkTertiaryContainer,
+    onTertiaryContainer = AppPinkOnSurface,
+    background = AppPinkBackground,
+    onBackground = AppPinkOnSurface,
+    surface = AppPinkSurface,
+    onSurface = AppPinkOnSurface,
+    surfaceVariant = AppPinkSurfaceVariant,
+    onSurfaceVariant = AppPinkOnSurfaceVariant,
+    outline = AppPinkOutline,
+    outlineVariant = AppPinkSurfaceVariant,
+    inverseSurface = AppPinkOnSurface,
+    inverseOnSurface = AppPinkSurface,
+    inversePrimary = AppPinkPrimaryContainer,
+    surfaceTint = AppPinkPrimary,
+    error = Color(0xFFB3261E),
+    onError = Color.White,
+    errorContainer = Color(0xFFF9DEDC),
+    onErrorContainer = Color(0xFF410E0B)
+)
+
+fun themeBackgroundColor(themeMode: ThemeMode, systemDarkTheme: Boolean): Color {
+    return when (themeMode) {
+        ThemeMode.SYSTEM -> if (systemDarkTheme) AppBackgroundDark else AppBackgroundLight
+        ThemeMode.LIGHT -> AppBackgroundLight
+        ThemeMode.DARK -> AppBackgroundDark
+        ThemeMode.PINK -> AppPinkBackground
+    }
+}
+
 @Composable
 fun ChatTheme(
-    darkTheme: Boolean = isSystemInDarkTheme(),
+    themeMode: ThemeMode = ThemeMode.SYSTEM,
     content: @Composable () -> Unit
 ) {
-    val colorScheme = if (darkTheme) DarkColorScheme else LightColorScheme
+    val systemDarkTheme = isSystemInDarkTheme()
+    val colorScheme = when (themeMode) {
+        ThemeMode.SYSTEM -> if (systemDarkTheme) DarkColorScheme else LightColorScheme
+        ThemeMode.LIGHT -> LightColorScheme
+        ThemeMode.DARK -> DarkColorScheme
+        ThemeMode.PINK -> PinkColorScheme
+    }
 
     MaterialTheme(
         colorScheme = colorScheme,

@@ -5,7 +5,6 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.ContextWrapper
-import android.content.Intent
 import android.view.WindowManager
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -58,7 +57,6 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -88,6 +86,11 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
@@ -99,24 +102,24 @@ import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.map
 import com.null0x.chat.model.DeliveryState
 import com.null0x.chat.model.Message
-import com.null0x.chat.network.TorManager
+import com.null0x.chat.ui.maskedRouteLabel
+import com.null0x.chat.ui.profile.RouteProfileScreen
 import com.null0x.chat.viewmodel.ChatViewModel
 import android.widget.Toast
 import androidx.compose.material3.AlertDialog
 
 private val ChatHeaderHeight = 86.dp
+private val TitleBarColor = Color.Black
 
 @Composable
 fun ChatScreen(vm: ChatViewModel, onBack: () -> Unit) {
     var input by rememberSaveable { mutableStateOf("") }
     var profileRoute by rememberSaveable { mutableStateOf("") }
     var showProfile by rememberSaveable { mutableStateOf(false) }
-    var showExportConsent by rememberSaveable { mutableStateOf(false) }
     var showChatSettings by rememberSaveable { mutableStateOf(false) }
     var selectedMessage by remember { mutableStateOf<Message?>(null) }
     var selectableMessageIds by remember { mutableStateOf(emptySet<String>()) }
     val context = LocalContext.current
-    val networkStatus by TorManager.status.collectAsState()
     val keyboardController = LocalSoftwareKeyboardController.current
     val composerFocusRequester = remember { FocusRequester() }
     val peers = remember(vm.startedConversations.toList(), vm.targetUsername) {
@@ -133,9 +136,13 @@ fun ChatScreen(vm: ChatViewModel, onBack: () -> Unit) {
         pageCount = { if (peers.isEmpty()) 1 else peers.size }
     )
 
-    BackHandler(onBack = onBack)
+    BackHandler(enabled = showProfile) {
+        showProfile = false
+    }
+    BackHandler(enabled = !showProfile) {
+        onBack()
+    }
     SecureChatWindow(context, allowScreenshots = vm.isCurrentChatScreenshotsEnabled())
-    ChatKeyboardInsets(context)
 
     LaunchedEffect(peers, vm.targetUsername) {
         val target = vm.targetUsername.trim()
@@ -158,7 +165,7 @@ fun ChatScreen(vm: ChatViewModel, onBack: () -> Unit) {
     }
 
     val headerUser = peers.getOrNull(pagerState.currentPage)?.trim().orEmpty().ifBlank { vm.targetUsername }
-    val chatNetworkLabel = chatNetworkLabel(networkStatus)
+    val chatRouteLabel = chatRoutePresenceLabel(vm.isPartnerOnline(headerUser))
     val unreadHintCount = vm.unreadEntryCountFor(headerUser)
     val currentChatLoaded = vm.isCurrentChatLoaded()
 
@@ -248,9 +255,9 @@ fun ChatScreen(vm: ChatViewModel, onBack: () -> Unit) {
                     Column {
                         ChatHeader(
                             title = vm.chatTitleFor(headerUser),
-                            subtitle = chatNetworkLabel,
+                            subtitle = chatRouteLabel,
                             sourceTitle = "Chats",
-                            sourceSubtitle = chatNetworkLabel,
+                            sourceSubtitle = chatRouteLabel,
                             sourceEmoji = vm.profileEmojiSymbol,
                             targetEmoji = vm.emojiForRoute(headerUser),
                             openingProgress = openingProgress,
@@ -265,8 +272,7 @@ fun ChatScreen(vm: ChatViewModel, onBack: () -> Unit) {
                                 clipboard.setPrimaryClip(ClipData.newPlainText("Rota contato", maskedRouteLabel(headerUser)))
                                 Toast.makeText(context, "Token da rota copiado", Toast.LENGTH_SHORT).show()
                             },
-                            onOpenSettings = { showChatSettings = true },
-                            onExportConversation = { showExportConsent = true }
+                            onOpenSettings = { showChatSettings = true }
                         )
                         if (unreadHintCount > 0) {
                             UnreadHintBar(
@@ -293,6 +299,7 @@ fun ChatScreen(vm: ChatViewModel, onBack: () -> Unit) {
                             .padding(bottom = innerPadding.calculateBottomPadding())
                     ) {
                         MessageList(
+                            conversationKey = user,
                             messages = vm.messagesFor(user),
                             privacyNotices = vm.privacyNotices(),
                             loaded = currentChatLoaded && user == vm.targetUsername,
@@ -340,30 +347,22 @@ fun ChatScreen(vm: ChatViewModel, onBack: () -> Unit) {
         }
     }
 
-    if (showProfile) {
-        val profile = vm.publicProfileFor(profileRoute.ifBlank { vm.targetUsername })
-        LaunchedEffect(profile.route) {
-            if (profile.route.isNotBlank()) {
-                vm.requestPublicProfile(profile.route)
+    AnimatedVisibility(
+        visible = showProfile,
+        enter = slideInHorizontally(initialOffsetX = { fullWidth -> fullWidth }) + fadeIn(),
+        exit = slideOutHorizontally(targetOffsetX = { fullWidth -> fullWidth }) + fadeOut()
+    ) {
+        val profileTarget = profileRoute.ifBlank { vm.targetUsername }
+        val profile = vm.publicProfileFor(profileTarget)
+        LaunchedEffect(profileTarget) {
+            if (profileTarget.isNotBlank()) {
+                vm.requestPublicProfile(profileTarget)
             }
         }
-        ContactPublicProfileDialog(
+        RouteProfileScreen(
             profile = profile,
-            onSaveLocalName = { route, name -> vm.setLocalNameForRoute(route, name) },
-            onDismiss = { showProfile = false }
-        )
-    }
-
-    if (showExportConsent) {
-        ExportConsentDialog(
-            onRequestPermission = {
-                val target = headerUser
-                if (target.isNotBlank()) {
-                    vm.sendTo(target, "Pedido de permissao para exportar historico da conversa.")
-                }
-                showExportConsent = false
-            },
-            onDismiss = { showExportConsent = false }
+            onBack = { showProfile = false },
+            onSaveLocalName = { route, name -> vm.setLocalNameForRoute(route, name) }
         )
     }
 
@@ -408,20 +407,6 @@ private fun SecureChatWindow(context: Context, allowScreenshots: Boolean) {
     }
 }
 
-@Composable
-private fun ChatKeyboardInsets(context: Context) {
-    DisposableEffect(context) {
-        val window = context.findActivity()?.window
-        val previousSoftInputMode = window?.attributes?.softInputMode
-        window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
-        onDispose {
-            if (window != null && previousSoftInputMode != null) {
-                window.setSoftInputMode(previousSoftInputMode)
-            }
-        }
-    }
-}
-
 private fun Context.findActivity(): Activity? {
     var current = this
     while (current is ContextWrapper) {
@@ -445,14 +430,13 @@ private fun ChatHeader(
     onClear: () -> Unit,
     onOpenProfile: () -> Unit,
     onCopyRoute: () -> Unit,
-    onOpenSettings: () -> Unit,
-    onExportConversation: () -> Unit
+    onOpenSettings: () -> Unit
 ) {
     var showMenu by rememberSaveable { mutableStateOf(false) }
     val sourceAlpha = (1f - openingProgress).coerceIn(0f, 1f)
     val targetAlpha = openingProgress.coerceIn(0f, 1f)
     Surface(
-        color = Color.Black,
+        color = TitleBarColor,
         tonalElevation = 3.dp
     ) {
         Row(
@@ -469,12 +453,12 @@ private fun ChatHeader(
                 Icon(
                     imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                     contentDescription = "Voltar",
-                    tint = MaterialTheme.colorScheme.onPrimary
+                    tint = Color.White
                 )
             }
             Surface(
                 shape = CircleShape,
-                color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.18f),
+                color = Color.White.copy(alpha = 0.18f),
                 modifier = Modifier
                     .size(38.dp)
                     .combinedClickable(
@@ -486,13 +470,13 @@ private fun ChatHeader(
                     Text(
                         modifier = Modifier.alpha(sourceAlpha),
                         text = sourceEmoji.ifBlank { sourceTitle.trim().take(1).ifBlank { "P" }.uppercase() },
-                        color = MaterialTheme.colorScheme.onPrimary,
+                        color = Color.White,
                         fontWeight = FontWeight.Bold
                     )
                     Text(
                         modifier = Modifier.alpha(targetAlpha),
                         text = targetEmoji.ifBlank { title.trim().take(1).ifBlank { "P" }.uppercase() },
-                        color = MaterialTheme.colorScheme.onPrimary,
+                        color = Color.White,
                         fontWeight = FontWeight.Bold
                     )
                 }
@@ -512,7 +496,7 @@ private fun ChatHeader(
                     Text(
                         modifier = Modifier.alpha(sourceAlpha),
                         text = sourceTitle,
-                        color = MaterialTheme.colorScheme.onPrimary,
+                        color = Color.White,
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.SemiBold,
                         maxLines = 1,
@@ -521,7 +505,7 @@ private fun ChatHeader(
                     Text(
                         modifier = Modifier.alpha(targetAlpha),
                         text = title,
-                        color = MaterialTheme.colorScheme.onPrimary,
+                        color = Color.White,
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.SemiBold,
                         maxLines = 1,
@@ -532,7 +516,7 @@ private fun ChatHeader(
                     Text(
                         modifier = Modifier.alpha(sourceAlpha),
                         text = sourceSubtitle,
-                        color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.78f),
+                        color = Color.White.copy(alpha = 0.78f),
                         style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp),
                         maxLines = 2,
                         softWrap = true,
@@ -541,7 +525,7 @@ private fun ChatHeader(
                     Text(
                         modifier = Modifier.alpha(targetAlpha),
                         text = subtitle,
-                        color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.78f),
+                        color = Color.White.copy(alpha = 0.78f),
                         style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp),
                         maxLines = 2,
                         softWrap = true,
@@ -557,20 +541,13 @@ private fun ChatHeader(
                     Icon(
                         imageVector = Icons.Filled.MoreVert,
                         contentDescription = "Menu",
-                        tint = MaterialTheme.colorScheme.onPrimary
+                        tint = Color.White
                     )
                 }
                 DropdownMenu(
                     expanded = showMenu,
                     onDismissRequest = { showMenu = false }
                 ) {
-                    DropdownMenuItem(
-                        text = { Text("Exportar conversa") },
-                        onClick = {
-                            showMenu = false
-                            onExportConversation()
-                        }
-                    )
                     DropdownMenuItem(
                         text = { Text("Limpar conversa") },
                         onClick = {
@@ -595,32 +572,6 @@ private fun ChatHeader(
             }
         }
     }
-}
-
-@Composable
-private fun ExportConsentDialog(
-    onRequestPermission: () -> Unit,
-    onDismiss: () -> Unit
-) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Exportar conversa") },
-        text = {
-            Text(
-                text = "Exportar o historico envolve mensagens dos dois lados. Sem consentimento da outra pessoa, isso nao deve ser feito."
-            )
-        },
-        confirmButton = {
-            TextButton(onClick = onRequestPermission) {
-                Text("pedir permissão para exportar histórico da conversa")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Cancelar")
-            }
-        }
-    )
 }
 
 @Composable
@@ -703,93 +654,8 @@ private fun ChatSettingsRow(
 }
 
 @Composable
-private fun ContactPublicProfileDialog(
-    profile: ChatViewModel.PublicProfile,
-    onSaveLocalName: (String, String) -> Unit,
-    onDismiss: () -> Unit
-) {
-    var localName by rememberSaveable(profile.route) { mutableStateOf(profile.localName) }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Perfil da rota") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                if (profile.emoji.isNotBlank()) {
-                    Text(
-                        text = profile.emoji,
-                        style = MaterialTheme.typography.headlineMedium
-                    )
-                }
-                Text(
-                    text = "Nomeie a rota para reconhecer mais rápido depois.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Text(
-                    text = "Nome local: ${profile.displayName}",
-                    maxLines = 2,
-                    softWrap = true,
-                    overflow = TextOverflow.Clip
-                )
-                Text(
-                    text = maskedRouteLabel(profile.route),
-                    style = MaterialTheme.typography.bodySmall,
-                    maxLines = 2,
-                    softWrap = true,
-                    overflow = TextOverflow.Clip
-                )
-                Text(
-                    text = "Origem: ${profile.source}",
-                    style = MaterialTheme.typography.bodySmall,
-                    maxLines = 2,
-                    softWrap = true,
-                    overflow = TextOverflow.Clip
-                )
-                if (profile.bio.isNotBlank()) {
-                    Text(
-                        text = "Bio",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Text(
-                        text = profile.bio,
-                        maxLines = 8,
-                        softWrap = true,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-                Spacer(Modifier.size(4.dp))
-                OutlinedTextField(
-                    value = localName,
-                    onValueChange = { localName = it },
-                    singleLine = true,
-                    label = { Text("Nomear rota") },
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(14.dp)
-                )
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = {
-                onSaveLocalName(profile.route, localName)
-                onDismiss()
-            }) { Text("Salvar") }
-        },
-        dismissButton = {
-            Row {
-                TextButton(onClick = {
-                    localName = ""
-                    onSaveLocalName(profile.route, "")
-                    onDismiss()
-                }) { Text("Remover nome") }
-                TextButton(onClick = onDismiss) { Text("Cancelar") }
-            }
-        }
-    )
-}
-
-@Composable
 private fun MessageList(
+    conversationKey: String,
     messages: List<Message>,
     privacyNotices: List<ChatViewModel.PrivacyNotice>,
     loaded: Boolean,
@@ -830,10 +696,17 @@ private fun MessageList(
     }
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
-    var previousTimelineSize by remember { mutableStateOf(0) }
-    var previousMessageSize by remember { mutableStateOf(0) }
-    var hiddenNewMessages by remember { mutableStateOf(0) }
-    LaunchedEffect(loaded, timelineItems.size, messages.size, unreadHintCount) {
+    var previousTimelineSize by remember(conversationKey) { mutableStateOf(0) }
+    var previousMessageSize by remember(conversationKey) { mutableStateOf(0) }
+    var hiddenNewMessages by remember(conversationKey) { mutableStateOf(0) }
+    LaunchedEffect(conversationKey, loaded) {
+        if (!loaded) {
+            previousTimelineSize = 0
+            previousMessageSize = 0
+            hiddenNewMessages = 0
+        }
+    }
+    LaunchedEffect(conversationKey, loaded, timelineItems.size, messages.size, unreadHintCount) {
         if (!loaded || timelineItems.isEmpty()) return@LaunchedEffect
         val lastVisibleIndex = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
         val wasAtBottom = previousTimelineSize == 0 ||
@@ -1147,26 +1020,6 @@ private fun formatTimestamp(timestamp: Long): String {
         .format(java.util.Date(timestamp))
 }
 
-private fun formatMessageDirection(message: Message): String {
-    return if (message.isMine) "Enviada" else "Recebida"
-}
-
-private fun exportChatHistory(context: Context, title: String, messages: List<Message>) {
-    if (messages.isEmpty()) {
-        Toast.makeText(context, "Sem histórico para exportar", Toast.LENGTH_SHORT).show()
-        return
-    }
-
-    val body = messages.joinToString(separator = "\n\n") { message ->
-        "${formatMessageDirection(message)} • ${formatTimestamp(message.timestamp)}\n${message.text}"
-    }
-    val intent = Intent(Intent.ACTION_SEND)
-        .setType("text/plain")
-        .putExtra(Intent.EXTRA_SUBJECT, "Histórico - $title")
-        .putExtra(Intent.EXTRA_TEXT, body)
-    context.startActivity(Intent.createChooser(intent, "Exportar histórico"))
-}
-
 @Composable
 private fun MessageComposer(
     input: String,
@@ -1215,25 +1068,7 @@ private fun MessageComposer(
 
 @Composable
 private fun PartnerMarkerBadge(marker: String, typing: Boolean, modifier: Modifier = Modifier) {
-    Box(modifier = modifier, contentAlignment = Alignment.BottomCenter) {
-        if (typing) {
-            Surface(
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .offset(y = (-20).dp),
-                shape = RoundedCornerShape(999.dp),
-                color = MaterialTheme.colorScheme.primary,
-                tonalElevation = 3.dp
-            ) {
-                Text(
-                    text = "...",
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 2.dp),
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onPrimary
-                )
-            }
-        }
+    Box(modifier = modifier, contentAlignment = Alignment.Center) {
         Surface(
             shape = CircleShape,
             color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
@@ -1246,6 +1081,22 @@ private fun PartnerMarkerBadge(marker: String, typing: Boolean, modifier: Modifi
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.onSurface
             )
+        }
+        if (typing) {
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .offset(x = 11.dp, y = (-8).dp),
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
+                tonalElevation = 3.dp
+            ) {
+                Text(
+                    text = "💭",
+                    modifier = Modifier.padding(2.dp),
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
         }
     }
 }
@@ -1262,21 +1113,6 @@ private fun compactOnionRoute(value: String): String {
     return "onion:${host.take(12)}...${host.takeLast(10)}:$port"
 }
 
-private fun chatNetworkLabel(status: TorManager.Status): String {
-    return if (status is TorManager.Status.Ready) "conectado" else "desconectado"
-}
-
-private fun maskedRouteLabel(value: String): String {
-    val clean = value.trim()
-    if (!clean.startsWith("onion:", ignoreCase = true)) return clean
-    val route = clean.substringAfter(':')
-    val separator = route.lastIndexOf(':')
-    if (separator <= 0 || separator == route.lastIndex) return clean
-    val host = route.substring(0, separator)
-        .removeSuffix(".onion")
-        .lowercase()
-    val port = route.substring(separator + 1)
-        .takeIf { candidate -> candidate.all { it.isDigit() } }
-        ?: "5000"
-    return "$host#$port"
+private fun chatRoutePresenceLabel(partnerConnected: Boolean): String {
+    return if (partnerConnected) "conectado" else "desconectado"
 }

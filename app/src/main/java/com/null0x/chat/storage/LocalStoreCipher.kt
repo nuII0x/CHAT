@@ -32,10 +32,18 @@ object LocalStoreCipher {
         protector = ringProtector
     }
 
-    fun clearKeys() {
-        publicKeyRing = null
+    fun installEncryptionKey(publicRing: PGPPublicKeyRing) {
+        publicKeyRing = publicRing
+    }
+
+    fun clearDecryptionKeys() {
         secretKeyRing = null
         protector = null
+    }
+
+    fun clearAllKeys() {
+        publicKeyRing = null
+        clearDecryptionKeys()
     }
 
     fun encrypt(text: String): String {
@@ -61,6 +69,10 @@ object LocalStoreCipher {
 
     fun isEncrypted(text: String): Boolean {
         return text.startsWith(PREFIX)
+    }
+
+    fun canDecrypt(): Boolean {
+        return secretKeyRing != null && protector != null
     }
 
     private fun decryptPgp(payload: String): String? {

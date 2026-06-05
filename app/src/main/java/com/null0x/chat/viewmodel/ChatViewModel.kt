@@ -9,6 +9,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.null0x.chat.AppVisibility
 import com.null0x.chat.model.DeliveryState
 import com.null0x.chat.model.Message
 import com.null0x.chat.network.ChatNodeManager
@@ -24,6 +25,7 @@ import java.security.MessageDigest
 class ChatViewModel(application: Application) : AndroidViewModel(application) {
     companion object {
         private const val ROUTE_TOKENS_PREFS = "route_tokens"
+        private const val LAST_PUBLIC_ROUTE_KEY = "last_public_route"
     }
 
     data class ConversationPreview(
@@ -77,7 +79,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val nodeManager = ChatNodeManager
     private val chatStore = ChatStore(application.applicationContext)
     private val profilePrefs = application.applicationContext.getSharedPreferences("profile", Context.MODE_PRIVATE)
-    private val routesPrefs = application.applicationContext.getSharedPreferences("routes", Context.MODE_PRIVATE)
     private val routeNamesPrefs = application.applicationContext.getSharedPreferences("route_names", Context.MODE_PRIVATE)
     private val conversationPoliciesPrefs = application.applicationContext.getSharedPreferences("conversation_policies", Context.MODE_PRIVATE)
     private val routeTokensPrefs = application.applicationContext.getSharedPreferences(ROUTE_TOKENS_PREFS, Context.MODE_PRIVATE)
@@ -87,6 +88,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         override fun onUsernameReady(username: String) {
             viewModelScope.launch(Dispatchers.Main.immediate) {
                 myUsername = username
+                rememberKnownRouteLabel(username)
+                routeNamesVersion++
+                refreshRouteLookup()
+                refreshConversationPreviewsAsync()
             }
         }
 
@@ -94,6 +99,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             viewModelScope.launch(Dispatchers.Main.immediate) {
                 val fromRoute = canonicalConversationKey(fromUsername)
                 val currentTarget = canonicalConversationKey(targetUsername)
+                val incomingMessage = Message(
+                    id = messageId ?: java.util.UUID.randomUUID().toString(),
+                    text = text,
+                    isMine = false,
+                    delivery = DeliveryState.Delivered
+                )
+                appendConversationCache(fromRoute, incomingMessage)
 
                 if (!startedConversations.contains(fromRoute)) {
                     startedConversations.add(0, fromRoute)
@@ -110,21 +122,16 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 if (messageId != null) {
                     updateMessageDelivery(messageId, DeliveryState.Delivered)
                 }
-                messages.add(
-                    Message(
-                        id = messageId ?: java.util.UUID.randomUUID().toString(),
-                        text = text,
-                        isMine = false,
-                        delivery = DeliveryState.Delivered
-                    )
-                )
+                messages.add(incomingMessage)
                 refreshConversationPreviewsAsync()
             }
         }
 
         override fun onDeliveryAck(fromUsername: String, messageId: String) {
             viewModelScope.launch(Dispatchers.Main.immediate) {
-                if (canonicalConversationKey(fromUsername) == targetUsername) {
+                val route = canonicalConversationKey(fromUsername)
+                updateConversationCacheDelivery(route, messageId, DeliveryState.Delivered)
+                if (route == targetUsername) {
                     updateMessageDelivery(messageId, DeliveryState.Delivered)
                 }
                 conversationsVersion++
@@ -133,7 +140,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
         override fun onOutgoingDeliveryStateChanged(toUsername: String, messageId: String, state: DeliveryState) {
             viewModelScope.launch(Dispatchers.Main.immediate) {
-                if (canonicalConversationKey(toUsername) == targetUsername) {
+                val route = canonicalConversationKey(toUsername)
+                updateConversationCacheDelivery(route, messageId, state)
+                if (route == targetUsername) {
                     updateMessageDelivery(messageId, state)
                 }
                 conversationsVersion++
@@ -145,20 +154,19 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             viewModelScope.launch(Dispatchers.Main.immediate) {
                 val route = canonicalConversationKey(fromUsername)
                 if (route.isBlank()) return@launch
+                partnerOnlineByPeer[route] = true
+                schedulePartnerPresenceExpiry(route)
                 when (state) {
                     "open" -> {
                         partnerChatOpenByPeer[route] = true
-                        schedulePartnerPresenceExpiry(route)
                     }
                     "closed" -> {
-                        partnerPresenceExpiryJobs.remove(route)?.cancel()
                         partnerChatOpenByPeer[route] = false
                         partnerTypingByPeer[route] = false
                     }
                     "typing" -> {
                         partnerChatOpenByPeer[route] = true
                         partnerTypingByPeer[route] = true
-                        schedulePartnerPresenceExpiry(route)
                     }
                     "idle" -> {
                         partnerTypingByPeer[route] = false
@@ -179,6 +187,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         override fun onProfileNameChanged(name: String) {
             viewModelScope.launch(Dispatchers.Main.immediate) {
                 profileName = name
+                rememberKnownRouteLabel(myUsername)
+                rememberKnownRouteLabel(currentPublicRoute())
                 conversationsVersion++
                 routeNamesVersion++
                 refreshRouteLookup()
@@ -199,6 +209,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
         override fun onPublicProfileChanged(route: String) {
             viewModelScope.launch(Dispatchers.Main.immediate) {
+                chatStore.rememberPeer(canonicalConversationKey(route), conversationLabelFor(route))
                 conversationsVersion++
                 routeNamesVersion++
                 if (canonicalConversationKey(route) == targetUsername) {
@@ -224,6 +235,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val unreadByPeer = mutableStateMapOf<String, Int>()
     private val seenButNotClearedByPeer = mutableStateMapOf<String, Boolean>()
     private val unreadEntryCountByPeer = mutableStateMapOf<String, Int>()
+    private val partnerOnlineByPeer = mutableStateMapOf<String, Boolean>()
     private val partnerChatOpenByPeer = mutableStateMapOf<String, Boolean>()
     private val partnerTypingByPeer = mutableStateMapOf<String, Boolean>()
     private val localTypingByPeer = mutableStateMapOf<String, Boolean>()
@@ -244,7 +256,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private var openChatJob: Job? = null
     private var cleanupChatJob: Job? = null
     private var previewsJob: Job? = null
+    private var warmCacheJob: Job? = null
     private var conversationPreviewCache by mutableStateOf<List<ConversationPreview>>(emptyList())
+    private val conversationHistoryLock = Any()
+    private val conversationHistoryCache = mutableMapOf<String, MutableList<Message>>()
     private var currentChatLoaded by mutableStateOf(false)
     private var localListsPrepared by mutableStateOf(false)
     private var chatOpenedAtMs by mutableStateOf(0L)
@@ -275,8 +290,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         needsProfileSetup = profilePrefs.getString("display_name", null).isNullOrBlank()
+        profileName = profilePrefs
+            .getString("display_name", null)
+            ?.takeIf { it.isNotBlank() }
+            ?: "RotaSegura"
         contactRouteInput = ""
-        routesPrefs.edit().remove("contact_route_input").apply()
         defaultKeepViewedMessages = profilePrefs.getBoolean("keep_viewed_messages", true)
         defaultAllowScreenshots = profilePrefs.getBoolean("chat_screenshots_enabled", false)
         currentKeepViewedMessages = defaultKeepViewedMessages
@@ -285,8 +303,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         profileEmojiSymbol = profileEmoji
         profileBio = profilePrefs.getString("profile_bio", "")?.orEmpty() ?: ""
         profileBioText = profileBio
+        myUsername = lastKnownOwnRoute().ifBlank { myUsername }
         prepareLocalListsSynchronously()
-        nodeManager.start(application.applicationContext, autoStartTor = false)
+        warmConversationHistoryCacheAsync()
+        nodeManager.start(application.applicationContext, autoStartTor = true)
         nodeManager.setProfileEmoji(application.applicationContext, profileEmoji)
         nodeManager.setProfileBio(application.applicationContext, profileBio)
         nodeManager.setProfilePolicy(defaultKeepViewedMessages, defaultAllowScreenshots)
@@ -297,6 +317,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     override fun onCleared() {
         val current = canonicalConversationKey(targetUsername)
         if (current.isNotBlank()) {
+            AppVisibility.markChatClosed(current)
             sendChatPresence(current, "idle")
             sendChatPresence(current, "closed")
         }
@@ -311,6 +332,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val previousTarget = canonicalConversationKey(targetUsername)
         openChatJob?.cancel()
         if (previousTarget.isNotBlank() && previousTarget != cleanTarget) {
+            AppVisibility.markChatClosed(previousTarget)
             sendChatPresence(previousTarget, "idle")
             sendChatPresence(previousTarget, "closed")
             localTypingByPeer[previousTarget] = false
@@ -323,8 +345,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         chatOpenedAtMs = System.currentTimeMillis()
         if (cleanTarget.isBlank()) return
 
+        messages.addAll(conversationMessagesFor(cleanTarget))
+        currentChatLoaded = true
+
+        AppVisibility.markChatOpen(cleanTarget)
+        nodeManager.cancelNotification(cleanTarget)
         ensureConversationPolicy(cleanTarget)
         applyConversationPolicy(cleanTarget)
+        chatStore.rememberPeer(cleanTarget, conversationLabelFor(cleanTarget))
         if (!startedConversations.contains(cleanTarget)) {
             startedConversations.add(0, cleanTarget)
         }
@@ -337,17 +365,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         sendChatPresence(cleanTarget, "open")
         conversationsVersion++
         refreshConversationPreviewsAsync()
-
-        openChatJob = viewModelScope.launch(Dispatchers.IO) {
-            val loadedMessages = nodeManager.loadMessages(cleanTarget)
-            withContext(Dispatchers.Main.immediate) {
-                if (targetUsername != cleanTarget || !inChat) return@withContext
-                messages.clear()
-                messages.addAll(loadedMessages)
-                currentChatLoaded = true
-                refreshConversationPreviewsAsync()
-            }
-        }
     }
 
     fun openHome() {
@@ -355,6 +372,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         openChatJob?.cancel()
         openChatJob = null
         if (previous.isNotBlank()) {
+            AppVisibility.markChatClosed(previous)
             sendChatPresence(previous, "idle")
             sendChatPresence(previous, "closed")
             localTypingByPeer[previous] = false
@@ -454,7 +472,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     fun addContact(username: String) {
         val clean = canonicalConversationKey(username)
         if (clean.isBlank()) return
-        chatStore.rememberPeer(clean)
+        chatStore.rememberPeer(clean, conversationLabelFor(clean))
         if (!startedConversations.contains(clean)) {
             startedConversations.add(0, clean)
         }
@@ -465,7 +483,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     fun displayNameFor(username: String): String {
         val route = canonicalConversationKey(username)
         routeTokenFor(route)
-        return localNameForRoute(route).ifBlank { route }
+        return localNameForRoute(route)
+            .ifBlank { publicDisplayNameForRoute(route) }
+            .ifBlank { chatStore.preferredLabel(route).orEmpty() }
+            .ifBlank { routeTokenString(route) }
     }
 
     fun chatTitleFor(username: String): String {
@@ -474,7 +495,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         routeNamesVersion
         return localNameForRoute(route)
             .ifBlank { publicDisplayNameForRoute(route) }
-            .ifBlank { route }
+            .ifBlank { chatStore.preferredLabel(route).orEmpty() }
+            .ifBlank { routeTokenString(route) }
     }
 
     fun emojiForRoute(username: String): String {
@@ -485,6 +507,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     fun isPartnerChatOpen(username: String): Boolean {
         return partnerChatOpenByPeer[canonicalConversationKey(username)] == true
+    }
+
+    fun isPartnerOnline(username: String): Boolean {
+        return partnerOnlineByPeer[canonicalConversationKey(username)] == true
     }
 
     fun isPartnerTyping(username: String): Boolean {
@@ -511,9 +537,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         routeTokenFor(route)
         routeNamesVersion
         val localName = localNameForRoute(route)
-        val fallbackTitle = route
         val publicName = publicDisplayNameForRoute(route)
-        val display = localName.ifBlank { publicName }.ifBlank { fallbackTitle }
+        val display = localName
+            .ifBlank { publicName }
+            .ifBlank { chatStore.preferredLabel(route).orEmpty() }
+            .ifBlank { routeTokenString(route) }
         return PublicProfile(
             displayName = display,
             route = route,
@@ -536,13 +564,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             editor.putString(storageKey, cleanName).remove(cleanRoute)
         }
         editor.apply()
+        chatStore.rememberPeer(cleanRoute, conversationLabelFor(cleanRoute))
         routeNamesVersion++
         conversationsVersion++
         refreshConversationPreviewsAsync()
     }
 
     fun currentPublicRoute(): String {
-        return nodeManager.currentPublicRoute()
+        return nodeManager.currentPublicRoute().ifBlank { lastKnownOwnRoute() }
     }
 
     fun requestPublicProfile(route: String) {
@@ -561,10 +590,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun isLocalRoute(username: String): Boolean {
-        val route = canonicalConversationKey(username)
-        if (route.isBlank()) return false
-        return route == canonicalConversationKey(myUsername) ||
-            route == canonicalConversationKey(nodeManager.currentPublicRoute())
+        return isLocalOwnerRoute(username)
     }
 
     fun isCurrentChatKeepViewedMessagesEnabled(): Boolean = currentKeepViewedMessages
@@ -633,10 +659,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun startTor() {
-        viewModelScope.launch {
-            prepareLocalListsForTor()
-            nodeManager.startTor(getApplication())
-        }
+        nodeManager.startTor(getApplication())
     }
 
     private fun prepareLocalListsSynchronously() {
@@ -645,6 +668,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             .map { canonicalConversationKey(it) }
             .filter { it.isNotBlank() }
             .distinct()
+        loadedConversations.forEach { peer ->
+            chatStore.rememberPeer(peer, conversationLabelFor(peer))
+        }
         startedConversations.clear()
         startedConversations.addAll(loadedConversations)
         conversationPreviewCache = buildConversationPreviews(loadedConversations)
@@ -652,21 +678,21 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         conversationsVersion++
     }
 
-    private suspend fun prepareLocalListsForTor() {
-        if (localListsPrepared) return
-        val loadedConversations = withContext(Dispatchers.IO) {
-            chatStore.knownPeers().map { canonicalConversationKey(it) }.distinct()
-        }
-        withContext(Dispatchers.Main.immediate) {
-            if (localListsPrepared) return@withContext
-            val mergedConversations = (startedConversations.toList() + loadedConversations)
+    private fun warmConversationHistoryCacheAsync() {
+        if (warmCacheJob?.isActive == true) return
+        warmCacheJob = viewModelScope.launch(Dispatchers.IO) {
+            val peers = chatStore.knownPeers()
                 .map { canonicalConversationKey(it) }
                 .filter { it.isNotBlank() }
                 .distinct()
-            startedConversations.clear()
-            startedConversations.addAll(mergedConversations)
-            conversationPreviewCache = buildConversationPreviews(mergedConversations)
-            localListsPrepared = true
+            val snapshot = peers.associateWith { peer -> chatStore.load(peer).toMutableList() }
+            withContext(Dispatchers.Main.immediate) {
+                synchronized(conversationHistoryLock) {
+                    snapshot.forEach { (peer, messages) ->
+                        conversationHistoryCache[peer] = messages
+                    }
+                }
+            }
         }
     }
 
@@ -683,24 +709,24 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
-        val currentRoute = canonicalConversationKey(nodeManager.currentPublicRoute())
-        val fallbackLabel = clean
-        val displayLabel = localNameForRoute(clean).ifBlank { fallbackLabel }
+        val fallbackLabel = routeTokenString(clean)
+        val displayLabel = localNameForRoute(clean)
+            .ifBlank { publicDisplayNameForRoute(clean) }
+            .ifBlank { chatStore.preferredLabel(clean).orEmpty() }
+            .ifBlank { fallbackLabel }
         routeLookup = RouteLookup(
-            name = fallbackLabel,
+            name = displayLabel,
             username = clean,
-            displayName = localNameForRoute(clean)
-                .ifBlank { publicDisplayNameForRoute(clean) }
-                .ifBlank { displayLabel },
+            displayName = displayLabel,
             emoji = publicEmojiForRoute(clean),
-            isLocalOwner = clean == currentRoute || clean == canonicalConversationKey(myUsername),
+            isLocalOwner = isLocalOwnerRoute(clean),
             source = "Rede"
         )
         routeTokensPrefs.edit().putString(routeTokenString(clean).lowercase(), clean).apply()
         if (showNotFound) {
             nodeManager.requestPublicProfile(clean)
         }
-        routeStatus = if (clean == currentRoute || clean == canonicalConversationKey(myUsername)) {
+        routeStatus = if (isLocalOwnerRoute(clean)) {
             "Esta rota aponta para este aparelho"
         } else {
             "Rota pronta para conversar"
@@ -725,6 +751,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         cleanupChatJob?.cancel()
         nodeManager.clearMessages(target)
         clearPrivacyNotices(target)
+        clearConversationCache(target)
         unreadByPeer[target] = 0
         unreadEntryCountByPeer.remove(target)
         seenButNotClearedByPeer.remove(target)
@@ -743,9 +770,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         cleanupChatJob?.cancel()
         nodeManager.removeConversation(target)
         startedConversations.remove(target)
+        clearConversationCache(target)
         unreadByPeer.remove(target)
         unreadEntryCountByPeer.remove(target)
         seenButNotClearedByPeer.remove(target)
+        partnerPresenceExpiryJobs.remove(target)?.cancel()
+        partnerOnlineByPeer.remove(target)
+        partnerChatOpenByPeer.remove(target)
+        partnerTypingByPeer.remove(target)
+        localTypingByPeer.remove(target)
         clearPrivacyNotices(target)
         conversationsVersion++
         refreshConversationPreviewsAsync()
@@ -772,6 +805,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         if (target.isBlank()) return
 
         val localId = java.util.UUID.randomUUID().toString()
+        appendConversationCache(
+            target,
+            Message(
+                id = localId,
+                text = message,
+                isMine = true,
+                delivery = DeliveryState.Pending
+            )
+        )
         messages.add(
             Message(
                 id = localId,
@@ -799,7 +841,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private fun schedulePartnerPresenceExpiry(route: String) {
         partnerPresenceExpiryJobs.remove(route)?.cancel()
         partnerPresenceExpiryJobs[route] = viewModelScope.launch(Dispatchers.Main.immediate) {
-            kotlinx.coroutines.delay(45_000)
+            kotlinx.coroutines.delay(70_000)
+            partnerOnlineByPeer[route] = false
             partnerChatOpenByPeer[route] = false
             partnerTypingByPeer[route] = false
             partnerPresenceExpiryJobs.remove(route)
@@ -820,7 +863,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         return if (target == targetUsername) {
             messages.toList()
         } else {
-            nodeManager.loadMessages(target)
+            conversationMessagesFor(target)
         }
     }
 
@@ -868,6 +911,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val current = messages[index]
         if (current.delivery == state) return
         messages[index] = current.copy(delivery = state)
+        updateConversationCacheDelivery(targetUsername, messageId, state)
     }
 
     private fun refreshConversationPreviewsAsync() {
@@ -884,7 +928,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private fun buildConversationPreviews(usernames: List<String>): List<ConversationPreview> {
         return usernames.map { username ->
             val target = canonicalConversationKey(username)
-            val items = chatStore.load(target)
+            val items = conversationMessagesFor(target).takeLast(16)
             val last = items.lastOrNull()
             ConversationPreview(
                 username = target,
@@ -991,6 +1035,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun publicDisplayNameForRoute(route: String): String {
         val clean = canonicalConversationKey(route)
+        if (isLocalOwnerRoute(clean)) return profileName
         return nodeManager.publicProfileFor(clean)?.displayName.orEmpty()
     }
 
@@ -1004,6 +1049,88 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val clean = canonicalConversationKey(route)
         if (isLocalRoute(clean)) return profileBioText
         return nodeManager.publicProfileFor(clean)?.bio.orEmpty()
+    }
+
+    private fun conversationLabelFor(route: String): String {
+        val clean = canonicalConversationKey(route)
+        if (clean.isBlank()) return ""
+        return localNameForRoute(clean)
+            .ifBlank { publicDisplayNameForRoute(clean) }
+            .ifBlank { routeTokenString(clean) }
+    }
+
+    private fun rememberKnownRouteLabel(route: String) {
+        val clean = canonicalConversationKey(route)
+        if (clean.isBlank() || !startedConversations.contains(clean)) return
+        chatStore.rememberPeer(clean, conversationLabelFor(clean))
+    }
+
+    private fun conversationMessagesFor(route: String): List<Message> {
+        val clean = canonicalConversationKey(route)
+        if (clean.isBlank()) return emptyList()
+        synchronized(conversationHistoryLock) {
+            val cached = conversationHistoryCache[clean]
+            if (cached != null) return cached.toList()
+            val loaded = chatStore.load(clean).toMutableList()
+            conversationHistoryCache[clean] = loaded
+            return loaded.toList()
+        }
+    }
+
+    private fun appendConversationCache(route: String, message: Message) {
+        val clean = canonicalConversationKey(route)
+        if (clean.isBlank()) return
+        synchronized(conversationHistoryLock) {
+            val cache = conversationHistoryCache.getOrPut(clean) { mutableListOf() }
+            cache.add(message)
+        }
+    }
+
+    private fun updateConversationCacheDelivery(route: String, messageId: String, state: DeliveryState) {
+        val clean = canonicalConversationKey(route)
+        if (clean.isBlank() || messageId.isBlank()) return
+        synchronized(conversationHistoryLock) {
+            val cache = conversationHistoryCache[clean] ?: return
+            val index = cache.indexOfFirst { it.id == messageId && it.isMine }
+            if (index < 0) return
+            val current = cache[index]
+            if (current.delivery == state) return
+            cache[index] = current.copy(delivery = state)
+        }
+    }
+
+    private fun clearConversationCache(route: String) {
+        val clean = canonicalConversationKey(route)
+        if (clean.isBlank()) return
+        synchronized(conversationHistoryLock) {
+            conversationHistoryCache.remove(clean)
+        }
+    }
+
+    private fun isLocalOwnerRoute(route: String): Boolean {
+        val clean = canonicalConversationKey(route)
+        if (clean.isBlank()) return false
+        return localOwnerRouteCandidates().any { it == clean }
+    }
+
+    private fun localOwnerRouteCandidates(): List<String> {
+        return listOf(
+            myUsername,
+            nodeManager.currentPublicRoute(),
+            profilePrefs.getString(LAST_PUBLIC_ROUTE_KEY, null).orEmpty()
+        )
+            .map { canonicalConversationKey(it) }
+            .filter { it.isNotBlank() }
+            .distinct()
+    }
+
+    private fun lastKnownOwnRoute(): String {
+        return profilePrefs
+            .getString(LAST_PUBLIC_ROUTE_KEY, null)
+            .orEmpty()
+            .let { canonicalConversationKey(it) }
+            .takeIf { it.isNotBlank() && nodeManager.isValidRoute(it) }
+            .orEmpty()
     }
 
     private fun localConversationPolicyFor(route: String): ConversationPolicy {
@@ -1127,7 +1254,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
         val candidates = buildList {
             add(canonicalConversationKey(myUsername))
-            add(canonicalConversationKey(nodeManager.currentPublicRoute()))
+            add(canonicalConversationKey(currentPublicRoute()))
+            add(canonicalConversationKey(lastKnownOwnRoute()))
             addAll(peers.map { canonicalConversationKey(it) })
             addAll(startedConversations.map { canonicalConversationKey(it) })
             addAll(chatStore.knownPeers().map { canonicalConversationKey(it) })
@@ -1222,6 +1350,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 if (target.isNotBlank() && !hasProtectedUnreadMessages(target)) {
                     nodeManager.clearMessages(target)
                     clearPrivacyNotices(target)
+                    clearConversationCache(target)
                     messages.clear()
                     conversationsVersion++
                     refreshConversationPreviewsAsync()

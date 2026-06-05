@@ -25,6 +25,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.SideEffect
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -34,19 +35,26 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.null0x.chat.notification.MessageNotifier
 import com.null0x.chat.security.AppSecurityManager
+import com.null0x.chat.network.ChatNodeManager
+import com.null0x.chat.network.NetworkBootstrapScheduler
 import com.null0x.chat.ui.chat.ChatScreen
 import com.null0x.chat.ui.home.HomeScreen
 import com.null0x.chat.ui.theme.ChatTheme
+import com.null0x.chat.ui.theme.ThemePreference
 import com.null0x.chat.viewmodel.ChatViewModel
 
 class MainActivity : ComponentActivity() {
     private var openChatUsername by mutableStateOf<String?>(null)
+    private var lastNavigationBarColor = Color.Black
 
     override fun onStart() {
         super.onStart()
@@ -60,8 +68,12 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        applySystemBarColors()
         AppSecurityManager.initialize(this)
+        if (AppSecurityManager.currentState() != AppSecurityManager.GateState.SetupRequired) {
+            NetworkBootstrapScheduler.schedule(applicationContext)
+            ChatNodeManager.ensureBackgroundNetwork(applicationContext)
+        }
+        ThemePreference.initialize(this)
         openChatUsername = MessageNotifier.consumeOpenChatUsername(this, intent)
         requestNotificationPermission()
 
@@ -76,7 +88,12 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-            ChatTheme {
+            val themeMode by ThemePreference.themeMode.collectAsState()
+            ChatTheme(themeMode = themeMode) {
+                val navigationBarColor = MaterialTheme.colorScheme.background
+                SideEffect {
+                    applySystemBarColors(navigationBarColor)
+                }
                 val gateState by AppSecurityManager.state.collectAsState()
                 when (gateState) {
                     AppSecurityManager.GateState.SetupRequired -> {
@@ -86,6 +103,10 @@ class MainActivity : ComponentActivity() {
                             confirmLabel = "Criar senha",
                             onSubmit = { password ->
                                 AppSecurityManager.createPassword(this@MainActivity, password)
+                                    .onSuccess {
+                                        NetworkBootstrapScheduler.schedule(applicationContext)
+                                        ChatNodeManager.ensureBackgroundNetwork(applicationContext)
+                                    }
                             }
                         )
                     }
@@ -96,6 +117,10 @@ class MainActivity : ComponentActivity() {
                             confirmLabel = "Destrancar",
                             onSubmit = { password ->
                                 AppSecurityManager.unlock(this@MainActivity, password)
+                                    .onSuccess {
+                                        NetworkBootstrapScheduler.schedule(applicationContext)
+                                        ChatNodeManager.ensureBackgroundNetwork(applicationContext)
+                                    }
                             }
                         )
                     }
@@ -110,7 +135,14 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                         Box(modifier = Modifier.fillMaxSize()) {
-                            HomeScreen(vm, onLockApp = { AppSecurityManager.lock() }) { peer -> vm.selectTarget(peer) }
+                            HomeScreen(
+                                vm,
+                                themeMode = themeMode,
+                                onThemeModeChange = { mode ->
+                                    ThemePreference.setThemeMode(this@MainActivity, mode)
+                                },
+                                onLockApp = { AppSecurityManager.lock() }
+                            ) { peer -> vm.selectTarget(peer) }
                             if (vm.inChat) {
                                 ChatScreen(vm, onBack = { vm.openHome() })
                             }
@@ -156,11 +188,19 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun applySystemBarColors() {
-        window.statusBarColor = android.graphics.Color.BLACK
-        window.navigationBarColor = android.graphics.Color.BLACK
+        applySystemBarColors(lastNavigationBarColor)
+    }
+
+    private fun applySystemBarColors(navigationBarColor: Color) {
+        lastNavigationBarColor = navigationBarColor
+        window.statusBarColor = Color.Black.toArgb()
+        window.navigationBarColor = navigationBarColor.toArgb()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            window.isNavigationBarContrastEnforced = false
+        }
         WindowInsetsControllerCompat(window, window.decorView).apply {
             isAppearanceLightStatusBars = false
-            isAppearanceLightNavigationBars = false
+            isAppearanceLightNavigationBars = navigationBarColor.luminance() > 0.5f
         }
     }
 }

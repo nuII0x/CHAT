@@ -5,7 +5,7 @@ plugins {
 
 android {
     namespace = "com.null0x.chat"
-    compileSdk = 34
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "com.null0x.chat"
@@ -40,8 +40,12 @@ android {
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.activity.compose)
+    implementation(libs.androidx.camera.camera2)
+    implementation(libs.androidx.camera.lifecycle)
+    implementation(libs.androidx.camera.view)
 
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.compose.ui)

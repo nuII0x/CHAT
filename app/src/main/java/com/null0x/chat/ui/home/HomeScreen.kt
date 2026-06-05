@@ -1,10 +1,15 @@
 package com.null0x.chat.ui.home
 
+import android.Manifest
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.pm.PackageManager
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
@@ -22,6 +27,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
@@ -40,8 +46,16 @@ import androidx.compose.material.icons.filled.ChatBubble
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Contacts
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Done
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.DarkMode
+import androidx.compose.material.icons.filled.Devices
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.WbSunny
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.VpnKey
 import androidx.compose.material.icons.filled.Settings
@@ -80,6 +94,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -90,8 +105,13 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import com.null0x.chat.network.TorManager
+import com.null0x.chat.ui.maskedRouteLabel
+import com.null0x.chat.ui.profile.RouteProfileScreen
 import com.null0x.chat.security.AppSecurityManager
+import com.null0x.chat.ui.theme.AppPinkPrimary
+import com.null0x.chat.ui.theme.ThemeMode
 import com.null0x.chat.viewmodel.ChatViewModel
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -114,6 +134,7 @@ private enum class HomeTab(
 }
 
 private val HomeHeaderHeight = 86.dp
+private val TitleBarColor = Color.Black
 
 private sealed interface PendingProfileChange {
     data class Identity(val name: String, val emoji: String) : PendingProfileChange
@@ -121,9 +142,16 @@ private sealed interface PendingProfileChange {
 }
 
 @Composable
-fun HomeScreen(vm: ChatViewModel, onLockApp: () -> Unit, onOpenChat: (String) -> Unit) {
+fun HomeScreen(
+    vm: ChatViewModel,
+    themeMode: ThemeMode,
+    onThemeModeChange: (ThemeMode) -> Unit,
+    onLockApp: () -> Unit,
+    onOpenChat: (String) -> Unit
+) {
     val context = LocalContext.current
     val torStatus by TorManager.status.collectAsState()
+    val torDiagnostics by TorManager.diagnostics.collectAsState()
     val publicRoute = vm.currentPublicRoute()
     val pagerState = rememberPagerState(initialPage = HomeTab.Chats.ordinal) { HomeTab.entries.size }
     val scope = rememberCoroutineScope()
@@ -141,6 +169,8 @@ fun HomeScreen(vm: ChatViewModel, onLockApp: () -> Unit, onOpenChat: (String) ->
     var query by rememberSaveable { mutableStateOf("") }
     var searchSummary by remember { mutableStateOf<ChatViewModel.SearchSummary?>(null) }
     var showProfileDialog by rememberSaveable { mutableStateOf(false) }
+    var showRouteProfile by rememberSaveable { mutableStateOf(false) }
+    var routeProfileTarget by rememberSaveable { mutableStateOf("") }
     var pendingProfileChange by remember { mutableStateOf<PendingProfileChange?>(null) }
     var profileAuthError by rememberSaveable { mutableStateOf("") }
     val publicRouteToken = remember(publicRoute) { vm.routeTokenFor(publicRoute) }
@@ -148,17 +178,11 @@ fun HomeScreen(vm: ChatViewModel, onLockApp: () -> Unit, onOpenChat: (String) ->
     val cleanQuery = query.trim()
     val visibleConversations = searchSummary?.conversations ?: conversations
 
-    LaunchedEffect(torStatus) {
-        if (torStatus is TorManager.Status.Idle || torStatus is TorManager.Status.Error) {
-            vm.startTor()
-        }
-    }
-
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         topBar = {
             AppHeader(
-                title = tab.title,
+                title = if (torStatus is TorManager.Status.Ready) tab.title else "Aguardando rede...",
                 torStatus = torStatus,
                 onLockApp = onLockApp
             )
@@ -217,6 +241,10 @@ fun HomeScreen(vm: ChatViewModel, onLockApp: () -> Unit, onOpenChat: (String) ->
                     onSearchRouteName = vm::addContactRouteFromInput,
                     contacts = vm.conversationPreviews(),
                     onAddContact = vm::addContact,
+                    onOpenProfile = { username ->
+                        routeProfileTarget = username
+                        showRouteProfile = true
+                    },
                     onSelect = {
                         vm.selectTarget(it)
                         onOpenChat(it)
@@ -224,24 +252,26 @@ fun HomeScreen(vm: ChatViewModel, onLockApp: () -> Unit, onOpenChat: (String) ->
                     onRemoveContact = vm::removeConversation
                 )
                 HomeTab.Profile -> ProfileTab(
+                    themeMode = themeMode,
                     profileName = vm.profileName,
                     profileEmoji = vm.profileEmojiSymbol,
-                    username = vm.myUsername,
                     publicRoute = publicRoute,
                     publicRouteToken = publicRouteToken,
                     profileBio = vm.profileBioText,
-                    onProfileEmojiSave = { emoji ->
-                        profileAuthError = ""
-                        pendingProfileChange = PendingProfileChange.Identity(vm.profileName, emoji)
-                    },
                     onProfileBioSave = { bio ->
                         profileAuthError = ""
                         pendingProfileChange = PendingProfileChange.Bio(bio)
-                    }
+                    },
+                    onEditProfile = { showProfileDialog = true }
                 )
                 HomeTab.Settings -> SettingsTab(
                     profileEmoji = vm.profileEmojiSymbol,
                     username = vm.myUsername,
+                    publicRoute = publicRoute,
+                    torStatus = torStatus,
+                    torDiagnostics = torDiagnostics,
+                    themeMode = themeMode,
+                    onThemeModeChange = onThemeModeChange,
                     keepViewedMessages = vm.isKeepViewedMessagesEnabled(),
                     onKeepViewedMessagesChange = vm::updateKeepViewedMessagesPreference,
                     screenshotsEnabled = vm.isScreenshotsEnabled(),
@@ -253,14 +283,34 @@ fun HomeScreen(vm: ChatViewModel, onLockApp: () -> Unit, onOpenChat: (String) ->
     }
 
     if (showProfileDialog) {
-        ProfileDialog(
+        ProfileIdentityDialog(
             currentName = vm.profileName,
+            currentEmoji = vm.profileEmojiSymbol,
             onDismiss = { showProfileDialog = false },
-            onSave = { name ->
+            onSave = { name, emoji ->
                 profileAuthError = ""
-                pendingProfileChange = PendingProfileChange.Identity(name, vm.profileEmojiSymbol)
+                pendingProfileChange = PendingProfileChange.Identity(name, emoji)
                 showProfileDialog = false
             }
+        )
+    }
+
+    androidx.compose.animation.AnimatedVisibility(
+        visible = showRouteProfile,
+        enter = androidx.compose.animation.slideInHorizontally(initialOffsetX = { fullWidth -> fullWidth }) + androidx.compose.animation.fadeIn(),
+        exit = androidx.compose.animation.slideOutHorizontally(targetOffsetX = { fullWidth -> fullWidth }) + androidx.compose.animation.fadeOut()
+    ) {
+        val target = routeProfileTarget.trim()
+        val profile = vm.publicProfileFor(target)
+        LaunchedEffect(target) {
+            if (target.isNotBlank()) {
+                vm.requestPublicProfile(target)
+            }
+        }
+        RouteProfileScreen(
+            profile = profile,
+            onBack = { showRouteProfile = false },
+            onSaveLocalName = { route, name -> vm.setLocalNameForRoute(route, name) }
         )
     }
 
@@ -301,7 +351,7 @@ private fun AppHeader(
     onLockApp: () -> Unit
 ) {
     Surface(
-        color = Color.Black,
+        color = TitleBarColor,
         tonalElevation = 3.dp
     ) {
         Box(
@@ -324,12 +374,14 @@ private fun AppHeader(
                 ) {
                     Text(
                         text = title,
-                        color = MaterialTheme.colorScheme.onPrimary,
+                        color = Color.White,
                         style = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.SemiBold,
                         maxLines = 1
                     )
-                    TorInlineStatus(status = torStatus)
+                    if (torStatus is TorManager.Status.Ready) {
+                        TorInlineStatus(status = torStatus)
+                    }
                 }
             }
             IconButton(
@@ -339,7 +391,7 @@ private fun AppHeader(
                 Icon(
                     imageVector = Icons.Filled.VpnKey,
                     contentDescription = "Trancar app",
-                    tint = MaterialTheme.colorScheme.onPrimary
+                    tint = Color.White
                 )
             }
         }
@@ -353,43 +405,51 @@ private fun BottomDock(selected: HomeTab, onSelect: (HomeTab) -> Unit) {
     } else {
         Color.White
     }
-    Column(
+    Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color.Transparent)
+            .padding(horizontal = 12.dp)
+            .padding(bottom = 12.dp)
+            .navigationBarsPadding(),
+        shape = RoundedCornerShape(28.dp),
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
+        tonalElevation = 0.dp,
+        shadowElevation = 0.dp
     ) {
-        Spacer(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(1.dp)
-                .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f))
-        )
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 10.dp),
-            horizontalArrangement = Arrangement.SpaceEvenly
-        ) {
-            HomeTab.entries.forEach { tab ->
-                val isSelected = selected == tab
-                val interactionSource = remember { MutableInteractionSource() }
-                Box(
-                    modifier = Modifier
-                        .width(64.dp)
-                        .height(56.dp)
-                        .clickable(
-                            interactionSource = interactionSource,
-                            indication = null,
-                            onClick = { onSelect(tab) }
-                        ),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = if (isSelected) tab.selectedIcon else tab.unselectedIcon,
-                        contentDescription = tab.title,
-                        modifier = Modifier.size(24.dp),
-                        tint = iconTint
-                    )
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Spacer(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(1.dp)
+                    .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.10f))
+            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 10.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly
+            ) {
+                HomeTab.entries.forEach { tab ->
+                    val isSelected = selected == tab
+                    val interactionSource = remember { MutableInteractionSource() }
+                    Box(
+                        modifier = Modifier
+                            .width(64.dp)
+                            .height(56.dp)
+                            .clickable(
+                                interactionSource = interactionSource,
+                                indication = null,
+                                onClick = { onSelect(tab) }
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = if (isSelected) tab.selectedIcon else tab.unselectedIcon,
+                            contentDescription = tab.title,
+                            modifier = Modifier.size(24.dp),
+                            tint = iconTint
+                        )
+                    }
                 }
             }
         }
@@ -495,6 +555,7 @@ private fun ContactsTab(
     onSearchRouteName: () -> Unit,
     contacts: List<ChatViewModel.ConversationPreview>,
     onAddContact: (String) -> Unit,
+    onOpenProfile: (String) -> Unit,
     onSelect: (String) -> Unit,
     onRemoveContact: (String) -> Unit
 ) {
@@ -513,7 +574,7 @@ private fun ContactsTab(
                 onSearchRouteName = onSearchRouteName,
                 contacts = contacts,
                 onAddContact = onAddContact,
-                onSelect = onSelect
+                onOpenProfile = onOpenProfile
             )
         }
         item { SectionTitle("Contatos") }
@@ -539,18 +600,17 @@ private fun ContactsTab(
 
 @Composable
 private fun ProfileTab(
+    themeMode: ThemeMode,
     profileName: String,
     profileEmoji: String,
-    username: String,
     publicRoute: String,
     publicRouteToken: String,
     profileBio: String,
-    onProfileEmojiSave: (String) -> Unit,
-    onProfileBioSave: (String) -> Unit
+    onProfileBioSave: (String) -> Unit,
+    onEditProfile: () -> Unit
 ) {
     val context = LocalContext.current
     var bioDraft by rememberSaveable { mutableStateOf(profileBio) }
-    var showEmojiDialog by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(profileBio) {
         if (profileBio != bioDraft) {
             bioDraft = profileBio
@@ -570,32 +630,56 @@ private fun ProfileTab(
             ) {
                 Column(
                     modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(modifier = Modifier.clickable { showEmojiDialog = true }) {
+                    Box(modifier = Modifier.fillMaxWidth()) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(end = 52.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(14.dp)
+                        ) {
                             InitialAvatar(text = profileName, emoji = profileEmoji, prominent = false, large = true)
+                            Column(modifier = Modifier.fillMaxWidth()) {
+                                Text(
+                                    text = profileName.ifBlank { "RotaSegura" },
+                                    style = MaterialTheme.typography.headlineSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = "Perfil pessoal",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
                         }
-                        Spacer(Modifier.width(14.dp))
-                        Column(modifier = Modifier.fillMaxWidth()) {
-                            Text(
-                                text = profileName.ifBlank { "RotaSegura" },
-                                style = MaterialTheme.typography.headlineSmall,
-                                fontWeight = FontWeight.Bold,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            Text(
-                                text = maskedRouteLabel(username),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = Int.MAX_VALUE
-                            )
+                        Surface(
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .size(44.dp)
+                                .clickable(onClick = onEditProfile),
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
+                            tonalElevation = 0.dp
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Filled.Edit,
+                                    contentDescription = "Editar perfil",
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                            }
                         }
                     }
                     val routeCopy = publicRoute.trim()
                     val routeLabel = publicRouteToken.ifBlank { routeCopy }
                     if (routeLabel.isNotBlank()) {
+                        val cardBackground = MaterialTheme.colorScheme.surface
                         Surface(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -605,19 +689,35 @@ private fun ProfileTab(
                                     Toast.makeText(context, "Token da rota copiado", Toast.LENGTH_SHORT).show()
                                 },
                             shape = RoundedCornerShape(16.dp),
-                            color = MaterialTheme.colorScheme.surface
+                            color = cardBackground
                         ) {
                             Column(
-                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
                                 verticalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
                                 Text(
+                                    text = "Toque para copiar",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                    textAlign = TextAlign.Center
+                                )
+                                Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                                    RouteTokenQr(
+                                        token = routeLabel,
+                                        themeMode = themeMode,
+                                        backgroundColor = cardBackground
+                                    )
+                                }
+                                Text(
                                     text = routeLabel,
                                     style = MaterialTheme.typography.bodyMedium,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                    textAlign = TextAlign.Center
                                 )
-                                RouteTokenQr(token = routeLabel)
                             }
                         }
                     }
@@ -657,22 +757,17 @@ private fun ProfileTab(
             }
         }
     }
-    if (showEmojiDialog) {
-        EmojiDialog(
-            currentEmoji = profileEmoji,
-            onDismiss = { showEmojiDialog = false },
-            onSave = { emoji ->
-                onProfileEmojiSave(emoji)
-                showEmojiDialog = false
-            }
-        )
-    }
 }
 
 @Composable
 private fun SettingsTab(
     profileEmoji: String,
     username: String,
+    publicRoute: String,
+    torStatus: TorManager.Status,
+    torDiagnostics: List<String>,
+    themeMode: ThemeMode,
+    onThemeModeChange: (ThemeMode) -> Unit,
     keepViewedMessages: Boolean,
     onKeepViewedMessagesChange: (Boolean) -> Unit,
     screenshotsEnabled: Boolean,
@@ -694,6 +789,21 @@ private fun SettingsTab(
                 onClick = onEditProfile
             )
         }
+        item { SectionTitle("Tor") }
+        item {
+            TorMonitorCard(
+                torStatus = torStatus,
+                publicRoute = publicRoute,
+                diagnostics = torDiagnostics
+            )
+        }
+        item { SectionTitle("Tema") }
+        item {
+            ThemeModeOptions(
+                currentMode = themeMode,
+                onModeSelected = onThemeModeChange
+            )
+        }
         item { SectionTitle("Privacidade") }
         item {
             SettingsSwitchRow(
@@ -710,6 +820,227 @@ private fun SettingsTab(
                 checked = screenshotsEnabled,
                 onCheckedChange = onScreenshotsEnabledChange
             )
+        }
+    }
+}
+
+@Composable
+private fun TorMonitorCard(
+    torStatus: TorManager.Status,
+    publicRoute: String,
+    diagnostics: List<String>
+) {
+    val context = LocalContext.current
+    var shownStatus by remember { mutableStateOf<TorManager.Status>(torStatus) }
+    LaunchedEffect(torStatus) {
+        if (torStatus is TorManager.Status.Ready) {
+            shownStatus = torStatus
+        } else {
+            delay(900)
+            if (torStatus == shownStatus || shownStatus is TorManager.Status.Ready) return@LaunchedEffect
+            shownStatus = torStatus
+        }
+    }
+    val statusLabel = when (shownStatus) {
+        is TorManager.Status.Ready -> "Tor pronto"
+        else -> "Aguardando rede..."
+    }
+    val routeLabel = publicRoute.ifBlank { "Aguardando rota pública..." }
+    val onionAddress = TorManager.onionAddress().ifBlank { "Nome onion ainda indisponível" }
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        tonalElevation = 1.dp
+    ) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
+                    modifier = Modifier.size(42.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = Icons.Filled.Devices,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Monitor Tor",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = statusLabel,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            Text(
+                text = "Nome onion: $onionAddress",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = "Rota pública: $routeLabel",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = "SOCKS: ${TorManager.socksHost()}:${TorManager.socksPort()}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            if (diagnostics.isNotEmpty()) {
+                Spacer(Modifier.height(2.dp))
+                TextButton(
+                    onClick = {
+                        val logText = diagnostics.joinToString(separator = "\n")
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        clipboard.setPrimaryClip(ClipData.newPlainText("Log Tor RotaSegura", logText))
+                        Toast.makeText(context, "Log do Tor copiado", Toast.LENGTH_SHORT).show()
+                    },
+                    modifier = Modifier.align(Alignment.End)
+                ) {
+                    Text("Copiar log")
+                }
+                diagnostics.takeLast(6).forEach { event ->
+                    Text(
+                        text = event,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+        }
+    }
+}
+
+private data class ThemeOption(
+    val mode: ThemeMode,
+    val title: String,
+    val subtitle: String,
+    val icon: ImageVector
+)
+
+@Composable
+private fun ThemeModeOptions(
+    currentMode: ThemeMode,
+    onModeSelected: (ThemeMode) -> Unit
+) {
+    val options = remember {
+        listOf(
+            ThemeOption(ThemeMode.LIGHT, "Claro", "Leve, limpo e sempre legível", Icons.Filled.WbSunny),
+            ThemeOption(ThemeMode.DARK, "Escuro", "Contraste suave para uso noturno", Icons.Filled.DarkMode),
+            ThemeOption(ThemeMode.PINK, "Rosa", "Blush elegante com toque sofisticado", Icons.Filled.Favorite),
+            ThemeOption(ThemeMode.SYSTEM, "Sistema", "Segue a configuração do aparelho", Icons.Filled.Devices)
+        )
+    }
+
+    var expanded by rememberSaveable { mutableStateOf(false) }
+    val selectedOption = remember(currentMode, options) {
+        options.firstOrNull { it.mode == currentMode } ?: options.first()
+    }
+
+    Box(modifier = Modifier.fillMaxWidth()) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { expanded = true },
+            shape = RoundedCornerShape(18.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant,
+            tonalElevation = 1.dp
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
+                    tonalElevation = 0.dp,
+                    modifier = Modifier.size(44.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = selectedOption.icon,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = selectedOption.title,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = selectedOption.subtitle,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2
+                    )
+                }
+                Icon(
+                    imageVector = Icons.Filled.KeyboardArrowDown,
+                    contentDescription = "Escolher tema",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+            modifier = Modifier.fillMaxWidth(0.98f)
+        ) {
+            options.forEach { option ->
+                DropdownMenuItem(
+                    text = {
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(option.title, fontWeight = FontWeight.SemiBold)
+                            Text(
+                                text = option.subtitle,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = option.icon,
+                            contentDescription = null,
+                            tint = if (option.mode == currentMode) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    },
+                    trailingIcon = if (option.mode == currentMode) {
+                        {
+                            Icon(
+                                imageVector = Icons.Filled.Done,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    } else null,
+                    onClick = {
+                        expanded = false
+                        onModeSelected(option.mode)
+                    }
+                )
+            }
         }
     }
 }
@@ -969,11 +1300,31 @@ private fun RouteSearchPanel(
     onSearchRouteName: () -> Unit,
     contacts: List<ChatViewModel.ConversationPreview>,
     onAddContact: (String) -> Unit,
-    onSelect: (String) -> Unit
+    onOpenProfile: (String) -> Unit
 ) {
+    val context = LocalContext.current
+    var showQrScanner by rememberSaveable { mutableStateOf(false) }
     var routeField by remember {
         mutableStateOf(TextFieldValue(routeName))
     }
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            showQrScanner = true
+        } else {
+            Toast.makeText(context, "Permita a câmera para ler QR", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    fun openQrScanner() {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+            showQrScanner = true
+        } else {
+            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+        }
+    }
+
     LaunchedEffect(routeName) {
         if (routeName != routeField.text) {
             routeField = TextFieldValue(routeName)
@@ -1007,6 +1358,14 @@ private fun RouteSearchPanel(
                     },
                 singleLine = true,
                 shape = RoundedCornerShape(14.dp),
+                leadingIcon = {
+                    IconButton(onClick = ::openQrScanner) {
+                        Icon(
+                            imageVector = Icons.Filled.QrCodeScanner,
+                            contentDescription = "Ler QR da rota"
+                        )
+                    }
+                },
                 trailingIcon = {
                     if (routeField.text.isNotBlank()) {
                         IconButton(
@@ -1040,10 +1399,23 @@ private fun RouteSearchPanel(
                     routeLookup = lookup,
                     alreadyAdded = contacts.any { contact -> contact.username == lookup.username },
                     onAddContact = onAddContact,
-                    onSelect = onSelect
+                    onOpenProfile = onOpenProfile
                 )
             }
         }
+    }
+
+    if (showQrScanner) {
+        QrCodeScannerDialog(
+            onDismiss = { showQrScanner = false },
+            onQrCodeScanned = { scannedCode ->
+                val cleanCode = scannedCode.trim()
+                routeField = TextFieldValue(cleanCode, selection = TextRange(cleanCode.length))
+                onRouteNameChange(cleanCode)
+                showQrScanner = false
+                onSearchRouteName()
+            }
+        )
     }
 }
 
@@ -1052,13 +1424,13 @@ private fun RouteLookupRow(
     routeLookup: ChatViewModel.RouteLookup,
     alreadyAdded: Boolean,
     onAddContact: (String) -> Unit,
-    onSelect: (String) -> Unit
+    onOpenProfile: (String) -> Unit
 ) {
     ContactRow(
         name = routeLookup.displayName,
         username = routeLookup.username,
         emoji = routeLookup.emoji,
-        onClick = { onSelect(routeLookup.username) },
+        onClick = { onOpenProfile(routeLookup.username) },
         trailingActionLabel = if (alreadyAdded) "Adicionado" else "Adicionar",
         trailingActionIcon = Icons.Filled.Add,
         trailingActionEnabled = !alreadyAdded,
@@ -1078,47 +1450,50 @@ private fun ContactRow(
     onTrailingAction: (() -> Unit)? = null
 ) {
     Surface(
-        shape = RoundedCornerShape(16.dp),
+        shape = RoundedCornerShape(18.dp),
         color = MaterialTheme.colorScheme.surface,
         tonalElevation = 1.dp,
         modifier = Modifier
-            .widthIn(max = 360.dp)
+            .fillMaxWidth()
             .clickable(onClick = onClick)
     ) {
         Row(
             modifier = Modifier
-                .widthIn(max = 360.dp)
-                .padding(horizontal = 12.dp, vertical = 12.dp),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                InitialAvatar(text = name, emoji = emoji)
-                Spacer(Modifier.width(11.dp))
-                Column(modifier = Modifier.widthIn(max = 190.dp)) {
-                    if (name.isNotBlank()) {
-                        Text(
-                            text = name,
-                            fontWeight = FontWeight.SemiBold,
-                            maxLines = 1,
-                            softWrap = false,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
+            InitialAvatar(text = name, emoji = emoji)
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .widthIn(min = 0.dp),
+                verticalArrangement = Arrangement.spacedBy(3.dp)
+            ) {
+                if (name.isNotBlank()) {
                     Text(
-                        text = maskedRouteLabel(username),
-                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        text = name,
+                        fontWeight = FontWeight.SemiBold,
                         maxLines = 1,
                         softWrap = false,
                         overflow = TextOverflow.Ellipsis
                     )
                 }
+                Text(
+                    text = maskedRouteLabel(username),
+                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Ellipsis
+                )
             }
             if (onTrailingAction != null && trailingActionLabel != null && trailingActionIcon != null) {
                 TextButton(
                     onClick = onTrailingAction,
-                    enabled = trailingActionEnabled
+                    enabled = trailingActionEnabled,
+                    modifier = Modifier.widthIn(min = 104.dp)
                 ) {
                     Icon(
                         imageVector = trailingActionIcon,
@@ -1126,7 +1501,12 @@ private fun ContactRow(
                         modifier = Modifier.size(16.dp)
                     )
                     Spacer(Modifier.width(6.dp))
-                    Text(trailingActionLabel)
+                    Text(
+                        text = trailingActionLabel,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Clip
+                    )
                 }
             }
         }
@@ -1365,9 +1745,24 @@ private fun PasswordConfirmDialog(
 }
 
 @Composable
-private fun RouteTokenQr(token: String) {
+private fun RouteTokenQr(token: String, themeMode: ThemeMode, backgroundColor: Color) {
     if (token.isBlank()) return
-    val bitmap = remember(token) { generateQrBitmap(token, 360) }
+    val systemDarkTheme = isSystemInDarkTheme()
+    val background = backgroundColor
+    val foreground = when (themeMode) {
+        ThemeMode.DARK -> Color.White
+        ThemeMode.SYSTEM -> if (systemDarkTheme) Color.White else Color.Black
+        ThemeMode.LIGHT -> Color.Black
+        ThemeMode.PINK -> AppPinkPrimary
+    }
+    val bitmap = remember(token, foreground, background) {
+        generateQrBitmap(
+            text = token,
+            sizePx = 360,
+            foregroundArgb = foreground.toArgb(),
+            backgroundArgb = background.toArgb()
+        )
+    }
     bitmap?.let {
         Image(
             bitmap = it.asImageBitmap(),
@@ -1377,7 +1772,12 @@ private fun RouteTokenQr(token: String) {
     }
 }
 
-private fun generateQrBitmap(text: String, sizePx: Int): Bitmap? {
+private fun generateQrBitmap(
+    text: String,
+    sizePx: Int,
+    foregroundArgb: Int,
+    backgroundArgb: Int
+): Bitmap? {
     return runCatching {
         val bitMatrix = QRCodeWriter().encode(text, BarcodeFormat.QR_CODE, sizePx, sizePx)
         Bitmap.createBitmap(sizePx, sizePx, Bitmap.Config.ARGB_8888).apply {
@@ -1386,27 +1786,12 @@ private fun generateQrBitmap(text: String, sizePx: Int): Bitmap? {
                     setPixel(
                         x,
                         y,
-                        if (bitMatrix[x, y]) android.graphics.Color.BLACK else android.graphics.Color.WHITE
+                        if (bitMatrix[x, y]) foregroundArgb else backgroundArgb
                     )
                 }
             }
         }
     }.getOrNull()
-}
-
-private fun maskedRouteLabel(value: String): String {
-    val clean = value.trim()
-    if (!clean.startsWith("onion:", ignoreCase = true)) return clean
-    val route = clean.substringAfter(':')
-    val separator = route.lastIndexOf(':')
-    if (separator <= 0 || separator == route.lastIndex) return clean
-    val host = route.substring(0, separator)
-        .removeSuffix(".onion")
-        .lowercase()
-    val port = route.substring(separator + 1)
-        .takeIf { candidate -> candidate.all { it.isDigit() } }
-        ?: "5000"
-    return "$host#$port"
 }
 
 private fun limitUtf8Bytes(text: String, maxBytes: Int): String {
@@ -1458,19 +1843,29 @@ private fun InitialAvatar(
 }
 
 @Composable
-private fun ProfileDialog(
+private fun ProfileIdentityDialog(
     currentName: String,
+    currentEmoji: String,
     onDismiss: () -> Unit,
-    onSave: (String) -> Unit
+    onSave: (String, String) -> Unit
 ) {
     var name by rememberSaveable { mutableStateOf(currentName) }
+    var emoji by rememberSaveable { mutableStateOf(currentEmoji.ifBlank { "🙂" }) }
+
+    LaunchedEffect(currentName) {
+        name = currentName
+    }
+    LaunchedEffect(currentEmoji) {
+        emoji = currentEmoji.ifBlank { "🙂" }
+    }
+
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Perfil") },
+        title = { Text("Editar perfil") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(
-                    text = "Ajuste o nome exibido nas telas principais.",
+                    text = "Ajuste apenas o nome e o emoji de exibição.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -1482,43 +1877,20 @@ private fun ProfileDialog(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(14.dp)
                 )
+                OutlinedTextField(
+                    value = emoji,
+                    onValueChange = { emoji = it.take(16) },
+                    singleLine = true,
+                    label = { Text("Emoji do perfil") },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp)
+                )
             }
         },
         confirmButton = {
             TextButton(onClick = {
                 val clean = name.trim()
-                if (clean.isNotBlank()) onSave(clean)
-            }) { Text("Salvar") }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancelar") }
-        }
-    )
-}
-
-@Composable
-private fun EmojiDialog(
-    currentEmoji: String,
-    onDismiss: () -> Unit,
-    onSave: (String) -> Unit
-) {
-    var emoji by rememberSaveable { mutableStateOf(currentEmoji.ifBlank { "🙂" }) }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Emoji do perfil") },
-        text = {
-            OutlinedTextField(
-                value = emoji,
-                onValueChange = { emoji = it.take(16) },
-                singleLine = true,
-                label = { Text("Emoji livre") },
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(14.dp)
-            )
-        },
-        confirmButton = {
-            TextButton(onClick = {
-                onSave(emoji.trim().ifBlank { "🙂" })
+                if (clean.isNotBlank()) onSave(clean, emoji.trim().ifBlank { "🙂" })
             }) { Text("Salvar") }
         },
         dismissButton = {

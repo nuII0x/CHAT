@@ -69,9 +69,11 @@ class MessageNotifier(private val context: Context) {
             .setSmallIcon(R.drawable.ic_stat_rotasegura)
             .setLargeIcon(createLargeIcon())
             .setContentTitle("RotaSegura")
-            .setContentText("Nova mensagem")
+            .setContentText(fromName.ifBlank { "Nova mensagem" })
             .setContentIntent(pendingIntent)
             .setAutoCancel(true)
+            .setOngoing(false)
+            .setLocalOnly(true)
             .setGroup("chat_messages_group")
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
@@ -82,6 +84,10 @@ class MessageNotifier(private val context: Context) {
             NotificationManagerCompat.from(context)
                 .notify(notificationId, notification)
         }
+    }
+
+    fun cancelMessage(fromUsername: String) {
+        NotificationManagerCompat.from(context).cancel(fromUsername.hashCode())
     }
 
     private fun createChannel() {

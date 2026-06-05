@@ -6,7 +6,9 @@ import com.null0x.chat.AppVisibility
 import com.null0x.chat.model.DeliveryState
 import com.null0x.chat.model.Message
 import com.null0x.chat.notification.MessageNotifier
+import com.null0x.chat.security.AppSecurityManager
 import com.null0x.chat.storage.ChatStore
+import com.null0x.chat.storage.LocalStoreCipher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -39,7 +41,9 @@ object ChatNodeManager {
     private const val CHAT_PROFILE_REQUEST_PREFIX = "CHAT_PROFILE_REQUEST|"
     private const val CHAT_PROFILE_PREFIX = "CHAT_PROFILE|"
     private const val CHAT_PRESENCE_PREFIX = "CHAT_PRESENCE|"
+    private const val CHAT_PRESENCE_IDLE = "idle"
     private const val ROUTE_PROFILES_PREFS = "route_public_profiles"
+    private const val LAST_PUBLIC_ROUTE_KEY = "last_public_route"
     private val ONION_HOST_REGEX = Regex("^[a-z2-7]{56}\\.onion$")
 
     interface Listener {
@@ -69,9 +73,12 @@ object ChatNodeManager {
     @Volatile
     private var chatStore: ChatStore? = null
     private var profilePrefs: android.content.SharedPreferences? = null
+    private var routeNamesPrefs: android.content.SharedPreferences? = null
     private var routeProfilesPrefs: android.content.SharedPreferences? = null
 
     private var retryJob: kotlinx.coroutines.Job? = null
+    private var torStartJob: kotlinx.coroutines.Job? = null
+    private var presenceHeartbeatJob: kotlinx.coroutines.Job? = null
     @Volatile
     private var appContext: Context? = null
 
@@ -102,15 +109,30 @@ object ChatNodeManager {
     var profileAllowScreenshots: Boolean = false
         private set
 
+    fun ensureBackgroundNetwork(context: Context): Boolean {
+        val appContext = context.applicationContext
+        AppSecurityManager.initialize(appContext)
+        if (AppSecurityManager.currentState() == AppSecurityManager.GateState.SetupRequired) {
+            return false
+        }
+        start(appContext, autoStartTor = true)
+        return true
+    }
+
     fun start(context: Context, autoStartTor: Boolean = false) {
+        val appContext = context.applicationContext
+        val shouldEnsureTor = autoStartTor
         synchronized(startLock) {
-            if (started) return
+            if (started) {
+                this.appContext = appContext
+                return@synchronized
+            }
             started = true
-            val appContext = context.applicationContext
             this.appContext = appContext
             notifier = MessageNotifier(appContext)
             chatStore = ChatStore(appContext)
             profilePrefs = appContext.getSharedPreferences("profile", Context.MODE_PRIVATE)
+            routeNamesPrefs = appContext.getSharedPreferences("route_names", Context.MODE_PRIVATE)
             routeProfilesPrefs = appContext.getSharedPreferences(ROUTE_PROFILES_PREFS, Context.MODE_PRIVATE)
             profileName = profilePrefs
                 ?.getString("display_name", null)
@@ -123,23 +145,17 @@ object ChatNodeManager {
             profileBio = profilePrefs
                 ?.getString("profile_bio", null)
                 .orEmpty()
-            scope.launch {
-                TorManager.status.collectLatest { status ->
-                    val torReady = status is TorManager.Status.Ready
-                    node.setTransportViaSocks(
-                        enabled = torReady,
-                        host = TorManager.socksHost(),
-                        port = TorManager.socksPort()
-                    )
-                    updatePublicRoute()
-                    if (torReady) {
-                        retryPendingMessagesOnce()
-                    } else if (autoStartTor && (status is TorManager.Status.Idle || status is TorManager.Status.Error)) {
-                        startTor(appContext)
-                    }
-                }
+            val savedRoute = profilePrefs
+                ?.getString(LAST_PUBLIC_ROUTE_KEY, null)
+                ?.let { normalizeRoute(it) }
+                .orEmpty()
+            if (savedRoute.isNotBlank()) {
+                publicRoute = savedRoute
+                username = savedRoute
+                node.setPublicRoute(savedRoute)
             }
             startRetryLoop()
+            startPresenceHeartbeatLoop()
 
             node.start(
                 scope = scope,
@@ -217,7 +233,9 @@ object ChatNodeManager {
                                 delivery = DeliveryState.Delivered
                             )
                         )
-                        if (!AppVisibility.isVisible) {
+                        if (AppVisibility.isChatOpen(messagePeer)) {
+                            notifier?.cancelMessage(messagePeer)
+                        } else if (!AppVisibility.isVisible) {
                             notifier?.showMessage(messagePeer, name, rawText)
                         }
                         incomingMessageId?.let { id ->
@@ -231,6 +249,25 @@ object ChatNodeManager {
                     listeners.forEach { it.onPeersChanged(users) }
                 }
             )
+            scope.launch {
+                TorManager.status.collectLatest { status ->
+                    val torReady = status is TorManager.Status.Ready
+                    node.setTransportViaSocks(
+                        enabled = torReady,
+                        host = TorManager.socksHost(),
+                        port = TorManager.socksPort()
+                    )
+                    updatePublicRoute()
+                    if (torReady) {
+                        retryPendingMessagesOnce()
+                    } else if (autoStartTor && (status is TorManager.Status.Idle || status is TorManager.Status.Error)) {
+                        startTor(appContext)
+                    }
+                }
+            }
+        }
+        if (shouldEnsureTor) {
+            ensureTorRunning(appContext)
         }
     }
 
@@ -277,8 +314,32 @@ object ChatNodeManager {
 
     fun startTor(context: Context) {
         val appContext = context.applicationContext
+        if (!node.isServerReady()) {
+            if (torStartJob?.isActive == true) return
+            torStartJob = scope.launch {
+                repeat(40) {
+                    if (node.isServerReady()) {
+                        startTor(appContext)
+                        return@launch
+                    }
+                    delay(100)
+                }
+                TorManager.configureOnionService(appContext, APP_CHAT_PORT)
+                TorManager.ensureStarted(appContext)
+            }
+            return
+        }
+        torStartJob?.cancel()
         TorManager.configureOnionService(appContext, APP_CHAT_PORT)
         TorManager.ensureStarted(appContext)
+    }
+
+    private fun ensureTorRunning(context: Context) {
+        val status = TorManager.status.value
+        if (status is TorManager.Status.Ready || status is TorManager.Status.Starting) {
+            return
+        }
+        startTor(context)
     }
 
     fun addListener(listener: Listener) {
@@ -321,6 +382,10 @@ object ChatNodeManager {
         return chatStore?.load(cleanPeer) ?: emptyList()
     }
 
+    fun cancelNotification(peer: String) {
+        notifier?.cancelMessage(canonicalPeer(peer))
+    }
+
     fun clearMessages(peer: String) {
         chatStore?.clear(canonicalPeer(peer))
     }
@@ -346,7 +411,39 @@ object ChatNodeManager {
     }
 
     fun displayNameFor(username: String): String {
-        return publicProfileFor(username)?.displayName?.takeIf { it.isNotBlank() } ?: username
+        val route = canonicalPeer(username)
+        return localRouteNameFor(route)
+            .ifBlank { publicProfileFor(route)?.displayName.orEmpty() }
+            .ifBlank { tokenLabelFor(route) }
+    }
+
+    private fun localRouteNameFor(route: String): String {
+        val clean = canonicalPeer(route)
+        if (clean.isBlank()) return ""
+        val prefs = routeNamesPrefs ?: return ""
+        val storageKey = routeStorageKey(clean)
+        val saved = prefs.getString(storageKey, null)?.trim().orEmpty()
+        if (saved.isNotBlank()) return saved
+        val legacy = prefs.getString(clean, null)?.trim().orEmpty()
+        if (legacy.isNotBlank()) {
+            prefs.edit().putString(storageKey, legacy).remove(clean).apply()
+        }
+        return legacy
+    }
+
+    private fun tokenLabelFor(route: String): String {
+        val clean = canonicalPeer(route)
+        if (clean.isBlank()) return ""
+        val value = clean.substringAfter("onion:", missingDelimiterValue = clean)
+        val separator = value.lastIndexOf(':')
+        if (separator <= 0 || separator == value.lastIndex) return clean
+        val host = value.substring(0, separator)
+            .removeSuffix(".onion")
+            .lowercase()
+        val port = value.substring(separator + 1)
+            .takeIf { candidate -> candidate.all { it.isDigit() } }
+            ?: "5000"
+        return "$host#$port"
     }
 
     fun publicProfileFor(route: String): PublicRouteProfile? {
@@ -417,8 +514,11 @@ object ChatNodeManager {
         if (route.isNotBlank()) {
             publicRoute = route
             node.setPublicRoute(route)
+            profilePrefs?.edit()
+                ?.putString(LAST_PUBLIC_ROUTE_KEY, route)
+                ?.apply()
         }
-        if (changed) {
+        if (changed || (resolvedRoute.isNotBlank() && username != resolvedRoute)) {
             username = resolvedRoute.ifBlank { "Aguardando rede..." }
             listeners.forEach { listener ->
                 listener.onUsernameReady(username)
@@ -433,6 +533,19 @@ object ChatNodeManager {
             while (isActive) {
                 retryPendingMessagesOnce()
                 delay(8_000)
+            }
+        }
+    }
+
+    private fun startPresenceHeartbeatLoop() {
+        if (presenceHeartbeatJob?.isActive == true) return
+        presenceHeartbeatJob = scope.launch {
+            while (isActive) {
+                delay(25_000)
+                if (publicRoute.isBlank() || !node.isServerReady()) continue
+                knownPeers().forEach { peer ->
+                    node.sendMessage(peer, "$CHAT_PRESENCE_PREFIX$CHAT_PRESENCE_IDLE")
+                }
             }
         }
     }
@@ -578,6 +691,7 @@ object ChatNodeManager {
     private fun migratePeerIfNeeded(originalPeer: String, canonicalPeer: String) {
         val original = originalPeer.trim()
         if (original.isBlank() || canonicalPeer.isBlank() || original == canonicalPeer) return
+        if (!LocalStoreCipher.canDecrypt()) return
         chatStore?.migratePeer(original, canonicalPeer)
     }
 
