@@ -1140,7 +1140,8 @@ private fun SettingsTab(
                     text = "Feito com amor e carinho para Brasileiros.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 4.dp, bottom = 12.dp)
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 12.dp)
                 )
             }
         }
