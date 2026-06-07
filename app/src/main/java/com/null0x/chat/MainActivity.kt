@@ -5,6 +5,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Arrangement
@@ -26,6 +27,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.SideEffect
+import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -34,31 +36,46 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.null0x.chat.notification.MessageNotifier
 import com.null0x.chat.security.AppSecurityManager
+import com.null0x.chat.security.SensitiveClipboard
+import com.null0x.chat.network.BackgroundNetworkPreference
+import com.null0x.chat.network.BackgroundRelaunchPreference
 import com.null0x.chat.network.ChatNodeManager
+import com.null0x.chat.network.AppNetworkService
+import com.null0x.chat.network.AppRestartReceiver
 import com.null0x.chat.network.NetworkBootstrapScheduler
 import com.null0x.chat.ui.chat.ChatScreen
 import com.null0x.chat.ui.home.HomeScreen
+import com.null0x.chat.ui.security.ProtectedWindowCapture
 import com.null0x.chat.ui.theme.ChatTheme
 import com.null0x.chat.ui.theme.ThemePreference
 import com.null0x.chat.viewmodel.ChatViewModel
 
 class MainActivity : ComponentActivity() {
     private var openChatUsername by mutableStateOf<String?>(null)
+    private var launchedFromNotification = false
     private var lastNavigationBarColor = Color.Black
+
+    companion object {
+        @Volatile
+        private var backgroundBootstrapRequested = false
+    }
 
     override fun onStart() {
         super.onStart()
         AppVisibility.markVisible()
+        AppRestartReceiver.clearPendingRelaunch(applicationContext)
     }
 
     override fun onStop() {
@@ -69,12 +86,22 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         AppSecurityManager.initialize(this)
-        if (AppSecurityManager.currentState() != AppSecurityManager.GateState.SetupRequired) {
-            NetworkBootstrapScheduler.schedule(applicationContext)
-            ChatNodeManager.ensureBackgroundNetwork(applicationContext)
+        val initialOpenChatUsername = MessageNotifier.consumeOpenChatUsername(this, intent)
+        openChatUsername = initialOpenChatUsername
+        launchedFromNotification = !initialOpenChatUsername.isNullOrBlank()
+        if (
+            AppSecurityManager.currentState() == AppSecurityManager.GateState.Locked ||
+            AppSecurityManager.currentState() == AppSecurityManager.GateState.Unlocked
+        ) {
+            if (!launchedFromNotification) {
+                AppNetworkService.start(applicationContext)
+                NetworkBootstrapScheduler.schedule(applicationContext)
+                ChatNodeManager.ensureBackgroundNetwork(applicationContext)
+            }
         }
         ThemePreference.initialize(this)
-        openChatUsername = MessageNotifier.consumeOpenChatUsername(this, intent)
+        BackgroundNetworkPreference.initialize(this)
+        BackgroundRelaunchPreference.initialize(this)
         requestNotificationPermission()
 
         val vmFactory = object : ViewModelProvider.Factory {
@@ -89,6 +116,8 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             val themeMode by ThemePreference.themeMode.collectAsState()
+            val backgroundNetworkEnabled by BackgroundNetworkPreference.enabled.collectAsState()
+            val backgroundRelaunchEnabled by BackgroundRelaunchPreference.enabled.collectAsState()
             ChatTheme(themeMode = themeMode) {
                 val navigationBarColor = MaterialTheme.colorScheme.background
                 SideEffect {
@@ -103,10 +132,13 @@ class MainActivity : ComponentActivity() {
                             confirmLabel = "Criar senha",
                             onSubmit = { password ->
                                 AppSecurityManager.createPassword(this@MainActivity, password)
-                                    .onSuccess {
-                                        NetworkBootstrapScheduler.schedule(applicationContext)
-                                        ChatNodeManager.ensureBackgroundNetwork(applicationContext)
-                                    }
+                            }
+                        )
+                    }
+                    AppSecurityManager.GateState.PrivateAccessRequired -> {
+                        PrivateAccessSetupScreen(
+                            onReady = {
+                                requestBackgroundBootstrap()
                             }
                         )
                     }
@@ -118,8 +150,7 @@ class MainActivity : ComponentActivity() {
                             onSubmit = { password ->
                                 AppSecurityManager.unlock(this@MainActivity, password)
                                     .onSuccess {
-                                        NetworkBootstrapScheduler.schedule(applicationContext)
-                                        ChatNodeManager.ensureBackgroundNetwork(applicationContext)
+                                        requestBackgroundBootstrap()
                                     }
                             }
                         )
@@ -140,6 +171,14 @@ class MainActivity : ComponentActivity() {
                                 themeMode = themeMode,
                                 onThemeModeChange = { mode ->
                                     ThemePreference.setThemeMode(this@MainActivity, mode)
+                                },
+                                backgroundNetworkEnabled = backgroundNetworkEnabled,
+                                onBackgroundNetworkChange = { enabled ->
+                                    BackgroundNetworkPreference.setEnabled(this@MainActivity, enabled)
+                                },
+                                backgroundRelaunchEnabled = backgroundRelaunchEnabled,
+                                onBackgroundRelaunchChange = { enabled ->
+                                    BackgroundRelaunchPreference.setEnabled(this@MainActivity, enabled)
                                 },
                                 onLockApp = { AppSecurityManager.lock() }
                             ) { peer -> vm.selectTarget(peer) }
@@ -167,6 +206,7 @@ class MainActivity : ComponentActivity() {
         setIntent(intent)
         val username = MessageNotifier.consumeOpenChatUsername(this, intent)
         if (!username.isNullOrBlank()) {
+            launchedFromNotification = true
             openChatUsername = username
         }
     }
@@ -203,6 +243,198 @@ class MainActivity : ComponentActivity() {
             isAppearanceLightNavigationBars = navigationBarColor.luminance() > 0.5f
         }
     }
+
+    private fun requestBackgroundBootstrap() {
+        val shouldBootstrap = synchronized(MainActivity::class.java) {
+            if (backgroundBootstrapRequested) {
+                false
+            } else {
+                backgroundBootstrapRequested = true
+                true
+            }
+        }
+        if (!shouldBootstrap) return
+
+        runCatching {
+            AppNetworkService.start(applicationContext)
+            NetworkBootstrapScheduler.schedule(applicationContext)
+            ChatNodeManager.ensureBackgroundNetwork(applicationContext)
+        }.onFailure {
+            synchronized(MainActivity::class.java) {
+                backgroundBootstrapRequested = false
+            }
+        }
+    }
+}
+
+@androidx.compose.runtime.Composable
+private fun PrivateAccessSetupScreen(
+    onReady: () -> Unit
+) {
+    val context = LocalContext.current
+    ProtectedWindowCapture(enabled = true)
+    var mode by rememberSaveable { mutableStateOf(PrivateAccessMode.Chooser) }
+    var generatedPhrase by rememberSaveable { mutableStateOf("") }
+    var restorePhrase by rememberSaveable { mutableStateOf("") }
+    var restoreError by rememberSaveable { mutableStateOf("") }
+
+    fun createNewRoute() {
+        AppSecurityManager.createNewRouteIdentity(context)
+            .onSuccess {
+                generatedPhrase = it
+                restoreError = ""
+                mode = PrivateAccessMode.CreateNew
+            }
+            .onFailure {
+                restoreError = it.message ?: "Não foi possível configurar o acesso privado"
+            }
+    }
+
+    fun finishWithCreatedRoute() {
+        AppSecurityManager.completePrivateAccessSetup()
+        onReady()
+    }
+
+    fun restoreRoute() {
+        AppSecurityManager.restoreRouteIdentityFromSetup(context, restorePhrase)
+            .onSuccess {
+                restoreError = ""
+                onReady()
+            }
+            .onFailure {
+                restoreError = it.message ?: "Não foi possível configurar o acesso privado"
+            }
+    }
+
+    Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(20.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Surface(shape = MaterialTheme.shapes.large, tonalElevation = 2.dp) {
+                Column(
+                    modifier = Modifier.padding(20.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text("Token de acesso privado", style = MaterialTheme.typography.headlineSmall)
+                    when (mode) {
+                        PrivateAccessMode.Chooser -> {
+                            Text(
+                                text = "Escolha como configurar sua rota antes de entrar no app.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Button(
+                                onClick = { createNewRoute() },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("Criar nova rota")
+                            }
+                            TextButton(
+                                onClick = {
+                                    restoreError = ""
+                                    mode = PrivateAccessMode.Restore
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("Restaurar acesso privado")
+                            }
+                        }
+                        PrivateAccessMode.CreateNew -> {
+                            Text(
+                                text = "Guarde estas 12 palavras. Elas não serão mostradas novamente.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Surface(
+                                color = MaterialTheme.colorScheme.surfaceVariant,
+                                shape = MaterialTheme.shapes.medium
+                            ) {
+                                Text(
+                                    text = generatedPhrase,
+                                    modifier = Modifier.padding(14.dp),
+                                    style = MaterialTheme.typography.bodyLarge
+                                )
+                            }
+                            TextButton(
+                                onClick = {
+                                    SensitiveClipboard.copy(
+                                        context,
+                                        "Token de acesso privado",
+                                        generatedPhrase
+                                    )
+                                    Toast.makeText(
+                                        context,
+                                        "Palavra-passe copiada por 60 segundos",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("Copiar palavra-passe")
+                            }
+                            Button(
+                                onClick = { finishWithCreatedRoute() },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("Entrar")
+                            }
+                        }
+                        PrivateAccessMode.Restore -> {
+                            Text(
+                                text = "Digite sua palavra-passe de 12 palavras para restaurar a rota.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            OutlinedTextField(
+                                value = restorePhrase,
+                                onValueChange = {
+                                    restorePhrase = it
+                                    restoreError = ""
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                                minLines = 3,
+                                maxLines = 5,
+                                label = { Text("12 palavras") },
+                                keyboardOptions = KeyboardOptions(
+                                    capitalization = KeyboardCapitalization.None,
+                                    autoCorrectEnabled = false,
+                                    keyboardType = KeyboardType.Text,
+                                    imeAction = ImeAction.Done
+                                )
+                            )
+                            if (restoreError.isNotBlank()) {
+                                Text(restoreError, color = MaterialTheme.colorScheme.error)
+                            }
+                            Button(
+                                onClick = { restoreRoute() },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("Restaurar e entrar")
+                            }
+                            TextButton(
+                                onClick = {
+                                    restoreError = ""
+                                    mode = PrivateAccessMode.Chooser
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("Voltar")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private enum class PrivateAccessMode {
+    Chooser,
+    CreateNew,
+    Restore
 }
 
 @androidx.compose.runtime.Composable
@@ -265,10 +497,15 @@ private fun AppLockScreen(
                         singleLine = true,
                         visualTransformation = PasswordVisualTransformation(),
                         keyboardOptions = KeyboardOptions(
+                            capitalization = KeyboardCapitalization.None,
+                            autoCorrectEnabled = false,
                             keyboardType = KeyboardType.Password,
                             imeAction = if (confirmLabel == "Criar senha") ImeAction.Next else ImeAction.Done
                         ),
-                        keyboardActions = KeyboardActions(onDone = { submit() })
+                        keyboardActions = KeyboardActions(onDone = { submit() }),
+                        supportingText = {
+                            Text("Entrada privada: sem sugestões do teclado.")
+                        }
                     )
                     if (!readOnly && confirmLabel == "Criar senha") {
                         OutlinedTextField(
@@ -282,6 +519,8 @@ private fun AppLockScreen(
                             singleLine = true,
                             visualTransformation = PasswordVisualTransformation(),
                             keyboardOptions = KeyboardOptions(
+                                capitalization = KeyboardCapitalization.None,
+                                autoCorrectEnabled = false,
                                 keyboardType = KeyboardType.Password,
                                 imeAction = ImeAction.Done
                             ),

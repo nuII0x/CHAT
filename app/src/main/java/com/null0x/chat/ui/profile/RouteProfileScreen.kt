@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
@@ -37,10 +38,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.null0x.chat.ui.maskedRouteLabel
+import com.null0x.chat.ui.common.SwipeToCloseContainer
+import com.null0x.chat.ui.security.ProtectedWindowCapture
 import com.null0x.chat.viewmodel.ChatViewModel
 
 @Composable
@@ -50,6 +55,7 @@ fun RouteProfileScreen(
     onSaveLocalName: (String, String) -> Unit
 ) {
     var localName by rememberSaveable(profile.route) { mutableStateOf(profile.localName) }
+    ProtectedWindowCapture(enabled = true)
 
     LaunchedEffect(profile.route, profile.localName) {
         if (localName.isBlank() && profile.localName.isNotBlank()) {
@@ -57,119 +63,134 @@ fun RouteProfileScreen(
         }
     }
 
-    Scaffold(
-        modifier = Modifier.fillMaxSize(),
-        topBar = {
-            Surface(
-                color = Color.Black,
-                tonalElevation = 1.dp,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 6.dp, vertical = 6.dp)
+    SwipeToCloseContainer(onClose = onBack) {
+        Scaffold(
+            modifier = Modifier.fillMaxSize(),
+            topBar = {
+                Surface(
+                    color = Color.Black,
+                    tonalElevation = 1.dp,
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    IconButton(onClick = onBack) {
-                        Icon(
-                            Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Voltar",
-                            tint = Color.White
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 6.dp, vertical = 6.dp)
+                    ) {
+                        IconButton(onClick = onBack) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "Voltar",
+                                tint = Color.White
+                            )
+                        }
+                        Text(
+                            text = "Perfil da rota",
+                            modifier = Modifier.align(Alignment.Center),
+                            style = MaterialTheme.typography.titleMedium,
+                            color = Color.White,
+                            fontWeight = FontWeight.SemiBold
                         )
                     }
-                    Text(
-                        text = "Perfil da rota",
-                        modifier = Modifier.align(Alignment.Center),
-                        style = MaterialTheme.typography.titleMedium,
-                        color = Color.White,
-                        fontWeight = FontWeight.SemiBold
-                    )
                 }
             }
-        }
-    ) { innerPadding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-                .padding(horizontal = 14.dp, vertical = 14.dp)
-                .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(22.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant,
-                tonalElevation = 1.dp
+        ) { innerPadding ->
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding)
+                    .padding(horizontal = 14.dp, vertical = 14.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(22.dp),
+                    color = Color.Transparent,
+                    tonalElevation = 0.dp
                 ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        ProfileAvatar(text = profile.displayName, emoji = profile.emoji)
-                        Column(modifier = Modifier.widthIn(max = 260.dp)) {
-                            Text(
-                                text = profile.displayName.ifBlank { "Rota" },
-                                style = MaterialTheme.typography.titleLarge,
-                                fontWeight = FontWeight.SemiBold,
-                                maxLines = 2,
-                                overflow = TextOverflow.Clip
-                            )
-                            Text(
-                                text = profile.source,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            ProfileAvatar(text = profile.displayName, emoji = profile.emoji)
+                            Column(modifier = Modifier.widthIn(max = 260.dp)) {
+                                Text(
+                                    text = profile.displayName.ifBlank { "Rota" },
+                                    style = MaterialTheme.typography.titleLarge,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Clip
+                                )
+                                Text(
+                                    text = profile.source,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
                         }
-                    }
 
-                    ProfileInfoBlock(
-                        title = "Token da rota",
-                        content = maskedRouteLabel(profile.route)
-                    )
-
-                    if (profile.bio.isNotBlank()) {
                         ProfileInfoBlock(
-                            title = "Bio",
-                            content = profile.bio,
-                            emphasizeContent = true
+                            title = "Token da rota",
+                            content = maskedRouteLabel(profile.route)
                         )
-                    }
+                        Text(
+                            text = "Captura protegida enquanto este perfil estiver aberto.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
 
-                    OutlinedTextField(
-                        value = localName,
-                        onValueChange = { localName = it },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                        label = { Text("Nome local") },
-                        shape = RoundedCornerShape(14.dp)
-                    )
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.End
-                    ) {
-                        TextButton(
-                            onClick = {
-                                localName = ""
-                                onSaveLocalName(profile.route, "")
-                            }
-                        ) {
-                            Text("Remover nome")
+                        if (profile.bio.isNotBlank()) {
+                            ProfileInfoBlock(
+                                title = "Bio",
+                                content = profile.bio,
+                                emphasizeContent = true
+                            )
                         }
-                        Spacer(Modifier.width(8.dp))
-                        Button(
-                            onClick = {
-                                onSaveLocalName(profile.route, localName.trim())
-                            }
+
+                        OutlinedTextField(
+                            value = localName,
+                            onValueChange = { localName = it.take(MAX_LOCAL_NAME_CHARS) },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            label = { Text("Nome local") },
+                            supportingText = {
+                                Text("${localName.length}/$MAX_LOCAL_NAME_CHARS · salvo só neste aparelho")
+                            },
+                            keyboardOptions = KeyboardOptions(
+                                capitalization = KeyboardCapitalization.Words,
+                                autoCorrectEnabled = false,
+                                imeAction = ImeAction.Done
+                            ),
+                            shape = RoundedCornerShape(14.dp)
+                        )
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.End
                         ) {
-                            Text("Salvar")
+                            TextButton(
+                                onClick = {
+                                    localName = ""
+                                    onSaveLocalName(profile.route, "")
+                                }
+                            ) {
+                                Text("Remover nome")
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            Button(
+                                onClick = {
+                                    onSaveLocalName(profile.route, localName.trim())
+                                }
+                            ) {
+                                Text("Salvar")
+                            }
                         }
                     }
                 }
@@ -177,6 +198,8 @@ fun RouteProfileScreen(
         }
     }
 }
+
+private const val MAX_LOCAL_NAME_CHARS = 64
 
 @Composable
 private fun ProfileAvatar(text: String, emoji: String) {

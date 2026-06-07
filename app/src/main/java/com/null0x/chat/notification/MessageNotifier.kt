@@ -55,7 +55,7 @@ class MessageNotifier(private val context: Context) {
 
         val intent = Intent(context, MainActivity::class.java).apply {
             action = ACTION_OPEN_CHAT
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
             putExtra(EXTRA_OPEN_CHAT_TOKEN, token)
         }
         val pendingIntent = PendingIntent.getActivity(
@@ -64,6 +64,14 @@ class MessageNotifier(private val context: Context) {
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
+        val publicNotification = NotificationCompat.Builder(context, channelId)
+            .setSmallIcon(R.drawable.ic_stat_rotasegura)
+            .setContentTitle("RotaSegura")
+            .setContentText("Nova mensagem privada")
+            .setLocalOnly(true)
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .build()
 
         val notification = NotificationCompat.Builder(context, channelId)
             .setSmallIcon(R.drawable.ic_stat_rotasegura)
@@ -78,6 +86,8 @@ class MessageNotifier(private val context: Context) {
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .setVisibility(NotificationCompat.VISIBILITY_SECRET)
+            .setPublicVersion(publicNotification)
+            .setAllowSystemGeneratedContextualActions(false)
             .build()
 
         runCatching {

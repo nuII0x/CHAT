@@ -1,11 +1,6 @@
 package com.null0x.chat.ui.chat
 
-import android.app.Activity
-import android.content.ClipData
-import android.content.ClipboardManager
 import android.content.Context
-import android.content.ContextWrapper
-import android.view.WindowManager
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -47,18 +42,20 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -75,6 +72,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -102,8 +100,12 @@ import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.map
 import com.null0x.chat.model.DeliveryState
 import com.null0x.chat.model.Message
+import com.null0x.chat.network.TorManager
+import com.null0x.chat.security.SensitiveClipboard
+import com.null0x.chat.ui.common.SwipeToCloseContainer
 import com.null0x.chat.ui.maskedRouteLabel
 import com.null0x.chat.ui.profile.RouteProfileScreen
+import com.null0x.chat.ui.security.ProtectedWindowCapture
 import com.null0x.chat.viewmodel.ChatViewModel
 import android.widget.Toast
 import androidx.compose.material3.AlertDialog
@@ -120,6 +122,8 @@ fun ChatScreen(vm: ChatViewModel, onBack: () -> Unit) {
     var selectedMessage by remember { mutableStateOf<Message?>(null) }
     var selectableMessageIds by remember { mutableStateOf(emptySet<String>()) }
     val context = LocalContext.current
+    val torStatus by TorManager.status.collectAsState()
+    val networkAvailable by TorManager.networkAvailableState.collectAsState()
     val keyboardController = LocalSoftwareKeyboardController.current
     val composerFocusRequester = remember { FocusRequester() }
     val peers = remember(vm.startedConversations.toList(), vm.targetUsername) {
@@ -136,13 +140,16 @@ fun ChatScreen(vm: ChatViewModel, onBack: () -> Unit) {
         pageCount = { if (peers.isEmpty()) 1 else peers.size }
     )
 
-    BackHandler(enabled = showProfile) {
+    BackHandler(enabled = showChatSettings) {
+        showChatSettings = false
+    }
+    BackHandler(enabled = showProfile && !showChatSettings) {
         showProfile = false
     }
-    BackHandler(enabled = !showProfile) {
+    BackHandler(enabled = !showProfile && !showChatSettings) {
         onBack()
     }
-    SecureChatWindow(context, allowScreenshots = vm.isCurrentChatScreenshotsEnabled())
+    ProtectedWindowCapture(enabled = !vm.isCurrentChatScreenshotsEnabled())
 
     LaunchedEffect(peers, vm.targetUsername) {
         val target = vm.targetUsername.trim()
@@ -165,9 +172,19 @@ fun ChatScreen(vm: ChatViewModel, onBack: () -> Unit) {
     }
 
     val headerUser = peers.getOrNull(pagerState.currentPage)?.trim().orEmpty().ifBlank { vm.targetUsername }
-    val chatRouteLabel = chatRoutePresenceLabel(vm.isPartnerOnline(headerUser))
+    val chatTitle = vm.chatTitleFor(headerUser)
+    val sourceTitle = "Chats"
+    val chatRouteLabel = chatRoutePresenceLabel(
+        networkAvailable = networkAvailable,
+        torReady = torStatus is TorManager.Status.Ready,
+        partnerConnected = vm.isPartnerOnline(headerUser)
+    )
     val unreadHintCount = vm.unreadEntryCountFor(headerUser)
     val currentChatLoaded = vm.isCurrentChatLoaded()
+
+    LaunchedEffect(context) {
+        TorManager.ensureNetworkMonitoring(context)
+    }
 
     LaunchedEffect(headerUser) {
         composerFocusRequester.requestFocus()
@@ -254,23 +271,30 @@ fun ChatScreen(vm: ChatViewModel, onBack: () -> Unit) {
                 topBar = {
                     Column {
                         ChatHeader(
-                            title = vm.chatTitleFor(headerUser),
+                            title = chatTitle,
                             subtitle = chatRouteLabel,
-                            sourceTitle = "Chats",
+                            sourceTitle = sourceTitle,
                             sourceSubtitle = chatRouteLabel,
                             sourceEmoji = vm.profileEmojiSymbol,
                             targetEmoji = vm.emojiForRoute(headerUser),
                             openingProgress = openingProgress,
                             onBack = onBack,
                             onClear = { vm.clearConversation(headerUser) },
+                            contactBlocked = vm.isContactBlocked(headerUser),
+                            onToggleContactBlock = {
+                                if (vm.isContactBlocked(headerUser)) {
+                                    vm.unblockContact(headerUser)
+                                } else {
+                                    vm.blockContact(headerUser)
+                                }
+                            },
                             onOpenProfile = {
                                 profileRoute = headerUser
                                 showProfile = true
                             },
                             onCopyRoute = {
-                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                clipboard.setPrimaryClip(ClipData.newPlainText("Rota contato", maskedRouteLabel(headerUser)))
-                                Toast.makeText(context, "Token da rota copiado", Toast.LENGTH_SHORT).show()
+                                SensitiveClipboard.copy(context, "Rota contato", maskedRouteLabel(headerUser))
+                                Toast.makeText(context, "Token sensível copiado por 60 segundos", Toast.LENGTH_SHORT).show()
                             },
                             onOpenSettings = { showChatSettings = true }
                         )
@@ -366,13 +390,18 @@ fun ChatScreen(vm: ChatViewModel, onBack: () -> Unit) {
         )
     }
 
-    if (showChatSettings) {
-        ChatSettingsDialog(
+    AnimatedVisibility(
+        visible = showChatSettings,
+        enter = slideInHorizontally(initialOffsetX = { fullWidth -> fullWidth }) + fadeIn(),
+        exit = slideOutHorizontally(targetOffsetX = { fullWidth -> fullWidth }) + fadeOut()
+    ) {
+        ChatSettingsScreen(
+            chatTitle = vm.chatTitleFor(vm.targetUsername),
             keepViewedMessages = vm.isCurrentChatLocalKeepViewedMessagesEnabled(),
             screenshotsEnabled = vm.isCurrentChatLocalScreenshotsEnabled(),
             onKeepViewedMessagesChange = vm::updateCurrentChatKeepViewedMessagesPreference,
             onScreenshotsEnabledChange = vm::updateCurrentChatScreenshotsPreference,
-            onDismiss = { showChatSettings = false }
+            onBack = { showChatSettings = false }
         )
     }
 
@@ -392,30 +421,6 @@ fun ChatScreen(vm: ChatViewModel, onBack: () -> Unit) {
     }
 }
 
-@Composable
-private fun SecureChatWindow(context: Context, allowScreenshots: Boolean) {
-    DisposableEffect(context, allowScreenshots) {
-        val window = context.findActivity()?.window
-        if (!allowScreenshots) {
-            window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
-        }
-        onDispose {
-            if (!allowScreenshots) {
-                window?.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
-            }
-        }
-    }
-}
-
-private fun Context.findActivity(): Activity? {
-    var current = this
-    while (current is ContextWrapper) {
-        if (current is Activity) return current
-        current = current.baseContext
-    }
-    return null
-}
-
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ChatHeader(
@@ -428,6 +433,8 @@ private fun ChatHeader(
     openingProgress: Float,
     onBack: () -> Unit,
     onClear: () -> Unit,
+    contactBlocked: Boolean,
+    onToggleContactBlock: () -> Unit,
     onOpenProfile: () -> Unit,
     onCopyRoute: () -> Unit,
     onOpenSettings: () -> Unit
@@ -556,6 +563,13 @@ private fun ChatHeader(
                         }
                     )
                     DropdownMenuItem(
+                        text = { Text(if (contactBlocked) "Desbloquear" else "Bloquear") },
+                        onClick = {
+                            showMenu = false
+                            onToggleContactBlock()
+                        }
+                    )
+                    DropdownMenuItem(
                         text = { Text("Configuração") },
                         leadingIcon = {
                             Icon(
@@ -575,43 +589,86 @@ private fun ChatHeader(
 }
 
 @Composable
-private fun ChatSettingsDialog(
+private fun ChatSettingsScreen(
+    chatTitle: String,
     keepViewedMessages: Boolean,
     screenshotsEnabled: Boolean,
     onKeepViewedMessagesChange: (Boolean) -> Unit,
     onScreenshotsEnabledChange: (Boolean) -> Unit,
-    onDismiss: () -> Unit
+    onBack: () -> Unit
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Configuração do chat") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text(
-                    text = "Ajuste as opções deste chat por aqui.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                ChatSettingsRow(
-                    title = "Histórico ao sair",
-                    subtitle = if (keepViewedMessages) "Manter conversa ao fechar" else "Apagar conversa ao fechar",
-                    checked = keepViewedMessages,
-                    onCheckedChange = onKeepViewedMessagesChange
-                )
-                ChatSettingsRow(
-                    title = "Print da tela",
-                    subtitle = if (screenshotsEnabled) "Permitido neste chat" else "Bloqueado neste chat",
-                    checked = screenshotsEnabled,
-                    onCheckedChange = onScreenshotsEnabledChange
-                )
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Fechar")
+    SwipeToCloseContainer(onClose = onBack) {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = MaterialTheme.colorScheme.background
+        ) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                Surface(color = TitleBarColor) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(ChatHeaderHeight)
+                            .padding(horizontal = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        IconButton(onClick = onBack) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "Voltar",
+                                tint = Color.White
+                            )
+                        }
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.Center
+                        ) {
+                            Text(
+                                text = "Configuração do chat",
+                                color = Color.White,
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = chatTitle,
+                                color = Color.White.copy(alpha = 0.78f),
+                                style = MaterialTheme.typography.bodySmall,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 16.dp, vertical = 18.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    Text(
+                        text = "Privacidade desta conversa",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    ChatSettingsChoiceRow(
+                        title = "Limpar histórico ao sair?",
+                        subtitle = if (keepViewedMessages) "Mantém mensagens ao fechar" else "Apaga mensagens lidas ao sair",
+                        checked = !keepViewedMessages,
+                        onCheckedChange = { onKeepViewedMessagesChange(!it) }
+                    )
+                    ChatSettingsRow(
+                        title = "Print da tela",
+                        subtitle = if (screenshotsEnabled) "Permitido neste chat" else "Bloqueado neste chat",
+                        checked = screenshotsEnabled,
+                        onCheckedChange = onScreenshotsEnabledChange
+                    )
+                }
             }
         }
-    )
+    }
 }
 
 @Composable
@@ -622,35 +679,131 @@ private fun ChatSettingsRow(
     onCheckedChange: (Boolean) -> Unit
 ) {
     Surface(
-        modifier = Modifier.clickable { onCheckedChange(!checked) },
-        shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant,
-        tonalElevation = 1.dp
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onCheckedChange(!checked) },
+        color = Color.Transparent,
+        tonalElevation = 0.dp
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 12.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(modifier = Modifier.widthIn(max = 220.dp)) {
-                Text(
-                    text = title,
-                    fontWeight = FontWeight.SemiBold
-                )
-                Text(
-                    text = subtitle,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(end = 12.dp)
+                ) {
+                    Text(
+                        text = title,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = subtitle,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = checked,
+                    onCheckedChange = onCheckedChange
                 )
             }
-            Switch(
-                checked = checked,
-                onCheckedChange = onCheckedChange
-            )
+            ChatListSeparator()
         }
     }
+}
+
+@Composable
+private fun ChatSettingsChoiceRow(
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onCheckedChange(!checked) },
+        color = Color.Transparent,
+        tonalElevation = 0.dp
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(end = 12.dp)
+                ) {
+                    Text(
+                        text = title,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = subtitle,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Surface(
+                    shape = RoundedCornerShape(999.dp),
+                    color = if (checked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.10f),
+                    tonalElevation = 0.dp,
+                    modifier = Modifier.width(104.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 7.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (checked) {
+                            Text(
+                                text = "Sim",
+                                color = MaterialTheme.colorScheme.onPrimary,
+                                fontWeight = FontWeight.Bold
+                            )
+                            SwitchKnob(active = true)
+                        } else {
+                            SwitchKnob(active = false)
+                            Text(
+                                text = "Não",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
+            }
+            ChatListSeparator()
+        }
+    }
+}
+
+@Composable
+private fun ChatListSeparator() {
+    HorizontalDivider(
+        thickness = 1.dp,
+        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.24f)
+    )
+}
+
+@Composable
+private fun SwitchKnob(active: Boolean) {
+    Surface(
+        shape = CircleShape,
+        color = if (active) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.size(18.dp)
+    ) {}
 }
 
 @Composable
@@ -674,8 +827,8 @@ private fun MessageList(
         ) {
             Surface(
                 shape = RoundedCornerShape(20.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant,
-                tonalElevation = 1.dp
+                color = Color.Transparent,
+                tonalElevation = 0.dp
             ) {
                 Text(
                     text = "Sem mensagens ainda",
@@ -870,8 +1023,8 @@ private fun PrivacyNoticeDivider(text: String) {
 private fun UnreadHintBar(count: Int, onDismiss: () -> Unit) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        color = MaterialTheme.colorScheme.surfaceVariant,
-        tonalElevation = 1.dp,
+        color = Color.Transparent,
+        tonalElevation = 0.dp,
         shape = RoundedCornerShape(14.dp)
     ) {
         Row(
@@ -1027,11 +1180,16 @@ private fun MessageComposer(
     onInputChange: (String) -> Unit,
     onSend: () -> Unit
 ) {
+    val isLightSurface = MaterialTheme.colorScheme.surface.luminance() > 0.5f
+    val fieldBackground = if (isLightSurface) Color.White else Color.Black
+    val fieldForeground = if (isLightSurface) Color.Black else Color.White
+    val fieldBorder = fieldForeground.copy(alpha = 0.72f)
+    val fieldMuted = fieldForeground.copy(alpha = 0.58f)
     Surface(
         modifier = Modifier.fillMaxWidth(),
         tonalElevation = 3.dp,
         shape = RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp),
-        color = MaterialTheme.colorScheme.surface
+        color = fieldBackground
     ) {
         Column(
             modifier = Modifier
@@ -1048,16 +1206,28 @@ private fun MessageComposer(
                     maxLines = 4,
                     shape = RoundedCornerShape(20.dp),
                     placeholder = { Text("Mensagem") },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = fieldForeground,
+                        unfocusedTextColor = fieldForeground,
+                        focusedContainerColor = fieldBackground,
+                        unfocusedContainerColor = fieldBackground,
+                        disabledContainerColor = fieldBackground,
+                        cursorColor = fieldForeground,
+                        focusedBorderColor = fieldBorder,
+                        unfocusedBorderColor = fieldBorder,
+                        focusedPlaceholderColor = fieldMuted,
+                        unfocusedPlaceholderColor = fieldMuted
+                    ),
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                     keyboardActions = KeyboardActions(onSend = { onSend() })
                 )
                 Spacer(Modifier.width(8.dp))
-                Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primary) {
+                Surface(shape = CircleShape, color = fieldForeground) {
                     IconButton(onClick = onSend) {
                         Icon(
                             Icons.AutoMirrored.Outlined.Send,
                             contentDescription = "Enviar",
-                            tint = MaterialTheme.colorScheme.onPrimary
+                            tint = fieldBackground
                         )
                     }
                 }
@@ -1113,6 +1283,26 @@ private fun compactOnionRoute(value: String): String {
     return "onion:${host.take(12)}...${host.takeLast(10)}:$port"
 }
 
-private fun chatRoutePresenceLabel(partnerConnected: Boolean): String {
-    return if (partnerConnected) "conectado" else "desconectado"
+private fun chatRoutePresenceLabel(
+    networkAvailable: Boolean,
+    torReady: Boolean,
+    partnerConnected: Boolean
+): String {
+    val networkStatus = chatNetworkStatusLabel(
+        networkAvailable = networkAvailable,
+        torReady = torReady
+    )
+    if (networkStatus.isNotBlank()) return networkStatus
+    return if (partnerConnected) "disponível" else ""
+}
+
+private fun chatNetworkStatusLabel(
+    networkAvailable: Boolean,
+    torReady: Boolean
+): String {
+    return when {
+        !networkAvailable -> "Aguardando rede..."
+        !torReady -> "Conectando..."
+        else -> ""
+    }
 }

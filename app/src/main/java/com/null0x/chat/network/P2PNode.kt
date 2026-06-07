@@ -6,6 +6,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import com.null0x.chat.security.identity.OnionHttpRequest
+import com.null0x.chat.security.identity.OnionHttpResponse
 import java.io.BufferedReader
 import java.io.IOException
 import java.io.InputStream
@@ -58,7 +60,8 @@ class P2PNode(
         scope: CoroutineScope,
         onUsernameReady: (String) -> Unit,
         onMessage: (fromUsername: String, text: String) -> Unit,
-        onPeersChanged: (List<String>, Map<String, String>) -> Unit
+        onPeersChanged: (List<String>, Map<String, String>) -> Unit,
+        onHttpRequest: ((OnionHttpRequest) -> OnionHttpResponse)? = null
     ) {
         if (tcpJob?.isActive == true) return
 
@@ -76,7 +79,7 @@ class P2PNode(
                             val socket = server.accept()
                             launch {
                                 runCatching {
-                                    socket.use { handleIncomingSocket(it, onMessage) }
+                                    socket.use { handleIncomingSocket(it, onMessage, onHttpRequest) }
                                 }
                             }
                         }
@@ -146,20 +149,112 @@ class P2PNode(
 
     private fun handleIncomingSocket(
         socket: Socket,
-        onMessage: (fromUsername: String, text: String) -> Unit
+        onMessage: (fromUsername: String, text: String) -> Unit,
+        onHttpRequest: ((OnionHttpRequest) -> OnionHttpResponse)?
     ) {
         socket.soTimeout = INCOMING_SOCKET_TIMEOUT_MS
         val reader = BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.UTF_8))
+        val firstLine = readBoundedLine(reader, MAX_INCOMING_CIPHER_CHARS) ?: return
+        if (isHttpRequestLine(firstLine)) {
+            handleHttpSocket(socket, reader, firstLine, onHttpRequest)
+            return
+        }
+        handleEncryptedLine(firstLine, onMessage)
         while (true) {
             val line = readBoundedLine(reader, MAX_INCOMING_CIPHER_CHARS) ?: break
-            val plain = SimpleCipher.decrypt(line) ?: continue
-            if (plain.length > MAX_INCOMING_PLAIN_CHARS) continue
-            val separator = plain.indexOf('|')
-            if (separator <= 0) continue
-            val fromUser = plain.substring(0, separator)
-            val message = plain.substring(separator + 1)
-            if (RouteEndpoint.parse(fromUser) == null) continue
-            onMessage(fromUser, message)
+            handleEncryptedLine(line, onMessage)
+        }
+    }
+
+    private fun handleEncryptedLine(
+        line: String,
+        onMessage: (fromUsername: String, text: String) -> Unit
+    ) {
+        val plain = SimpleCipher.decrypt(line) ?: return
+        if (plain.length > MAX_INCOMING_PLAIN_CHARS) return
+        val separator = plain.indexOf('|')
+        if (separator <= 0) return
+        val fromUser = plain.substring(0, separator)
+        val message = plain.substring(separator + 1)
+        if (RouteEndpoint.parse(fromUser) == null) return
+        onMessage(fromUser, message)
+    }
+
+    private fun handleHttpSocket(
+        socket: Socket,
+        reader: BufferedReader,
+        requestLine: String,
+        onHttpRequest: ((OnionHttpRequest) -> OnionHttpResponse)?
+    ) {
+        val parts = requestLine.split(' ', limit = 3)
+        if (parts.size < 2 || onHttpRequest == null) {
+            writeHttpResponse(socket, OnionHttpResponse(404, """{"ok":false,"error":"Rota nao encontrada"}"""))
+            return
+        }
+        val headers = mutableMapOf<String, String>()
+        while (true) {
+            val line = readBoundedLine(reader, 8 * 1024) ?: break
+            if (line.isBlank()) break
+            val separator = line.indexOf(':')
+            if (separator > 0) {
+                headers[line.substring(0, separator).trim().lowercase()] = line.substring(separator + 1).trim()
+            }
+        }
+        val contentLength = headers["content-length"]?.toIntOrNull()?.coerceIn(0, MAX_INCOMING_PLAIN_CHARS) ?: 0
+        val body = if (contentLength > 0) {
+            val buffer = CharArray(contentLength)
+            var offset = 0
+            while (offset < contentLength) {
+                val read = reader.read(buffer, offset, contentLength - offset)
+                if (read < 0) break
+                offset += read
+            }
+            String(buffer, 0, offset)
+        } else {
+            ""
+        }
+        val response = onHttpRequest(
+            OnionHttpRequest(
+                method = parts[0].trim().uppercase(),
+                path = parts[1].trim().substringBefore('?'),
+                headers = headers,
+                body = body,
+                remoteKey = socket.inetAddress?.hostAddress.orEmpty()
+            )
+        )
+        writeHttpResponse(socket, response)
+    }
+
+    private fun writeHttpResponse(socket: Socket, response: OnionHttpResponse) {
+        val bodyBytes = response.body.toByteArray(Charsets.UTF_8)
+        val header = buildString {
+            append("HTTP/1.1 ${response.statusCode} ${statusText(response.statusCode)}\r\n")
+            append("Content-Type: ${response.contentType}\r\n")
+            append("Content-Length: ${bodyBytes.size}\r\n")
+            append("Connection: close\r\n")
+            append("\r\n")
+        }.toByteArray(Charsets.UTF_8)
+        socket.getOutputStream().write(header)
+        socket.getOutputStream().write(bodyBytes)
+        socket.getOutputStream().flush()
+    }
+
+    private fun isHttpRequestLine(line: String): Boolean {
+        return line.startsWith("GET ") || line.startsWith("POST ") || line.startsWith("DELETE ")
+    }
+
+    private fun statusText(status: Int): String {
+        return when (status) {
+            200 -> "OK"
+            400 -> "Bad Request"
+            401 -> "Unauthorized"
+            403 -> "Forbidden"
+            404 -> "Not Found"
+            409 -> "Conflict"
+            413 -> "Payload Too Large"
+            429 -> "Too Many Requests"
+            503 -> "Service Unavailable"
+            else -> "OK"
         }
     }
 

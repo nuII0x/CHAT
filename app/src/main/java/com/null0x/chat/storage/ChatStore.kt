@@ -121,11 +121,15 @@ class ChatStore(context: Context) {
     }
 
     @Synchronized
-    fun clearViewedMessages(peer: String) {
+    fun clearViewedMessages(peer: String, keepIncomingSince: Long = 0L) {
         val current = load(peer)
         if (current.isEmpty()) return
         val kept = current.filter { message ->
-            message.isMine && message.delivery != DeliveryState.Sent && message.delivery != DeliveryState.Delivered
+            when {
+                message.isMine -> message.delivery != DeliveryState.Delivered
+                keepIncomingSince > 0L -> message.timestamp >= keepIncomingSince
+                else -> false
+            }
         }
         if (kept.isEmpty()) {
             clear(peer)
@@ -136,17 +140,25 @@ class ChatStore(context: Context) {
 
     @Synchronized
     fun remove(peer: String) {
-        val clean = peer.trim()
-        if (clean.isBlank()) return
+    val clean = peer.trim()
+    if (clean.isBlank()) return
 
-        chatFile(clean).delete()
-        val peers = knownPeers().filterNot { it == clean }
-        if (peers.isEmpty()) {
-            peersIndexFile.delete()
-        } else {
-            peersIndexFile.writeText(peers.joinToString(separator = "\n") { encodePeerIndexLine(it) })
-        }
+    chatFile(clean).delete()
+
+    // Remove o nome/apelido associado ao contato
+    removePreferredLabel(clean)
+
+    val peers = knownPeers().filterNot { it == clean }
+    if (peers.isEmpty()) {
+        peersIndexFile.delete()
+    } else {
+        peersIndexFile.writeText(
+            peers.joinToString(separator = "\n") {
+                encodePeerIndexLine(it)
+            }
+        )
     }
+}
 
     @Synchronized
     fun migratePeer(fromPeer: String, toPeer: String) {
@@ -186,6 +198,15 @@ class ChatStore(context: Context) {
         val clean = peer.trim()
         if (clean.isBlank()) return null
         return ensurePreferredLabelsCache()[clean]
+    }
+
+    @Synchronized
+    fun removePreferredLabel(peer: String) {
+        val clean = peer.trim()
+        if (clean.isBlank()) return
+        val labels = ensurePreferredLabelsCache()
+        if (labels.remove(clean) == null) return
+        writePreferredLabels(labels)
     }
 
     private fun chatFile(peer: String): File {
@@ -280,6 +301,10 @@ class ChatStore(context: Context) {
 
         val labels = ensurePreferredLabelsCache()
         labels[cleanPeer] = cleanLabel
+        writePreferredLabels(labels)
+    }
+
+    private fun writePreferredLabels(labels: Map<String, String>) {
         if (labels.isEmpty()) {
             preferredLabelsFile.delete()
             return

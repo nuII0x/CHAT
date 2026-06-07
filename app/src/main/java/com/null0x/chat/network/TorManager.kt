@@ -70,6 +70,13 @@ object TorManager {
     fun socksPort(): Int = TorService.socksPort.takeIf { it > 0 } ?: DEFAULT_SOCKS_PORT
     fun onionAddress(): String = onionHost
     fun isNetworkAvailable(): Boolean = networkAvailable
+    fun ensureNetworkMonitoring(context: Context) {
+        val appContext = context.applicationContext
+        appContextRef = appContext
+        ensureNetworkCallback(appContext)
+        updateNetworkAvailability(appContext)
+    }
+
     fun onionRoute(port: Int): String {
         if (_status.value !is Status.Ready) return ""
         if (onionHost.isBlank()) {
@@ -99,7 +106,7 @@ object TorManager {
         ).joinToString(separator = "\n", postfix = "\n")
         torrc.writeText(torrcText)
         record(appContext, "torrc atualizado: ${torrc.absolutePath}")
-        record(appContext, "torrc: ${torrcText.trim().replace('\n', ';')}")
+        record(appContext, "servico onion configurado: porta local=$localPort")
         refreshOnionAddress(appContext)
     }
 
@@ -107,8 +114,7 @@ object TorManager {
         val appContext = context.applicationContext
         appContextRef = appContext
         ensureNetworkCallback(appContext)
-        networkAvailable = isNetworkAvailable(appContext)
-        _networkAvailableState.value = networkAvailable
+        networkAvailable = updateNetworkAvailability(appContext)
         if (!networkAvailable) {
             record(appContext, "rede Android indisponivel")
             waitForNetwork(appContext)
@@ -198,8 +204,7 @@ object TorManager {
         runCatching {
             manager.registerDefaultNetworkCallback(networkCallback)
             networkCallbackRegistered = true
-            networkAvailable = isNetworkAvailable(appContext)
-            _networkAvailableState.value = networkAvailable
+            networkAvailable = updateNetworkAvailability(appContext)
             record(appContext, "monitor de rede registrado: disponivel=$networkAvailable")
         }
             .onFailure { record(appContext, "falha no monitor de rede: ${it.message.orEmpty()}") }
@@ -208,8 +213,14 @@ object TorManager {
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
             val appContext = appContextRef ?: return
-            networkAvailable = true
-            _networkAvailableState.value = true
+            networkAvailable = isNetworkAvailable(appContext)
+            _networkAvailableState.value = networkAvailable
+            if (!networkAvailable) {
+                record(appContext, "rede Android sem internet validada")
+                _status.value = Status.Error(WAITING_NETWORK_MESSAGE)
+                waitForNetwork(appContext)
+                return
+            }
             record(appContext, "rede Android disponivel")
             val status = _status.value
             if (!manualStop && status !is Status.Ready && status !is Status.Starting) {
@@ -217,9 +228,27 @@ object TorManager {
             }
         }
 
+        override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
+            val appContext = appContextRef ?: return
+            val available = hasValidatedInternet(networkCapabilities)
+            if (available == networkAvailable) return
+            networkAvailable = available
+            _networkAvailableState.value = available
+            if (available) {
+                record(appContext, "rede Android validada")
+                val status = _status.value
+                if (!manualStop && status !is Status.Ready && status !is Status.Starting) {
+                    scheduleRestart(appContext, delayMs = 250)
+                }
+            } else {
+                record(appContext, "rede Android sem internet validada")
+                _status.value = Status.Error(WAITING_NETWORK_MESSAGE)
+                waitForNetwork(appContext)
+            }
+        }
+
         override fun onLost(network: Network) {
             val appContext = appContextRef ?: return
-            if (isNetworkAvailable(appContext)) return
             networkAvailable = false
             _networkAvailableState.value = false
             record(appContext, "rede Android perdida")
@@ -245,7 +274,7 @@ object TorManager {
                                     hostnameWaitJob?.cancel()
                                     restartJob?.cancel()
                                     startTimeoutJob?.cancel()
-                                    record(appContext, "Tor pronto: nome onion=$onionHost")
+                                    record(appContext, "Tor pronto: nome onion=${maskedOnionHost(onionHost)}")
                                     _status.value = Status.Ready
                                 } else {
                                     record(appContext, "Tor pronto sem nome onion; aguardando arquivo")
@@ -373,7 +402,7 @@ object TorManager {
                 if (refreshOnionAddress(appContext)) {
                     restartJob?.cancel()
                     startTimeoutJob?.cancel()
-                    record(appContext, "nome onion encontrado: $onionHost")
+                    record(appContext, "nome onion encontrado: ${maskedOnionHost(onionHost)}")
                     _status.value = Status.Ready
                     return@launch
                 }
@@ -429,7 +458,22 @@ object TorManager {
         val manager = context.getSystemService(ConnectivityManager::class.java) ?: return false
         val network = manager.activeNetwork ?: return false
         val capabilities = manager.getNetworkCapabilities(network) ?: return false
-        return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        return hasValidatedInternet(capabilities)
+    }
+
+    private fun updateNetworkAvailability(context: Context): Boolean {
+        val available = isNetworkAvailable(context)
+        networkAvailable = available
+        _networkAvailableState.value = available
+        if (!available && !manualStop) {
+            _status.value = Status.Error(WAITING_NETWORK_MESSAGE)
+        }
+        return available
+    }
+
+    private fun hasValidatedInternet(capabilities: NetworkCapabilities): Boolean {
+        return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+            capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
     }
 
     private fun readOnionHostname(context: Context): String? {
@@ -448,6 +492,12 @@ object TorManager {
         val host = readOnionHostname(context) ?: return false
         onionHost = host
         return true
+    }
+
+    private fun maskedOnionHost(host: String): String {
+        val clean = host.trim().removeSuffix(".onion")
+        if (clean.length <= 16) return host
+        return "${clean.take(8)}…${clean.takeLast(6)}.onion"
     }
 
     private fun diagnosticsFile(context: Context): File {

@@ -8,7 +8,11 @@ class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent?) {
         when (intent?.action) {
             Intent.ACTION_BOOT_COMPLETED,
-            Intent.ACTION_MY_PACKAGE_REPLACED -> NetworkBootstrapScheduler.schedule(context)
+            Intent.ACTION_MY_PACKAGE_REPLACED -> {
+                if (!BackgroundNetworkPreference.isEnabled(context)) return
+                ChatNodeManager.ensureBackgroundNetwork(context)
+                NetworkBootstrapScheduler.schedule(context)
+            }
         }
     }
 }

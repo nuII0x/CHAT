@@ -7,17 +7,37 @@ import com.null0x.chat.model.DeliveryState
 import com.null0x.chat.model.Message
 import com.null0x.chat.notification.MessageNotifier
 import com.null0x.chat.security.AppSecurityManager
+import com.null0x.chat.security.identity.AckManager
+import com.null0x.chat.security.identity.DistributedMessageStore
+import com.null0x.chat.security.identity.InboxController
+import com.null0x.chat.security.identity.MessageEnvelope
+import com.null0x.chat.security.identity.MessageSyncWorker
+import com.null0x.chat.security.identity.OnionHttpResponse
+import com.null0x.chat.security.identity.OnionInboxStore
+import com.null0x.chat.security.identity.P2PMessageRouter
+import com.null0x.chat.security.identity.PeerDiscoveryManager
+import com.null0x.chat.security.identity.PullRequest
+import com.null0x.chat.security.identity.PrivateAuthMiddleware
+import com.null0x.chat.security.identity.RouteIdentityRegistry
+import com.null0x.chat.security.identity.SendRouteController
+import com.null0x.chat.security.identity.StoredEnvelopeRecord
+import com.null0x.chat.security.identity.FileDistributedMessageStore
 import com.null0x.chat.storage.ChatStore
 import com.null0x.chat.storage.LocalStoreCipher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 import java.security.MessageDigest
+import java.io.File
 import java.util.concurrent.CopyOnWriteArraySet
 
 object ChatNodeManager {
@@ -27,6 +47,9 @@ object ChatNodeManager {
         val displayName: String,
         val emoji: String,
         val bio: String,
+        val signingPublicKey: String,
+        val exchangePublicKey: String,
+        val publicKeyHash: String,
         val keepViewedMessages: Boolean,
         val allowScreenshots: Boolean,
         val updatedAt: Long
@@ -63,6 +86,8 @@ object ChatNodeManager {
     private val node = P2PNode()
     private val listeners = CopyOnWriteArraySet<Listener>()
     private val startLock = Any()
+    private val _knownRoutesRefreshing = MutableStateFlow(false)
+    val knownRoutesRefreshing: StateFlow<Boolean> = _knownRoutesRefreshing.asStateFlow()
 
     @Volatile
     private var started = false
@@ -72,6 +97,12 @@ object ChatNodeManager {
 
     @Volatile
     private var chatStore: ChatStore? = null
+    private var onionInboxStore: OnionInboxStore? = null
+    private var distributedMessageStore: DistributedMessageStore? = null
+    private var peerDiscoveryManager: PeerDiscoveryManager? = null
+    private var messageSyncWorker: MessageSyncWorker? = null
+    private var sendRouteController: SendRouteController? = null
+    private var inboxController: InboxController? = null
     private var profilePrefs: android.content.SharedPreferences? = null
     private var routeNamesPrefs: android.content.SharedPreferences? = null
     private var routeProfilesPrefs: android.content.SharedPreferences? = null
@@ -79,6 +110,8 @@ object ChatNodeManager {
     private var retryJob: kotlinx.coroutines.Job? = null
     private var torStartJob: kotlinx.coroutines.Job? = null
     private var presenceHeartbeatJob: kotlinx.coroutines.Job? = null
+    private var knownRoutesRefreshJob: Job? = null
+    private var knownRoutesIndicatorJob: Job? = null
     @Volatile
     private var appContext: Context? = null
 
@@ -94,7 +127,7 @@ object ChatNodeManager {
         private set
 
     @Volatile
-    var profileName: String = "RotaSegura"
+    var profileName: String = ""
         private set
     @Volatile
     var profileEmoji: String = "🙂"
@@ -112,7 +145,10 @@ object ChatNodeManager {
     fun ensureBackgroundNetwork(context: Context): Boolean {
         val appContext = context.applicationContext
         AppSecurityManager.initialize(appContext)
-        if (AppSecurityManager.currentState() == AppSecurityManager.GateState.SetupRequired) {
+        if (
+            AppSecurityManager.currentState() == AppSecurityManager.GateState.SetupRequired ||
+            AppSecurityManager.currentState() == AppSecurityManager.GateState.PrivateAccessRequired
+        ) {
             return false
         }
         start(appContext, autoStartTor = true)
@@ -129,15 +165,40 @@ object ChatNodeManager {
             }
             started = true
             this.appContext = appContext
+            RouteIdentityRegistry.initialize(appContext)
+            RouteIdentityRegistry.sendTokenManager().ensureToken()
             notifier = MessageNotifier(appContext)
             chatStore = ChatStore(appContext)
+            onionInboxStore = OnionInboxStore(appContext)
+            distributedMessageStore = FileDistributedMessageStore(
+                File(appContext.filesDir, "p2p_store"),
+                identityProvider = { RouteIdentityRegistry.identityManager() },
+                localRouteProvider = { currentPublicRoute() }
+            )
+            peerDiscoveryManager = PeerDiscoveryManager(
+                localRouteProvider = { currentPublicRoute() },
+                knownPeersProvider = { knownPeers() },
+                activePeersProvider = { peers }
+            )
+            sendRouteController = SendRouteController(
+                inboxStore = onionInboxStore!!,
+                sendTokenManager = RouteIdentityRegistry.sendTokenManager(),
+                recipientPublicKey = { RouteIdentityRegistry.identityManager().getExchangePublicKey() }
+            )
+            inboxController = InboxController(
+                inboxStore = onionInboxStore!!,
+                sendTokenManager = RouteIdentityRegistry.sendTokenManager(),
+                auth = {
+                    PrivateAuthMiddleware(RouteIdentityRegistry.identityManager().getPublicKey())
+                }
+            )
             profilePrefs = appContext.getSharedPreferences("profile", Context.MODE_PRIVATE)
             routeNamesPrefs = appContext.getSharedPreferences("route_names", Context.MODE_PRIVATE)
             routeProfilesPrefs = appContext.getSharedPreferences(ROUTE_PROFILES_PREFS, Context.MODE_PRIVATE)
             profileName = profilePrefs
                 ?.getString("display_name", null)
                 ?.takeIf { it.isNotBlank() }
-                ?: "RotaSegura"
+                .orEmpty()
             profileEmoji = profilePrefs
                 ?.getString("profile_emoji", null)
                 ?.takeIf { it.isNotBlank() }
@@ -156,6 +217,16 @@ object ChatNodeManager {
             }
             startRetryLoop()
             startPresenceHeartbeatLoop()
+            messageSyncWorker = MessageSyncWorker(
+                scope = scope,
+                store = distributedMessageStore!!,
+                peerDiscoveryManager = peerDiscoveryManager!!,
+                sendMessage = { peer, text -> node.sendMessage(peer, text) },
+                onLocalMessage = { peer, envelope, text ->
+                    handleDeliveredEnvelope(peer, envelope, text)
+                },
+                localRecipientHash = { RouteIdentityRegistry.identityManager().getPublicKeyHash() }
+            ).also { it.start() }
 
             node.start(
                 scope = scope,
@@ -165,6 +236,11 @@ object ChatNodeManager {
                     listeners.forEach { it.onUsernameReady(user) }
                 },
                 onMessage = onMessage@{ from, text ->
+                    if (P2PMessageRouter.isProtocolMessage(text)) {
+                        if (handleP2PProtocol(from, text)) {
+                            return@onMessage
+                        }
+                    }
                     val peer = canonicalPeer(from)
                     migratePeerIfNeeded(from, peer)
 
@@ -235,7 +311,7 @@ object ChatNodeManager {
                         )
                         if (AppVisibility.isChatOpen(messagePeer)) {
                             notifier?.cancelMessage(messagePeer)
-                        } else if (!AppVisibility.isVisible) {
+                        } else {
                             notifier?.showMessage(messagePeer, name, rawText)
                         }
                         incomingMessageId?.let { id ->
@@ -247,6 +323,18 @@ object ChatNodeManager {
                 onPeersChanged = { users, _ ->
                     peers = users
                     listeners.forEach { it.onPeersChanged(users) }
+                },
+                onHttpRequest = { request ->
+                    when {
+                        request.method == "POST" && request.path == "/send" -> {
+                            sendRouteController?.sendMessage(request)
+                                ?: OnionHttpResponse(503, """{"ok":false,"error":"Servico indisponivel"}""")
+                        }
+                        else -> {
+                            inboxController?.handle(request)
+                                ?: OnionHttpResponse(503, """{"ok":false,"error":"Servico indisponivel"}""")
+                        }
+                    }
                 }
             )
             scope.launch {
@@ -260,6 +348,7 @@ object ChatNodeManager {
                     updatePublicRoute()
                     if (torReady) {
                         retryPendingMessagesOnce()
+                        refreshKnownRouteProfiles()
                     } else if (autoStartTor && (status is TorManager.Status.Idle || status is TorManager.Status.Error)) {
                         startTor(appContext)
                     }
@@ -272,7 +361,7 @@ object ChatNodeManager {
     }
 
     fun setProfileName(context: Context, name: String) {
-        val cleanName = name.trim().ifBlank { "RotaSegura" }
+        val cleanName = name.trim()
         profileName = cleanName
         val prefs = profilePrefs ?: context.applicationContext.getSharedPreferences("profile", Context.MODE_PRIVATE)
         profilePrefs = prefs
@@ -355,6 +444,102 @@ object ChatNodeManager {
         listeners.remove(listener)
     }
 
+    private fun handleDeliveredEnvelope(peer: String, envelope: MessageEnvelope, text: String) {
+        val conversationPeer = canonicalPeer(envelope.senderRoute ?: peer)
+        if (conversationPeer.isBlank()) return
+        chatStore?.rememberPeer(conversationPeer, displayNameFor(conversationPeer))
+        val alreadyStored = chatStore?.hasMessage(conversationPeer, envelope.messageId, isMine = false) == true
+        if (!alreadyStored) {
+            chatStore?.upsert(
+                conversationPeer,
+                Message(
+                    id = envelope.messageId,
+                    text = text,
+                    isMine = false,
+                    timestamp = envelope.timestamp,
+                    delivery = DeliveryState.Delivered
+                )
+            )
+        }
+        distributedMessageStore?.markDelivered(envelope.messageId)
+        val ack = AckManager { RouteIdentityRegistry.identityManager() }
+            .createAck(envelope.messageId, envelope.recipientPublicKeyHash)
+        distributedMessageStore?.acknowledge(ack)
+        scope.launch {
+            (peerDiscoveryManager?.discoverPeers() ?: knownPeers()).forEach { knownPeer ->
+                node.sendMessage(knownPeer, P2PMessageRouter.encodeAck(ack))
+            }
+        }
+        if (alreadyStored) return
+        if (AppVisibility.isChatOpen(conversationPeer)) {
+            notifier?.cancelMessage(conversationPeer)
+        } else {
+            notifier?.showMessage(conversationPeer, displayNameFor(conversationPeer), text)
+        }
+        listeners.forEach { it.onMessage(conversationPeer, text, envelope.messageId) }
+    }
+
+    private fun handleP2PProtocol(fromPeer: String, rawText: String): Boolean {
+        P2PMessageRouter.decodeEnvelope(rawText)?.let { envelope ->
+            scope.launch {
+                distributedMessageStore?.ingestEnvelope(envelope)
+                if (envelope.recipientPublicKeyHash == RouteIdentityRegistry.identityManager().getPublicKeyHash()) {
+                    val plain = distributedMessageStore?.decryptForLocal(
+                        StoredEnvelopeRecord(envelope = envelope)
+                    )
+                    if (!plain.isNullOrBlank()) {
+                        handleDeliveredEnvelope(fromPeer, envelope, plain)
+                    }
+                }
+            }
+            return true
+        }
+
+        P2PMessageRouter.decodePullRequest(rawText)?.let { request ->
+            scope.launch {
+                val localHash = RouteIdentityRegistry.identityManager().getPublicKeyHash()
+                if (localHash.isBlank() || request.recipientPublicKeyHash != localHash) return@launch
+                val matches = distributedMessageStore?.listForRecipient(localHash, request.limit)
+                    .orEmpty()
+                    .asSequence()
+                    .filter { it.envelope.timestamp >= request.sinceTimestamp }
+                    .map { it.envelope }
+                    .toList()
+                if (matches.isNotEmpty()) {
+                    node.sendMessage(fromPeer, P2PMessageRouter.encodePullResponse(matches))
+                }
+            }
+            return true
+        }
+
+        val pulled = P2PMessageRouter.decodePullResponse(rawText)
+        if (pulled.isNotEmpty()) {
+            scope.launch {
+                pulled.forEach { envelope ->
+                    distributedMessageStore?.ingestEnvelope(envelope)
+                    if (envelope.recipientPublicKeyHash == RouteIdentityRegistry.identityManager().getPublicKeyHash()) {
+                        val plain = distributedMessageStore?.decryptForLocal(
+                            StoredEnvelopeRecord(envelope = envelope)
+                        )
+                        if (!plain.isNullOrBlank()) {
+                            handleDeliveredEnvelope(fromPeer, envelope, plain)
+                        }
+                    }
+                }
+            }
+            return true
+        }
+
+        P2PMessageRouter.decodeAck(rawText)?.let { ack ->
+            scope.launch {
+                distributedMessageStore?.acknowledge(ack)
+            }
+            return true
+        }
+
+        return false
+    }
+
     suspend fun sendMessage(toUsername: String, text: String, messageId: String? = null): Result<Unit> {
         val peer = normalizeRoute(toUsername) ?: toUsername.trim()
         val id = messageId ?: java.util.UUID.randomUUID().toString()
@@ -373,6 +558,26 @@ object ChatNodeManager {
         )
         chatStore?.upsert(peer, pendingMessage)
 
+        val publicProfile = publicProfileFor(peer)
+        if (
+            publicProfile?.exchangePublicKey?.isNotBlank() == true &&
+            publicProfile.publicKeyHash.isNotBlank() &&
+            RouteIdentityRegistry.identityManager().isUnlocked()
+        ) {
+            distributedMessageStore?.createOutgoingEnvelope(
+                recipientRoute = peer,
+                recipientPublicKeyHash = publicProfile.publicKeyHash,
+                recipientSigningPublicKey = publicProfile.signingPublicKey,
+                recipientExchangePublicKey = publicProfile.exchangePublicKey,
+                plaintext = text,
+                ttlMs = 86_400_000L,
+                messageId = id
+            )
+            scope.launch {
+                messageSyncWorker?.replicatePending()
+            }
+        }
+
         return trySendStoredMessage(peer, id, text)
     }
 
@@ -390,8 +595,8 @@ object ChatNodeManager {
         chatStore?.clear(canonicalPeer(peer))
     }
 
-    fun clearViewedMessages(peer: String) {
-        chatStore?.clearViewedMessages(canonicalPeer(peer))
+    fun clearViewedMessages(peer: String, keepIncomingSince: Long = 0L) {
+        chatStore?.clearViewedMessages(canonicalPeer(peer), keepIncomingSince)
     }
 
     fun removeConversation(peer: String) {
@@ -455,6 +660,9 @@ object ChatNodeManager {
                 displayName = profileName,
                 emoji = profileEmoji,
                 bio = profileBio,
+                signingPublicKey = RouteIdentityRegistry.identityManager().getPublicKey(),
+                exchangePublicKey = RouteIdentityRegistry.identityManager().getExchangePublicKey(),
+                publicKeyHash = RouteIdentityRegistry.identityManager().getPublicKeyHash(),
                 keepViewedMessages = profileKeepViewedMessages,
                 allowScreenshots = profileAllowScreenshots,
                 updatedAt = System.currentTimeMillis()
@@ -474,6 +682,9 @@ object ChatNodeManager {
                 displayName = json.optString("displayName").trim(),
                 emoji = json.optString("emoji").trim(),
                 bio = json.optString("bio").trim(),
+                signingPublicKey = json.optString("signingPublicKey").trim(),
+                exchangePublicKey = json.optString("exchangePublicKey").trim(),
+                publicKeyHash = json.optString("publicKeyHash").trim(),
                 keepViewedMessages = json.optBoolean("keepViewedMessages", true),
                 allowScreenshots = json.optBoolean("allowScreenshots", true),
                 updatedAt = json.optLong("updatedAt", 0L)
@@ -484,7 +695,40 @@ object ChatNodeManager {
     fun requestPublicProfile(route: String) {
         val peer = normalizeRoute(route) ?: return
         scope.launch {
+            markKnownRoutesRefreshing()
             node.sendMessage(peer, "$CHAT_PROFILE_REQUEST_PREFIX${java.util.UUID.randomUUID()}")
+        }
+    }
+
+    private fun refreshKnownRouteProfiles() {
+        if (knownRoutesRefreshJob?.isActive == true) return
+        knownRoutesRefreshJob = scope.launch {
+            val peers = knownPeers()
+                .mapNotNull { normalizeRoute(it) }
+                .filter { it.isNotBlank() && it != publicRoute }
+                .distinct()
+            if (peers.isEmpty()) return@launch
+            _knownRoutesRefreshing.value = true
+            try {
+                peers.forEach { peer ->
+                    node.sendMessage(peer, "$CHAT_PROFILE_REQUEST_PREFIX${java.util.UUID.randomUUID()}")
+                    delay(120)
+                }
+                delay(900)
+            } finally {
+                _knownRoutesRefreshing.value = false
+            }
+        }
+    }
+
+    private fun markKnownRoutesRefreshing() {
+        knownRoutesIndicatorJob?.cancel()
+        knownRoutesIndicatorJob = scope.launch {
+            _knownRoutesRefreshing.value = true
+            delay(1_200)
+            if (knownRoutesRefreshJob?.isActive != true) {
+                _knownRoutesRefreshing.value = false
+            }
         }
     }
 
@@ -615,6 +859,9 @@ object ChatNodeManager {
                 displayName = json.optString("displayName").trim().take(80),
                 emoji = json.optString("emoji").trim().take(16),
                 bio = limitUtf8Bytes(json.optString("bio").trim(), 4 * 1024),
+                signingPublicKey = json.optString("signingPublicKey").trim(),
+                exchangePublicKey = json.optString("exchangePublicKey").trim(),
+                publicKeyHash = json.optString("publicKeyHash").trim(),
                 keepViewedMessages = json.optBoolean("keepViewedMessages", true),
                 allowScreenshots = json.optBoolean("allowScreenshots", true),
                 updatedAt = json.optLong("updatedAt", System.currentTimeMillis())
@@ -627,6 +874,9 @@ object ChatNodeManager {
             .put("displayName", profile.displayName)
             .put("emoji", profile.emoji)
             .put("bio", profile.bio)
+            .put("signingPublicKey", profile.signingPublicKey)
+            .put("exchangePublicKey", profile.exchangePublicKey)
+            .put("publicKeyHash", profile.publicKeyHash)
             .put("keepViewedMessages", profile.keepViewedMessages)
             .put("allowScreenshots", profile.allowScreenshots)
             .put("updatedAt", profile.updatedAt)
@@ -655,6 +905,9 @@ object ChatNodeManager {
             .put("displayName", profileName)
             .put("emoji", profileEmoji)
             .put("bio", profileBio)
+            .put("signingPublicKey", RouteIdentityRegistry.identityManager().getPublicKey())
+            .put("exchangePublicKey", RouteIdentityRegistry.identityManager().getExchangePublicKey())
+            .put("publicKeyHash", RouteIdentityRegistry.identityManager().getPublicKeyHash())
             .put("keepViewedMessages", profileKeepViewedMessages)
             .put("allowScreenshots", profileAllowScreenshots)
             .put("updatedAt", System.currentTimeMillis())

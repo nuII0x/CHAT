@@ -100,9 +100,41 @@ private val PinkColorScheme = lightColorScheme(
     onErrorContainer = Color(0xFF410E0B)
 )
 
+private val BlueColorScheme = lightColorScheme(
+    primary = AppBluePrimary,
+    onPrimary = Color.White,
+    primaryContainer = AppBluePrimaryContainer,
+    onPrimaryContainer = AppBlueOnSurface,
+    secondary = AppBlueSecondary,
+    onSecondary = Color.White,
+    secondaryContainer = AppBlueSecondaryContainer,
+    onSecondaryContainer = AppBlueOnSurface,
+    tertiary = AppBlueTertiary,
+    onTertiary = Color.White,
+    tertiaryContainer = AppBlueTertiaryContainer,
+    onTertiaryContainer = AppBlueOnSurface,
+    background = AppBlueBackground,
+    onBackground = AppBlueOnSurface,
+    surface = AppBlueSurface,
+    onSurface = AppBlueOnSurface,
+    surfaceVariant = AppBlueSurfaceVariant,
+    onSurfaceVariant = AppBlueOnSurfaceVariant,
+    outline = AppBlueOutline,
+    outlineVariant = AppBlueSurfaceVariant,
+    inverseSurface = AppBlueOnSurface,
+    inverseOnSurface = AppBlueSurface,
+    inversePrimary = AppBluePrimaryContainer,
+    surfaceTint = AppBluePrimary,
+    error = Color(0xFFBA1A1A),
+    onError = Color.White,
+    errorContainer = Color(0xFFFFDAD6),
+    onErrorContainer = Color(0xFF410002)
+)
+
 fun themeBackgroundColor(themeMode: ThemeMode, systemDarkTheme: Boolean): Color {
     return when (themeMode) {
         ThemeMode.SYSTEM -> if (systemDarkTheme) AppBackgroundDark else AppBackgroundLight
+        ThemeMode.BLUE -> AppBlueBackground
         ThemeMode.LIGHT -> AppBackgroundLight
         ThemeMode.DARK -> AppBackgroundDark
         ThemeMode.PINK -> AppPinkBackground
@@ -111,12 +143,13 @@ fun themeBackgroundColor(themeMode: ThemeMode, systemDarkTheme: Boolean): Color 
 
 @Composable
 fun ChatTheme(
-    themeMode: ThemeMode = ThemeMode.SYSTEM,
+    themeMode: ThemeMode = ThemeMode.BLUE,
     content: @Composable () -> Unit
 ) {
     val systemDarkTheme = isSystemInDarkTheme()
     val colorScheme = when (themeMode) {
         ThemeMode.SYSTEM -> if (systemDarkTheme) DarkColorScheme else LightColorScheme
+        ThemeMode.BLUE -> BlueColorScheme
         ThemeMode.LIGHT -> LightColorScheme
         ThemeMode.DARK -> DarkColorScheme
         ThemeMode.PINK -> PinkColorScheme

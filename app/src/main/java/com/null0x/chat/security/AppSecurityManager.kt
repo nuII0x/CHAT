@@ -5,6 +5,7 @@ import android.provider.Settings
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
+import com.null0x.chat.security.identity.RouteIdentityRegistry
 import com.null0x.chat.storage.LocalStoreCipher
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -32,6 +33,7 @@ object AppSecurityManager {
     sealed interface GateState {
         data object Uninitialized : GateState
         data object SetupRequired : GateState
+        data object PrivateAccessRequired : GateState
         data object Locked : GateState
         data object Unlocked : GateState
     }
@@ -57,6 +59,7 @@ object AppSecurityManager {
     fun initialize(context: Context) {
         val contextRef = context.applicationContext
         appContext = contextRef
+        RouteIdentityRegistry.initialize(contextRef)
         if (_state.value != GateState.Uninitialized) {
             return
         }
@@ -73,7 +76,7 @@ object AppSecurityManager {
             return
         }
         _state.value = if (restoreAutoUnlock(prefs)) {
-            GateState.Unlocked
+            if (RouteIdentityRegistry.hasIdentity()) GateState.Unlocked else GateState.PrivateAccessRequired
         } else {
             GateState.Locked
         }
@@ -90,7 +93,8 @@ object AppSecurityManager {
             val secretArmor = prefs.getString(PGP_SECRET_RING_KEY, null)
                 ?: throw IllegalStateException("Proteção ainda não configurada")
             val secretKeyRing = readSecretKeyRing(secretArmor)
-            val passphrase = Passphrase.fromPassword(derivePgpPassphrase(contextRef, password, salt))
+            val derivedPassphrase = derivePgpPassphrase(contextRef, password, salt)
+            val passphrase = Passphrase.fromPassword(derivedPassphrase)
             val protector = SecretKeyRingProtector.unlockEachKeyWith(passphrase, secretKeyRing)
             val publicKeyRing = PGPainless.extractCertificate(secretKeyRing)
             val verifier = prefs.getString(PGP_VERIFIER_KEY, null)
@@ -101,9 +105,11 @@ object AppSecurityManager {
             }
 
             installKeys(secretKeyRing, publicKeyRing, protector)
-            persistAutoUnlockToken(prefs, derivePgpPassphrase(contextRef, password, salt))
+            val hasRouteIdentity = RouteIdentityRegistry.hasIdentity()
+            if (hasRouteIdentity) RouteIdentityRegistry.unlock(derivedPassphrase)
+            persistAutoUnlockToken(prefs, derivedPassphrase)
             prefs.edit().putBoolean(MANUAL_LOCK_KEY, false).apply()
-            _state.value = GateState.Unlocked
+            _state.value = if (hasRouteIdentity) GateState.Unlocked else GateState.PrivateAccessRequired
             Unit
         }.sanitizePasswordFailure()
     }
@@ -136,9 +142,10 @@ object AppSecurityManager {
                 prefs.edit().putString(SALT_KEY, Base64.encodeToString(it, Base64.NO_WRAP)).apply()
             }
             val secretKeyRing = generateSecretRing(contextRef, password, salt)
+            val derivedPassphrase = derivePgpPassphrase(contextRef, password, salt)
             val publicKeyRing = PGPainless.extractCertificate(secretKeyRing)
             val protector = SecretKeyRingProtector.unlockEachKeyWith(
-                Passphrase.fromPassword(derivePgpPassphrase(contextRef, password, salt)),
+                Passphrase.fromPassword(derivedPassphrase),
                 secretKeyRing
             )
             val verifier = encryptPgpText(publicKeyRing, CHECK_TEXT)
@@ -147,15 +154,16 @@ object AppSecurityManager {
                 .putString(PGP_VERIFIER_KEY, verifier)
                 .apply()
             installKeys(secretKeyRing, publicKeyRing, protector)
-            persistAutoUnlockToken(prefs, derivePgpPassphrase(contextRef, password, salt))
+            persistAutoUnlockToken(prefs, derivedPassphrase)
             prefs.edit().putBoolean(MANUAL_LOCK_KEY, false).apply()
-            _state.value = GateState.Unlocked
+            _state.value = GateState.PrivateAccessRequired
             Unit
         }.sanitizeCreatePasswordFailure()
     }
 
     fun lock() {
         LocalStoreCipher.clearDecryptionKeys()
+        RouteIdentityRegistry.lock()
         appContext?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             ?.let { prefs -> installPublicEncryptionKey(prefs) }
         appContext?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -166,6 +174,47 @@ object AppSecurityManager {
     }
 
     fun currentState(): GateState = _state.value
+
+    fun createNewRouteIdentity(context: Context): Result<String> {
+        return runCatching {
+            val contextRef = context.applicationContext
+            val prefs = contextRef.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            val passphrase = autoUnlockPassphrase(prefs)
+            val result = RouteIdentityRegistry.createIdentity(passphrase)
+            result.mnemonic
+        }.sanitizePrivateAccessStringFailure()
+    }
+
+    fun completePrivateAccessSetup() {
+        if (RouteIdentityRegistry.hasIdentity()) {
+            _state.value = GateState.Unlocked
+        }
+    }
+
+    fun restoreRouteIdentityFromSetup(context: Context, mnemonic: String): Result<Unit> {
+        return runCatching {
+            val contextRef = context.applicationContext
+            val prefs = contextRef.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            val passphrase = autoUnlockPassphrase(prefs)
+            RouteIdentityRegistry.restoreIdentity(mnemonic, passphrase)
+            _state.value = GateState.Unlocked
+            Unit
+        }.sanitizePrivateAccessFailure()
+    }
+
+    fun restoreRouteIdentity(context: Context, mnemonic: String, password: String): Result<Unit> {
+        return verifyPassword(context, password).mapCatching {
+            val contextRef = context.applicationContext
+            val prefs = contextRef.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            val salt = loadSalt(prefs) ?: throw IllegalStateException("Proteção ainda não configurada")
+            val derivedPassphrase = derivePgpPassphrase(contextRef, password, salt)
+            RouteIdentityRegistry.restoreIdentity(mnemonic, derivedPassphrase)
+            if (_state.value is GateState.PrivateAccessRequired) {
+                _state.value = GateState.Unlocked
+            }
+            Unit
+        }.sanitizePasswordFailure()
+    }
 
     private fun hasConfiguration(): Boolean {
         val contextRef = appContext ?: return false
@@ -272,14 +321,21 @@ object AppSecurityManager {
         prefs.edit().putString(AUTO_UNLOCK_KEY, encrypted).apply()
     }
 
+    private fun autoUnlockPassphrase(prefs: android.content.SharedPreferences): String {
+        val token = prefs.getString(AUTO_UNLOCK_KEY, null)
+            ?: throw IllegalStateException("Proteção ainda não configurada")
+        return decryptAutoUnlockToken(token)
+    }
+
     private fun restoreAutoUnlock(prefs: android.content.SharedPreferences): Boolean {
-        val token = prefs.getString(AUTO_UNLOCK_KEY, null) ?: return false
+        prefs.getString(AUTO_UNLOCK_KEY, null) ?: return false
         return runCatching {
             val secretArmor = prefs.getString(PGP_SECRET_RING_KEY, null)
                 ?: throw IllegalStateException("Proteção ainda não configurada")
             val secretKeyRing = readSecretKeyRing(secretArmor)
             loadSalt(prefs) ?: throw IllegalStateException("Proteção ainda não configurada")
-            val passphrase = Passphrase.fromPassword(decryptAutoUnlockToken(token))
+            val routePassphrase = autoUnlockPassphrase(prefs)
+            val passphrase = Passphrase.fromPassword(routePassphrase)
             val protector = SecretKeyRingProtector.unlockEachKeyWith(passphrase, secretKeyRing)
             val publicKeyRing = PGPainless.extractCertificate(secretKeyRing)
             val verifier = prefs.getString(PGP_VERIFIER_KEY, null)
@@ -289,6 +345,9 @@ object AppSecurityManager {
                 throw IllegalStateException("Proteção inválida")
             }
             installKeys(secretKeyRing, publicKeyRing, protector)
+            if (RouteIdentityRegistry.hasIdentity()) {
+                RouteIdentityRegistry.unlock(routePassphrase)
+            }
             prefs.edit().putBoolean(MANUAL_LOCK_KEY, false).apply()
         }.isSuccess
     }
@@ -351,6 +410,20 @@ object AppSecurityManager {
         return fold(
             onSuccess = { Result.success(Unit) },
             onFailure = { Result.failure(IllegalStateException(CREATE_PASSWORD_ERROR_MESSAGE)) }
+        )
+    }
+
+    private fun Result<String>.sanitizePrivateAccessStringFailure(): Result<String> {
+        return fold(
+            onSuccess = { Result.success(it) },
+            onFailure = { Result.failure(IllegalStateException("Não foi possível configurar o acesso privado")) }
+        )
+    }
+
+    private fun Result<Unit>.sanitizePrivateAccessFailure(): Result<Unit> {
+        return fold(
+            onSuccess = { Result.success(Unit) },
+            onFailure = { Result.failure(IllegalStateException("Não foi possível configurar o acesso privado")) }
         )
     }
 }

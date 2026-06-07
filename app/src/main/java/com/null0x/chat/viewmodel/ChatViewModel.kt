@@ -16,6 +16,7 @@ import com.null0x.chat.network.ChatNodeManager
 import com.null0x.chat.storage.ChatStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -26,6 +27,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     companion object {
         private const val ROUTE_TOKENS_PREFS = "route_tokens"
         private const val LAST_PUBLIC_ROUTE_KEY = "last_public_route"
+        private const val CONTACT_REQUEST_PREFIX = "[rotasegura:contact-request]"
+        private const val CONTACT_ACCEPT_PREFIX = "[rotasegura:contact-accept]"
     }
 
     data class ConversationPreview(
@@ -79,6 +82,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val nodeManager = ChatNodeManager
     private val chatStore = ChatStore(application.applicationContext)
     private val profilePrefs = application.applicationContext.getSharedPreferences("profile", Context.MODE_PRIVATE)
+    private val contactsPrefs = application.applicationContext.getSharedPreferences("contacts", Context.MODE_PRIVATE)
     private val routeNamesPrefs = application.applicationContext.getSharedPreferences("route_names", Context.MODE_PRIVATE)
     private val conversationPoliciesPrefs = application.applicationContext.getSharedPreferences("conversation_policies", Context.MODE_PRIVATE)
     private val routeTokensPrefs = application.applicationContext.getSharedPreferences(ROUTE_TOKENS_PREFS, Context.MODE_PRIVATE)
@@ -98,6 +102,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         override fun onMessage(fromUsername: String, text: String, messageId: String?) {
             viewModelScope.launch(Dispatchers.Main.immediate) {
                 val fromRoute = canonicalConversationKey(fromUsername)
+                if (handleContactControlMessage(fromRoute, text)) {
+                    return@launch
+                }
+                if (!canReceiveMessageFrom(fromRoute)) {
+                    return@launch
+                }
                 val currentTarget = canonicalConversationKey(targetUsername)
                 val incomingMessage = Message(
                     id = messageId ?: java.util.UUID.randomUUID().toString(),
@@ -178,9 +188,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         override fun onPeersChanged(peers: List<String>) {
             viewModelScope.launch(Dispatchers.Main.immediate) {
                 this@ChatViewModel.peers.clear()
-                this@ChatViewModel.peers.addAll(peers)
+                this@ChatViewModel.peers.addAll(
+                    peers.map { canonicalConversationKey(it) }
+                        .filter { it.isNotBlank() }
+                        .distinct()
+                )
                 refreshRouteLookup()
-                refreshConversationPreviewsAsync()
+                if (peers.isNotEmpty()) {
+                    refreshConversationPreviewsAsync()
+                }
             }
         }
 
@@ -241,6 +257,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val localTypingByPeer = mutableStateMapOf<String, Boolean>()
     private val partnerPresenceExpiryJobs = mutableMapOf<String, Job>()
     private var conversationsVersion by mutableStateOf(0)
+    private var contactsVersion by mutableStateOf(0)
     private var defaultKeepViewedMessages by mutableStateOf(true)
     private var defaultAllowScreenshots by mutableStateOf(false)
     private var currentKeepViewedMessages by mutableStateOf(true)
@@ -272,7 +289,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     var inChat by mutableStateOf(false)
         private set
 
-    var profileName by mutableStateOf("RotaSegura")
+    var profileName by mutableStateOf("")
         private set
     var profileEmojiSymbol by mutableStateOf("🙂")
         private set
@@ -293,7 +310,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         profileName = profilePrefs
             .getString("display_name", null)
             ?.takeIf { it.isNotBlank() }
-            ?: "RotaSegura"
+            .orEmpty()
         contactRouteInput = ""
         defaultKeepViewedMessages = profilePrefs.getBoolean("keep_viewed_messages", true)
         defaultAllowScreenshots = profilePrefs.getBoolean("chat_screenshots_enabled", false)
@@ -466,26 +483,170 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun addContactRouteFromInput() {
-        refreshRouteLookup(showNotFound = true)
+    refreshRouteLookup(showNotFound = true)
+}
+
+fun addContact(username: String) {
+    val clean = canonicalConversationKey(username)
+    if (clean.isBlank()) return
+
+    contactsPrefs.edit()
+        .putBoolean(contactRequestedKey(clean), true)
+        .putString(contactRouteKey(clean), clean)
+        .remove(contactBlockedKey(clean))
+        .apply()
+
+    chatStore.rememberPeer(clean, conversationLabelFor(clean))
+
+    if (!startedConversations.contains(clean)) {
+        startedConversations.add(0, clean)
     }
 
-    fun addContact(username: String) {
+    if (routeLookup?.username == clean) {
+        routeLookup = null
+        contactRouteInput = ""
+        routeStatus = ""
+    }
+
+    contactsVersion++
+    conversationsVersion++
+    refreshConversationPreviewsAsync()
+
+    viewModelScope.launch {
+        nodeManager.requestPublicProfile(clean)
+        nodeManager.sendMessage(
+            clean,
+            CONTACT_REQUEST_PREFIX,
+            java.util.UUID.randomUUID().toString()
+        )
+    }
+}
+
+fun removeContact(username: String) {
+    val clean = canonicalConversationKey(username)
+    if (clean.isBlank()) return
+
+    contactsPrefs.edit()
+        .remove(contactRequestedKey(clean))
+        .remove(contactRouteKey(clean))
+        .remove(contactBlockedKey(clean))
+        .apply()
+
+    chatStore.remove(clean)
+
+    startedConversations.remove(clean)
+    peers.remove(clean)
+    unreadByPeer.remove(clean)
+    seenButNotClearedByPeer.remove(clean)
+    unreadEntryCountByPeer.remove(clean)
+
+    if (targetUsername == clean) {
+        openHome()
+    }
+
+    contactsVersion++
+    conversationsVersion++
+    routeNamesVersion++
+
+    refreshRouteLookup()
+    refreshConversationPreviewsAsync()
+}
+    fun pendingContactRequests(): List<ConversationPreview> {
+        contactsVersion
+        routeNamesVersion
+        return contactRoutesWithPrefix("pending:")
+            .filterNot { isContactAccepted(it) }
+            .filterNot { isContactBlocked(it) }
+            .map { route ->
+                ConversationPreview(
+                    username = route,
+                    displayName = chatTitleFor(route),
+                    emoji = publicEmojiForRoute(route),
+                    lastTimestamp = 0L,
+                    unreadCount = 0,
+                    previewLine = "Solicitou contato"
+                )
+            }
+            .sortedBy { it.displayName.lowercase() }
+    }
+
+    fun acceptContactRequest(username: String) {
         val clean = canonicalConversationKey(username)
         if (clean.isBlank()) return
+        contactsPrefs.edit()
+            .putBoolean(contactAcceptedKey(clean), true)
+            .putBoolean(contactRequestedKey(clean), true)
+            .putString(contactRouteKey(clean), clean)
+            .remove(contactPendingKey(clean))
+            .remove(contactBlockedKey(clean))
+            .apply()
         chatStore.rememberPeer(clean, conversationLabelFor(clean))
         if (!startedConversations.contains(clean)) {
             startedConversations.add(0, clean)
         }
+        contactsVersion++
         conversationsVersion++
         refreshConversationPreviewsAsync()
+        viewModelScope.launch {
+            nodeManager.sendMessage(clean, CONTACT_ACCEPT_PREFIX, java.util.UUID.randomUUID().toString())
+        }
+    }
+
+    fun blockContact(username: String) {
+        val clean = canonicalConversationKey(username)
+        if (clean.isBlank()) return
+        contactsPrefs.edit()
+            .putBoolean(contactBlockedKey(clean), true)
+            .putString(contactRouteKey(clean), clean)
+            .apply()
+        contactsVersion++
+        conversationsVersion++
+        refreshConversationPreviewsAsync()
+    }
+
+    fun unblockContact(username: String) {
+        val clean = canonicalConversationKey(username)
+        if (clean.isBlank()) return
+        contactsPrefs.edit()
+            .remove(contactBlockedKey(clean))
+            .putString(contactRouteKey(clean), clean)
+            .apply()
+        contactsVersion++
+        conversationsVersion++
+        refreshConversationPreviewsAsync()
+    }
+
+    fun isContactAccepted(username: String): Boolean {
+        val clean = canonicalConversationKey(username)
+        if (clean.isBlank()) return false
+        if (isLocalOwnerRoute(clean)) return true
+        return contactsPrefs.getBoolean(contactAcceptedKey(clean), false)
+    }
+
+    fun isContactPending(username: String): Boolean {
+        val clean = canonicalConversationKey(username)
+        if (clean.isBlank()) return false
+        return contactsPrefs.getBoolean(contactPendingKey(clean), false)
+    }
+
+    fun isContactRequested(username: String): Boolean {
+        val clean = canonicalConversationKey(username)
+        if (clean.isBlank()) return false
+        return contactsPrefs.getBoolean(contactRequestedKey(clean), false)
+    }
+
+    fun isContactBlocked(username: String): Boolean {
+        val clean = canonicalConversationKey(username)
+        if (clean.isBlank()) return false
+        return contactsPrefs.getBoolean(contactBlockedKey(clean), false)
     }
 
     fun displayNameFor(username: String): String {
         val route = canonicalConversationKey(username)
         routeTokenFor(route)
         return localNameForRoute(route)
-            .ifBlank { publicDisplayNameForRoute(route) }
             .ifBlank { chatStore.preferredLabel(route).orEmpty() }
+            .ifBlank { publicDisplayNameForRoute(route) }
             .ifBlank { routeTokenString(route) }
     }
 
@@ -494,8 +655,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         routeTokenFor(route)
         routeNamesVersion
         return localNameForRoute(route)
-            .ifBlank { publicDisplayNameForRoute(route) }
             .ifBlank { chatStore.preferredLabel(route).orEmpty() }
+            .ifBlank { publicDisplayNameForRoute(route) }
             .ifBlank { routeTokenString(route) }
     }
 
@@ -539,8 +700,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val localName = localNameForRoute(route)
         val publicName = publicDisplayNameForRoute(route)
         val display = localName
-            .ifBlank { publicName }
             .ifBlank { chatStore.preferredLabel(route).orEmpty() }
+            .ifBlank { publicName }
             .ifBlank { routeTokenString(route) }
         return PublicProfile(
             displayName = display,
@@ -564,7 +725,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             editor.putString(storageKey, cleanName).remove(cleanRoute)
         }
         editor.apply()
-        chatStore.rememberPeer(cleanRoute, conversationLabelFor(cleanRoute))
+        if (cleanName.isBlank()) {
+            chatStore.removePreferredLabel(cleanRoute)
+            chatStore.rememberPeer(cleanRoute, publicDisplayNameForRoute(cleanRoute).ifBlank { routeTokenString(cleanRoute) })
+        } else {
+            chatStore.rememberPeer(cleanRoute, cleanName)
+        }
         routeNamesVersion++
         conversationsVersion++
         refreshConversationPreviewsAsync()
@@ -779,7 +945,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         partnerChatOpenByPeer.remove(target)
         partnerTypingByPeer.remove(target)
         localTypingByPeer.remove(target)
+        contactsPrefs.edit()
+            .remove(contactAcceptedKey(target))
+            .remove(contactRequestedKey(target))
+            .remove(contactPendingKey(target))
+            .remove(contactRouteKey(target))
+            .apply()
         clearPrivacyNotices(target)
+        contactsVersion++
         conversationsVersion++
         refreshConversationPreviewsAsync()
         if (target == targetUsername) {
@@ -803,6 +976,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         if (target.isBlank()) return
+        if (isContactBlocked(target)) return
 
         val localId = java.util.UUID.randomUUID().toString()
         appendConversationCache(
@@ -917,9 +1091,21 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private fun refreshConversationPreviewsAsync() {
         previewsJob?.cancel()
         previewsJob = viewModelScope.launch(Dispatchers.IO) {
-            val snapshot = buildConversationPreviews(startedConversations.toList())
+            delay(80)
+            val persistedConversations = chatStore.knownPeers()
+                .map { canonicalConversationKey(it) }
+                .filter { it.isNotBlank() }
+            val usernames = (startedConversations.toList() + persistedConversations)
+                .map { canonicalConversationKey(it) }
+                .filter { it.isNotBlank() }
+                .distinct()
+            val snapshot = buildConversationPreviews(usernames)
 
             withContext(Dispatchers.Main.immediate) {
+                val missingLocalItems = usernames.filterNot { startedConversations.contains(it) }
+                if (missingLocalItems.isNotEmpty()) {
+                    startedConversations.addAll(missingLocalItems)
+                }
                 conversationPreviewCache = snapshot
             }
         }
@@ -955,6 +1141,50 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             DeliveryState.Sent -> "Enviado ${messages.takeLastWhile { it.isMine }.size.coerceAtLeast(1)}"
             DeliveryState.Delivered -> "Visto"
         }
+    }
+
+    private fun handleContactControlMessage(fromRoute: String, text: String): Boolean {
+        val clean = canonicalConversationKey(fromRoute)
+        if (clean.isBlank()) return false
+        if (isContactBlocked(clean)) return true
+        return when (text.trim()) {
+            CONTACT_REQUEST_PREFIX -> {
+                if (!isContactBlocked(clean) && !isContactAccepted(clean)) {
+                    contactsPrefs.edit()
+                        .putBoolean(contactPendingKey(clean), true)
+                        .putString(contactRouteKey(clean), clean)
+                        .apply()
+                    nodeManager.requestPublicProfile(clean)
+                    contactsVersion++
+                    conversationsVersion++
+                }
+                true
+            }
+            CONTACT_ACCEPT_PREFIX -> {
+                if (!isContactBlocked(clean)) {
+                    contactsPrefs.edit()
+                        .putBoolean(contactAcceptedKey(clean), true)
+                        .putString(contactRouteKey(clean), clean)
+                        .remove(contactPendingKey(clean))
+                        .apply()
+                    chatStore.rememberPeer(clean, conversationLabelFor(clean))
+                    if (!startedConversations.contains(clean)) {
+                        startedConversations.add(0, clean)
+                    }
+                    contactsVersion++
+                    conversationsVersion++
+                    refreshConversationPreviewsAsync()
+                }
+                true
+            }
+            else -> false
+        }
+    }
+
+    private fun canReceiveMessageFrom(route: String): Boolean {
+        val clean = canonicalConversationKey(route)
+        if (clean.isBlank()) return false
+        return !isContactBlocked(clean) && (isLocalOwnerRoute(clean) || isContactAccepted(clean))
     }
 
     private fun addPrivacyNotice(route: String, text: String) {
@@ -1030,7 +1260,18 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         if (legacy.isNotBlank()) {
             routeNamesPrefs.edit().putString(storageKey, legacy).remove(clean).apply()
         }
-        return legacy
+        if (legacy.isNotBlank()) return legacy
+        val persistedLabel = chatStore.preferredLabel(clean)?.trim().orEmpty()
+        val tokenLabel = routeTokenString(clean)
+        val publicName = publicDisplayNameForRoute(clean)
+        val isLocalLabel = persistedLabel.isNotBlank() &&
+            persistedLabel != tokenLabel &&
+            persistedLabel != publicName
+        if (isLocalLabel) {
+            routeNamesPrefs.edit().putString(storageKey, persistedLabel).apply()
+            return persistedLabel
+        }
+        return ""
     }
 
     private fun publicDisplayNameForRoute(route: String): String {
@@ -1055,6 +1296,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val clean = canonicalConversationKey(route)
         if (clean.isBlank()) return ""
         return localNameForRoute(clean)
+            .ifBlank { chatStore.preferredLabel(clean).orEmpty() }
             .ifBlank { publicDisplayNameForRoute(clean) }
             .ifBlank { routeTokenString(clean) }
     }
@@ -1223,6 +1465,44 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         return "route:$digest"
     }
 
+    private fun contactAcceptedKey(route: String): String = "accepted:${routeStorageKey(route)}"
+
+    private fun contactRequestedKey(route: String): String = "requested:${routeStorageKey(route)}"
+
+    private fun contactPendingKey(route: String): String = "pending:${routeStorageKey(route)}"
+
+    private fun contactBlockedKey(route: String): String = "blocked:${routeStorageKey(route)}"
+
+    private fun contactRouteKey(route: String): String = "route:${routeStorageKey(route)}"
+
+    private fun contactRoutesWithPrefix(prefix: String): List<String> {
+        return contactsPrefs.all.keys
+            .filter { it.startsWith(prefix) }
+            .mapNotNull { key ->
+                val storageKey = key.removePrefix(prefix)
+                routeForStorageKey(storageKey)
+            }
+            .distinct()
+    }
+
+    private fun routeForStorageKey(storageKey: String): String? {
+        contactsPrefs.getString("route:$storageKey", null)
+            ?.let { stored -> canonicalConversationKey(stored).takeIf { it.isNotBlank() } }
+            ?.let { return it }
+        val candidates = buildList {
+            add(canonicalConversationKey(myUsername))
+            add(canonicalConversationKey(currentPublicRoute()))
+            add(canonicalConversationKey(lastKnownOwnRoute()))
+            addAll(peers.map { canonicalConversationKey(it) })
+            addAll(startedConversations.map { canonicalConversationKey(it) })
+            addAll(chatStore.knownPeers().map { canonicalConversationKey(it) })
+            routeTokensPrefs.all.values.forEach { value ->
+                add(canonicalConversationKey(value?.toString().orEmpty()))
+            }
+        }.filter { it.isNotBlank() }.distinct()
+        return candidates.firstOrNull { routeStorageKey(it) == storageKey }
+    }
+
     private fun routeTokenString(route: String): String {
         val clean = canonicalConversationKey(route)
         if (clean.isBlank()) return ""
@@ -1301,23 +1581,26 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private fun scheduleViewedConversationCleanup(route: String) {
         val cleanRoute = canonicalConversationKey(route)
         if (cleanRoute.isBlank()) return
-        val elapsed = System.currentTimeMillis() - chatOpenedAtMs
-        val gracePeriodMs = 2_500L
-        if (elapsed < gracePeriodMs) return
         cleanupChatJob?.cancel()
-        cleanupChatJob = viewModelScope.launch(Dispatchers.Main.immediate) {
-            if (inChat || targetUsername.isNotBlank()) return@launch
-            if (seenButNotClearedByPeer[cleanRoute] != true) return@launch
-            if (hasProtectedUnreadMessages(cleanRoute)) return@launch
-            if (currentKeepViewedMessages) return@launch
+        cleanupChatJob = null
+        if (inChat || targetUsername.isNotBlank()) return
+        if (seenButNotClearedByPeer[cleanRoute] != true) return
+        if (hasProtectedUnreadMessages(cleanRoute)) return
+        if (currentKeepViewedMessages) return
 
-            nodeManager.clearViewedMessages(cleanRoute)
-            clearPrivacyNotices(cleanRoute)
-            unreadByPeer[cleanRoute] = 0
+        val keepIncomingSince = System.currentTimeMillis() - 1_000L
+        val remainingIncoming = conversationMessagesFor(cleanRoute)
+            .count { !it.isMine && it.timestamp >= keepIncomingSince }
+
+        nodeManager.clearViewedMessages(cleanRoute, keepIncomingSince)
+        clearConversationCache(cleanRoute)
+        clearPrivacyNotices(cleanRoute)
+        unreadByPeer[cleanRoute] = remainingIncoming
+        if (remainingIncoming <= 0) {
             seenButNotClearedByPeer.remove(cleanRoute)
-            conversationsVersion++
-            refreshConversationPreviewsAsync()
         }
+        conversationsVersion++
+        refreshConversationPreviewsAsync()
     }
 
     private fun hasProtectedUnreadMessages(route: String): Boolean {
