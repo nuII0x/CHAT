@@ -27,8 +27,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     companion object {
         private const val ROUTE_TOKENS_PREFS = "route_tokens"
         private const val LAST_PUBLIC_ROUTE_KEY = "last_public_route"
-        private const val CONTACT_REQUEST_PREFIX = "[rotasegura:contact-request]"
-        private const val CONTACT_ACCEPT_PREFIX = "[rotasegura:contact-accept]"
+        private const val CONTACT_REQUEST_PREFIX = "[NullChat:contact-request]"
+        private const val CONTACT_ACCEPT_PREFIX = "[NullChat:contact-accept]"
     }
 
     data class ConversationPreview(

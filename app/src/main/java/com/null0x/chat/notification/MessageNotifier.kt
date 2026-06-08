@@ -65,8 +65,8 @@ class MessageNotifier(private val context: Context) {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         val publicNotification = NotificationCompat.Builder(context, channelId)
-            .setSmallIcon(R.drawable.ic_stat_rotasegura)
-            .setContentTitle("RotaSegura")
+            .setSmallIcon(R.drawable.ic_stat_NullChat)
+            .setContentTitle("NullChat")
             .setContentText("Nova mensagem privada")
             .setLocalOnly(true)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
@@ -74,9 +74,9 @@ class MessageNotifier(private val context: Context) {
             .build()
 
         val notification = NotificationCompat.Builder(context, channelId)
-            .setSmallIcon(R.drawable.ic_stat_rotasegura)
+            .setSmallIcon(R.drawable.ic_stat_NullChat)
             .setLargeIcon(createLargeIcon())
-            .setContentTitle("RotaSegura")
+            .setContentTitle("NullChat")
             .setContentText(fromName.ifBlank { "Nova mensagem" })
             .setContentIntent(pendingIntent)
             .setAutoCancel(true)
@@ -105,7 +105,7 @@ class MessageNotifier(private val context: Context) {
 
         val channel = NotificationChannel(
             channelId,
-            "Mensagens RotaSegura",
+            "Mensagens NullChat",
             NotificationManager.IMPORTANCE_DEFAULT
         ).apply {
             description = "Notificacoes privadas de novas mensagens"

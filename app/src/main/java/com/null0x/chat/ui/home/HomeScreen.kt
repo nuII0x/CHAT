@@ -427,7 +427,7 @@ fun HomeScreen(
             onBack = { showShareRoute = false },
             onCopyRoute = {
                 if (routeLabel.isNotBlank()) {
-                    SensitiveClipboard.copy(context, "RotaSegura", routeLabel)
+                    SensitiveClipboard.copy(context, "NullChat", routeLabel)
                     Toast.makeText(context, "Token sensivel copiado por 60 segundos", Toast.LENGTH_SHORT).show()
                 }
             }
@@ -1137,7 +1137,7 @@ private fun SettingsTab(
             }
             item {
                 Text(
-                    text = "Feito com amor e carinho para Brasileiros.",
+                    text = "Feito com amor e carinho por nuII0x",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = TextAlign.Center,
@@ -1161,7 +1161,7 @@ private fun SettingsTab(
                 onCopyToken = {
                     val token = publicRouteToken.trim()
                     if (token.isNotBlank()) {
-                        SensitiveClipboard.copy(context, "Token RotaSegura", token)
+                        SensitiveClipboard.copy(context, "Token NullChat", token)
                         Toast.makeText(context, "Token sensivel copiado por 60 segundos", Toast.LENGTH_SHORT).show()
                     } else {
                         Toast.makeText(context, "Token ainda indisponivel", Toast.LENGTH_SHORT).show()
@@ -1192,7 +1192,7 @@ private fun SettingsTab(
                 privateInboxMessages = privateInboxMessages,
                 onBack = { showAccountWindow = false },
                 onCopyPublicSend = {
-                    SensitiveClipboard.copy(context, "Envio publico RotaSegura", publicSendPackage)
+                    SensitiveClipboard.copy(context, "Envio publico NullChat", publicSendPackage)
                     Toast.makeText(context, "Dados de envio copiados por 60 segundos", Toast.LENGTH_SHORT).show()
                 },
                 onOpenInbox = {

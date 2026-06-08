@@ -44,8 +44,8 @@ object AppSecurityManager {
     private const val PGP_VERIFIER_KEY = "pgp_verifier"
     private const val AUTO_UNLOCK_KEY = "auto_unlock_blob"
     private const val MANUAL_LOCK_KEY = "manual_lock_enabled"
-    private const val AUTO_UNLOCK_ALIAS = "rotasegura_auto_unlock"
-    private const val CHECK_TEXT = "ROTASEGURA_LOCK_OK"
+    private const val AUTO_UNLOCK_ALIAS = "NullChat_auto_unlock"
+    private const val CHECK_TEXT = "NullChat_LOCK_OK"
     private const val WRONG_PASSWORD_MESSAGE = "Senha errada, tente novamente"
     private const val CREATE_PASSWORD_ERROR_MESSAGE = "Não foi possível criar a senha, tente novamente"
 
@@ -268,7 +268,7 @@ object AppSecurityManager {
         val fingerprint = MessageDigest.getInstance("SHA-256")
             .digest(deviceEntropy(context))
             .joinToString("") { "%02x".format(it.toInt() and 0xFF) }
-        return "RotaSegura <$fingerprint>"
+        return "NullChat <$fingerprint>"
     }
 
     private fun installPublicEncryptionKey(prefs: android.content.SharedPreferences) {
