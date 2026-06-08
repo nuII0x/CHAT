@@ -16,7 +16,7 @@ Este arquivo serve para anotar ideias, melhorias, correções e ajustes futuros 
 
 ## 🛠 Correções Pendentes
 
-- [ ] Verificar comportamento do BottomDock quando o teclado abre.
+- [ ] Verificar comportamento do BottomDock quando o teclado abre, ele não pode seguir o teclado, tem que ficar fixo embaixo, onde ele reside.
 - [ ] Revisar permissões no `AndroidManifest.xml`.
 - [ ] Conferir ícones em `mipmap` e `drawable`.
 - [ ] Remover arquivos/imagens não usados.
