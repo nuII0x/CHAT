@@ -67,7 +67,7 @@ Este arquivo serve para anotar ideias, melhorias, correções e ajustes futuros 
 ---
 
 ## 💡 Ideias Futuras
-
+- [ ] Foreground Service + Tor reconectável + fila local + ACK + relay onion opcional 24h. Tá ótimo, mas quero fazer do meu PC um nó servidor temporário que só recebe mensagens pendentes para ser entregues no momento que a rota tiver disponível, esse PC vai rodar no início para não deixar os primeiros usuários impacientes. Então quando a rede tiver usuários suficientes para sobreviverem sem servidor. O PC poderá ser desconectado sem problemas.
 - [ ] Sistema descentralizado de armazenamento temporário.
 - [ ] Mensagens offline distribuídas.
 - [ ] Sons de notificação personalizados.
