@@ -1,10 +1,11 @@
-# NullChat — Melhorias e Correções Pendentes
+NullChat — Melhorias e Correções Pendentes
 
 Este arquivo serve para anotar ideias, melhorias, correções e ajustes futuros do aplicativo.
 
 ---
 
-## ✅ Prioridade Alta
+✅ Prioridade Alta
+
 - [ ] Mostrar "aguardando rota..." dentro do chat que não tem estado explicitado como "disponível" ou "conectado", a regra é, alcançou sinal de vida da rota? mostra "conectado", ainda não? mostra "aguardando rota..." se o usuário está dentro do aplicativo, com atividades na rede. mostra "disponível".
 - [ ] Revisar estabilidade da conexão Tor ao trocar de rede.
 - [ ] Melhorar reconexão automática quando o app perder internet.
@@ -14,31 +15,34 @@ Este arquivo serve para anotar ideias, melhorias, correções e ajustes futuros 
 
 ---
 
-## 🛠 Correções Pendentes
+🛠 Correções Pendentes
 
 - [ ] Verificar comportamento do BottomDock quando o teclado abre, ele não pode seguir o teclado, tem que ficar fixo embaixo, onde ele reside.
-- [ ] Revisar permissões no `AndroidManifest.xml`.
-- [ ] Conferir ícones em `mipmap` e `drawable`.
+- [ ] Revisar permissões no AndroidManifest.xml.
+- [ ] Conferir ícones em mipmap e drawable.
 - [ ] Remover arquivos/imagens não usados.
 - [ ] Testar APK em outro aparelho Android.
 
 ---
 
-## ✨ Melhorias de Interface
-- [ ] Mudar a cor de fundo do SplashScreen para ficar de acordo com o tema do sistema. Este SplashScreen deve ficar alí até o app terminar de carregar a tela inicial, para não travar no toque até a abertura do app. O toque já abre imediatamente a SplashScreen.
+✨ Melhorias de Interface
+
+- [ ] Mudar a cor de fundo do SplashScreen para ficar de acordo com o tema do sistema. Este SplashScreen deve ficar ali até o app terminar de carregar a tela inicial, para não travar no toque até a abertura do app. O toque já abre imediatamente a SplashScreen.
 - [ ] A tela inicial, onde há Chats, quando o usuário pressionar e segurar, vai aparecer igual se comporta no Contatos, com a mesma ação, neste caso, irá aparecer lá na barra de título a lixeira, junto com 3 pontos que abre uma lista de opções extras, estas opções serão inicialmente: "Limpar chats, Selecionar tudo", depois com a evolução do app adicionamos mais opções. Esta ação em qualquer lugar do app mostrará um destaque nos itens da lista selecionados na cor de acordo com o tema.
 - [ ] Centralizar textos informativos.
 - [ ] Harmonizar botões de adicionar, remover e excluir.
 - [ ] Melhorar mensagens de status do app.
 - [ ] Criar feedback visual para conexão ativa/inativa.
 - [ ] Melhorar tela de contatos vazia.
-- [ ] dentro do chat, na barra de título em 3 pontos o menu que se abre tem "Bloquear", essa opção deve ir para configurações, deve ser um botão que segue o tema, quando bloqueado vira "Desbloquear" como está atualmente. 
+- [ ] Dentro do chat, na barra de título em 3 pontos o menu que se abre tem "Bloquear", essa opção deve ir para configurações, deve ser um botão que segue o tema, quando bloqueado vira "Desbloquear" como está atualmente.
 
 ---
 
-## 🔐 Segurança e Privacidade
+🔐 Segurança e Privacidade
 
 - [ ] Implementar frase-passe de 12 palavras para restaurar identidade.
+- [ ] Implementar identidade criptográfica permanente derivada de chave pública.
+- [ ] Permitir backup e restauração do endereço onion mantendo o mesmo endereço após reinstalação.
 - [ ] Proteger token de rota privada.
 - [ ] Evitar exposição desnecessária do endereço onion.
 - [ ] Revisar armazenamento local de mensagens.
@@ -46,17 +50,18 @@ Este arquivo serve para anotar ideias, melhorias, correções e ajustes futuros 
 
 ---
 
-## 📦 Publicação
+📦 Publicação
 
 - [ ] Criar release no GitHub.
 - [ ] Gerar APK assinado.
 - [ ] Adicionar sistema de atualização via GitHub Releases.
 - [ ] Escrever instruções de instalação.
 - [ ] Definir versão atual do app.
+- [ ] Registrar domínio próprio para distribuição do projeto, documentação, atualizações e descoberta do aplicativo.
 
 ---
 
-## 🧪 Testes
+🧪 Testes
 
 - [ ] Testar chat comigo mesmo.
 - [ ] Testar envio com outro aparelho.
@@ -66,7 +71,8 @@ Este arquivo serve para anotar ideias, melhorias, correções e ajustes futuros 
 
 ---
 
-## 💡 Ideias Futuras
+💡 Ideias Futuras
+
 - [ ] Foreground Service + Tor reconectável + fila local + ACK + relay onion opcional 24h. Tá ótimo, mas quero fazer do meu PC um nó servidor temporário que só recebe mensagens pendentes para ser entregues no momento que a rota tiver disponível, esse PC vai rodar no início para não deixar os primeiros usuários impacientes. Então quando a rede tiver usuários suficientes para sobreviverem sem servidor. O PC poderá ser desconectado sem problemas.
 - [ ] Sistema descentralizado de armazenamento temporário.
 - [ ] Mensagens offline distribuídas.
@@ -76,7 +82,7 @@ Este arquivo serve para anotar ideias, melhorias, correções e ajustes futuros 
 
 ---
 
-## 📝 Anotações Rápidas
+📝 Anotações Rápidas
 
 - 
 - 
@@ -84,9 +90,10 @@ Este arquivo serve para anotar ideias, melhorias, correções e ajustes futuros 
 
 ---
 
-## Versões
+Versões
 
-### v0.1
+v0.1
+
 - Primeira fase de desenvolvimento.
 - Chat básico.
 - Testes com rota onion.
