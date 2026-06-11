@@ -63,3 +63,9 @@ reports/
 # =========================
 .kotlin/
 *.class
+
+# =========================
+# Keystore
+# =========================
+keystore.properties
+*.keystore

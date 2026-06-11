@@ -65,7 +65,7 @@ class MessageNotifier(private val context: Context) {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         val publicNotification = NotificationCompat.Builder(context, channelId)
-            .setSmallIcon(R.drawable.ic_stat_NullChat)
+            .setSmallIcon(R.drawable.ic_stat_nullchat)
             .setContentTitle("NullChat")
             .setContentText("Nova mensagem privada")
             .setLocalOnly(true)
@@ -74,7 +74,7 @@ class MessageNotifier(private val context: Context) {
             .build()
 
         val notification = NotificationCompat.Builder(context, channelId)
-            .setSmallIcon(R.drawable.ic_stat_NullChat)
+            .setSmallIcon(R.drawable.ic_stat_nullchat)
             .setLargeIcon(createLargeIcon())
             .setContentTitle("NullChat")
             .setContentText(fromName.ifBlank { "Nova mensagem" })

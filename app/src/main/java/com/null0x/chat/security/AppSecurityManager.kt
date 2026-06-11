@@ -233,13 +233,12 @@ object AppSecurityManager {
         return salt
     }
 
-    private fun derivePgpPassphrase(context: Context, password: String, salt: ByteArray): String {
-        val combinedSalt = salt + deviceEntropy(context)
-        val factory = javax.crypto.SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
-        val spec = javax.crypto.spec.PBEKeySpec(password.toCharArray(), combinedSalt, 160_000, 256)
-        val encoded = factory.generateSecret(spec).encoded
-        return Base64.encodeToString(encoded, Base64.NO_WRAP)
-    }
+   private fun derivePgpPassphrase(context: Context, password: String, salt: ByteArray): String {
+    val factory = javax.crypto.SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
+    val spec = javax.crypto.spec.PBEKeySpec(password.toCharArray(), salt, 160_000, 256)
+    val encoded = factory.generateSecret(spec).encoded
+    return Base64.encodeToString(encoded, Base64.NO_WRAP)
+}
 
     private fun deviceEntropy(context: Context): ByteArray {
         val androidId = Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID).orEmpty()

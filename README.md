@@ -34,7 +34,8 @@ Este arquivo serve para anotar ideias, melhorias, correções e ajustes futuros 
 - [ ] Melhorar mensagens de status do app.
 - [ ] Criar feedback visual para conexão ativa/inativa.
 - [ ] Melhorar tela de contatos vazia.
-- [ ] Dentro do chat, na barra de título em 3 pontos o menu que se abre tem "Bloquear", essa opção deve ir para configurações, deve ser um botão que segue o tema, quando bloqueado vira "Desbloquear" como está atualmente.
+- [ ] dentro do chat, na barra de título em 3 pontos o menu que se abre tem "Bloquear", essa opção deve ir para configurações, deve ser um botão que segue o tema, quando bloqueado vira "Desbloquear" como está atualmente. 
+- [ ] Colocar legendas embaixo de cada item do dock para ficar fácil saber o nome de cada aba e diferenciá-las.
 
 ---
 
