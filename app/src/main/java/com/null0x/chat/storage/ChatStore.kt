@@ -5,7 +5,6 @@ import com.null0x.chat.model.DeliveryState
 import com.null0x.chat.model.Message
 import java.io.File
 import java.security.MessageDigest
-import java.util.ArrayDeque
 
 class ChatStore(context: Context) {
 
@@ -18,39 +17,29 @@ class ChatStore(context: Context) {
 
     @Synchronized
     fun load(peer: String): List<Message> {
-        val file = chatFile(peer)
-        if (!file.exists()) return emptyList()
-
-        return file.useLines { lines ->
-            lines.mapNotNull { line -> decodeMessageLine(line) }.toList()
-        }
+        val messages = readNormalizedMessages(peer)
+        return messages
     }
 
     @Synchronized
     fun tail(peer: String, maxCount: Int): List<Message> {
         if (maxCount <= 0) return emptyList()
-        val file = chatFile(peer)
-        if (!file.exists()) return emptyList()
-
-        val buffer = ArrayDeque<Message>(maxCount)
-        file.useLines { lines ->
-            lines.forEach { line ->
-                val message = decodeMessageLine(line) ?: return@forEach
-                if (buffer.size == maxCount) {
-                    buffer.removeFirst()
-                }
-                buffer.addLast(message)
-            }
-        }
-        return buffer.toList()
+        return readNormalizedMessages(peer).takeLast(maxCount)
     }
 
     @Synchronized
     fun append(peer: String, message: Message) {
+        if (hasMessage(peer, message.id, message.isMine)) return
         val direction = if (message.isMine) "me" else "peer"
-        chatFile(peer).appendText(
-            "$direction|${encodeText(message.text)}|${message.timestamp}|${message.id}|${message.delivery.name}\n"
-        )
+        val current = readNormalizedMessages(peer)
+        val shouldRewrite = current.lastOrNull()?.let { messageSortKey(message) < messageSortKey(it) } == true
+        if (shouldRewrite) {
+            writeAll(peer, current + message)
+        } else {
+            chatFile(peer).appendText(
+                "$direction|${encodeText(message.text)}|${message.timestamp}|${message.id}|${message.delivery.name}\n"
+            )
+        }
         addPeerToIndex(peer)
     }
 
@@ -113,6 +102,16 @@ class ChatStore(context: Context) {
             if (out.size >= limit) break
         }
         return out
+    }
+
+    @Synchronized
+    fun pendingOutgoingForPeer(peer: String, limit: Int = Int.MAX_VALUE): List<Message> {
+        if (limit <= 0) return emptyList()
+        return readNormalizedMessages(peer)
+            .asSequence()
+            .filter { it.isMine && it.delivery == DeliveryState.Pending }
+            .take(limit)
+            .toList()
     }
 
     @Synchronized
@@ -247,24 +246,6 @@ class ChatStore(context: Context) {
         )
     }
 
-    private fun pendingOutgoingForPeer(peer: String, limit: Int): List<Message> {
-        if (limit <= 0) return emptyList()
-        val file = chatFile(peer)
-        if (!file.exists()) return emptyList()
-
-        val pending = mutableListOf<Message>()
-        file.useLines { lines ->
-            val iterator = lines.iterator()
-            while (iterator.hasNext() && pending.size < limit) {
-                val message = decodeMessageLine(iterator.next()) ?: continue
-                if (message.isMine && message.delivery != DeliveryState.Delivered) {
-                    pending.add(message)
-                }
-            }
-        }
-        return pending
-    }
-
     private fun encodePeerIndexLine(peer: String): String {
         return LocalStoreCipher.encrypt(peer)
     }
@@ -320,11 +301,38 @@ class ChatStore(context: Context) {
     @Synchronized
     private fun writeAll(peer: String, messages: List<Message>) {
         val file = chatFile(peer)
-        val lines = messages.joinToString(separator = "\n") { message ->
+        val lines = messages.sortedWith(messageComparator()).joinToString(separator = "\n") { message ->
             val direction = if (message.isMine) "me" else "peer"
             "$direction|${encodeText(message.text)}|${message.timestamp}|${message.id}|${message.delivery.name}"
         }
         file.writeText(if (lines.isBlank()) "" else "$lines\n")
+    }
+
+    @Synchronized
+    private fun readNormalizedMessages(peer: String): List<Message> {
+        val file = chatFile(peer)
+        if (!file.exists()) return emptyList()
+
+        val decoded = file.useLines { lines ->
+            lines.mapNotNull { line -> decodeMessageLine(line) }.toList()
+        }
+        val normalized = decoded
+            .distinctBy { "${it.isMine}:${it.id}" }
+            .sortedWith(messageComparator())
+        if (normalized != decoded) {
+            writeAll(peer, normalized)
+        }
+        return normalized
+    }
+
+    private fun messageComparator(): Comparator<Message> {
+        return compareBy<Message> { it.timestamp }
+            .thenBy { it.id }
+            .thenBy { if (it.isMine) 1 else 0 }
+    }
+
+    private fun messageSortKey(message: Message): String {
+        return "${message.timestamp.toString().padStart(20, '0')}|${message.id}|${if (message.isMine) 1 else 0}"
     }
 
     @Synchronized

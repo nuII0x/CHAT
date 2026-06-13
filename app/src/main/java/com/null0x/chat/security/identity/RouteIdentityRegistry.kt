@@ -17,9 +17,8 @@ object RouteIdentityRegistry {
         synchronized(this) {
             if (initialized) return
             val appContext = context.applicationContext
-            val mnemonicManager = MnemonicManager.fromAssets(appContext)
             val identityStore = SharedPreferencesEncryptedKeyStore.from(appContext)
-            identityManager = CryptoIdentityManager(mnemonicManager, identityStore)
+            identityManager = CryptoIdentityManager(appContext, identityStore)
             sendTokenManager = SendTokenManager(
                 store = object : SendTokenStore {
                     private val prefs = appContext.getSharedPreferences("send_token", Context.MODE_PRIVATE)
@@ -48,12 +47,19 @@ object RouteIdentityRegistry {
         return identityManager()?.getPublicKey()?.isNotBlank() == true
     }
 
-    fun createIdentity(password: String): IdentityCreationResult {
-        return identityManager().createIdentity(password)
+    fun createIdentity(
+        password: String,
+        language: MnemonicLanguage = MnemonicLanguage.ENGLISH
+    ): IdentityCreationResult {
+        return identityManager().createIdentity(password, language)
     }
 
-    fun restoreIdentity(mnemonic: String, password: String): IdentityCreationResult {
-        return identityManager().restoreIdentity(mnemonic, password)
+    fun restoreIdentity(
+        mnemonic: String,
+        password: String,
+        language: MnemonicLanguage = MnemonicLanguage.ENGLISH
+    ): IdentityCreationResult {
+        return identityManager().restoreIdentity(mnemonic, password, language)
     }
 
     fun unlock(password: String): Boolean {

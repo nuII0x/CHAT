@@ -21,8 +21,11 @@ class MnemonicManager(
         private const val BIP39_PBKDF2_ITERATIONS = 2048
         private const val BIP39_PBKDF2_BITS = 512
 
-        fun fromAssets(context: Context, assetPath: String = "mnemonic/bip39_english.txt"): MnemonicManager {
-            val words = context.assets.open(assetPath).use { input ->
+        fun fromAssets(
+            context: Context,
+            language: MnemonicLanguage = MnemonicLanguage.ENGLISH
+        ): MnemonicManager {
+            val words = context.assets.open(language.assetPath).use { input ->
                 BufferedReader(InputStreamReader(input, Charsets.UTF_8)).use { reader ->
                     reader.readLines().map { it.trim() }.filter { it.isNotBlank() }
                 }

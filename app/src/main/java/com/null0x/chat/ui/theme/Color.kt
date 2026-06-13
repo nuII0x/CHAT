@@ -2,37 +2,29 @@ package com.null0x.chat.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-val SignalBlue80 = Color(0xFFF2F2F2)
-val FreshGreen80 = Color(0xFFD9D9D9)
-val WarmCoral80 = Color(0xFFBFBFBF)
-
-val SignalBlue40 = Color(0xFF111111)
-val FreshGreen40 = Color(0xFF333333)
-val WarmCoral40 = Color(0xFF666666)
-
-val AppBackgroundLight = Color.White
-val AppSurfaceLight = Color.White
-val AppSurfaceVariantLight = Color.White
-val AppOutlineLight = Color(0xFFA8A8A8)
-val AppOnSurfaceLight = Color(0xFF111111)
+val AppBackgroundLight = Color(0xFFF5F5F5)
+val AppSurfaceLight = Color(0xFFFFFFFF)
+val AppSurfaceVariantLight = Color(0xFFE4E4E4)
+val AppOutlineLight = Color(0xFFB8B8B8)
+val AppOnSurfaceLight = Color(0xFF202020)
 val AppOnSurfaceVariantLight = Color(0xFF666666)
 val AppPrimaryContainerLight = Color(0xFFE0E0E0)
-val AppSecondaryContainerLight = Color(0xFFD0D0D0)
-val AppTertiaryContainerLight = Color(0xFFC0C0C0)
+val AppSecondaryContainerLight = Color(0xFFE8E8E8)
+val AppTertiaryContainerLight = Color(0xFFDADADA)
 
-val AppBackgroundDark = Color(0xFF000000)
-val AppSurfaceDark = Color(0xFF000000)
-val AppSurfaceVariantDark = Color(0xFF000000)
-val AppOutlineDark = Color(0xFF444444)
-val AppOnSurfaceDark = Color(0xFFF8F8F8)
-val AppOnSurfaceVariantDark = Color(0xFFB3B3B3)
-val AppPrimaryContainerDark = Color(0xFF1F1F1F)
-val AppSecondaryContainerDark = Color(0xFF2A2A2A)
-val AppTertiaryContainerDark = Color(0xFF363636)
+val AppBackgroundDark = Color(0xFF101010)
+val AppSurfaceDark = Color(0xFF1A1A1A)
+val AppSurfaceVariantDark = Color(0xFF2A2A2A)
+val AppOutlineDark = Color(0xFF505050)
+val AppOnSurfaceDark = Color(0xFFF0F0F0)
+val AppOnSurfaceVariantDark = Color(0xFFAEAEAE)
+val AppPrimaryContainerDark = Color(0xFF2E2E2E)
+val AppSecondaryContainerDark = Color(0xFF373737)
+val AppTertiaryContainerDark = Color(0xFF404040)
 
-val AppPinkBackground = Color.White
-val AppPinkSurface = Color.White
-val AppPinkSurfaceVariant = Color.White
+val AppPinkBackground = Color(0xFFFFF7FA)
+val AppPinkSurface = Color(0xFFFFFCFD)
+val AppPinkSurfaceVariant = Color(0xFFF7EAF0)
 val AppPinkOutline = Color(0xFFD6A4B7)
 val AppPinkOnSurface = Color(0xFF2A1320)
 val AppPinkOnSurfaceVariant = Color(0xFF7D5D6D)
@@ -43,15 +35,28 @@ val AppPinkSecondaryContainer = Color(0xFFF8DCE7)
 val AppPinkTertiary = Color(0xFFB06E80)
 val AppPinkTertiaryContainer = Color(0xFFF1D5DE)
 
-val AppBlueBackground = Color.White
-val AppBlueSurface = Color.White
-val AppBlueSurfaceVariant = Color.White
-val AppBlueOutline = Color(0xFF98B7D8)
+val AppBlueBackground = Color(0xFFF4F8FD)
+val AppBlueSurface = Color(0xFFFFFFFF)
+val AppBlueSurfaceVariant = Color(0xFFEAF1FA)
+val AppBlueOutline = Color(0xFF9FB6D2)
 val AppBlueOnSurface = Color(0xFF071B33)
-val AppBlueOnSurfaceVariant = Color(0xFF53687F)
+val AppBlueOnSurfaceVariant = Color(0xFF50657C)
 val AppBluePrimary = Color(0xFF0B63CE)
 val AppBluePrimaryContainer = Color(0xFFD7E9FF)
 val AppBlueSecondary = Color(0xFF2F658C)
-val AppBlueSecondaryContainer = Color(0xFFDCECF7)
+val AppBlueSecondaryContainer = Color(0xFFDDECF8)
 val AppBlueTertiary = Color(0xFF4E6076)
-val AppBlueTertiaryContainer = Color(0xFFE4EAF2)
+val AppBlueTertiaryContainer = Color(0xFFE6EBF2)
+
+val AppGrayBackground = AppBackgroundLight
+val AppGraySurface = AppSurfaceLight
+val AppGraySurfaceVariant = AppSurfaceVariantLight
+val AppGrayOutline = AppOutlineLight
+val AppGrayOnSurface = AppOnSurfaceLight
+val AppGrayOnSurfaceVariant = AppOnSurfaceVariantLight
+val AppGrayPrimary = AppOnSurfaceLight
+val AppGrayPrimaryContainer = AppPrimaryContainerLight
+val AppGraySecondary = AppOnSurfaceLight
+val AppGraySecondaryContainer = AppSecondaryContainerLight
+val AppGrayTertiary = AppOnSurfaceLight
+val AppGrayTertiaryContainer = AppTertiaryContainerLight

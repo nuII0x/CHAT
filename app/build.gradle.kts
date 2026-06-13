@@ -36,6 +36,10 @@ android {
     }
 
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("release")
+        }
+
         release {
             signingConfig = signingConfigs.getByName("release")
 
@@ -61,6 +65,7 @@ android {
 
 dependencies {
     implementation(libs.androidx.core.ktx)
+    implementation(libs.androidx.core.splashscreen)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
@@ -75,6 +80,8 @@ dependencies {
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation("androidx.compose.material:material-icons-extended")
     implementation(libs.androidx.compose.material3)
+    implementation("androidx.work:work-runtime-ktx:2.9.1")
+    implementation("com.google.mlkit:barcode-scanning:17.3.0")
     implementation("info.guardianproject:tor-android:0.4.8.18")
     implementation("org.pgpainless:pgpainless-core:1.7.6")
     implementation("com.google.zxing:core:3.5.3")

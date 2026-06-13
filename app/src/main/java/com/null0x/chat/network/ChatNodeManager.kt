@@ -2,6 +2,7 @@ package com.null0x.chat.network
 
 import android.content.Context
 import android.util.Base64
+import android.util.Log
 import com.null0x.chat.AppVisibility
 import com.null0x.chat.model.DeliveryState
 import com.null0x.chat.model.Message
@@ -65,13 +66,14 @@ object ChatNodeManager {
     private const val CHAT_PROFILE_PREFIX = "CHAT_PROFILE|"
     private const val CHAT_PRESENCE_PREFIX = "CHAT_PRESENCE|"
     private const val CHAT_PRESENCE_IDLE = "idle"
+    private const val CONTACT_CONTROL_PREFIX = "[NullChat:contact-"
     private const val ROUTE_PROFILES_PREFS = "route_public_profiles"
     private const val LAST_PUBLIC_ROUTE_KEY = "last_public_route"
     private val ONION_HOST_REGEX = Regex("^[a-z2-7]{56}\\.onion$")
 
     interface Listener {
         fun onUsernameReady(username: String)
-        fun onMessage(fromUsername: String, text: String, messageId: String? = null)
+        fun onMessage(fromUsername: String, text: String, messageId: String? = null, timestamp: Long? = null)
         fun onDeliveryAck(fromUsername: String, messageId: String) {}
         fun onOutgoingDeliveryStateChanged(toUsername: String, messageId: String, state: DeliveryState) {}
         fun onChatPresence(fromUsername: String, state: String) {}
@@ -106,12 +108,17 @@ object ChatNodeManager {
     private var profilePrefs: android.content.SharedPreferences? = null
     private var routeNamesPrefs: android.content.SharedPreferences? = null
     private var routeProfilesPrefs: android.content.SharedPreferences? = null
+    @Volatile
+    private var chatMessageAuthorization: ((String) -> Boolean)? = null
 
     private var retryJob: kotlinx.coroutines.Job? = null
     private var torStartJob: kotlinx.coroutines.Job? = null
     private var presenceHeartbeatJob: kotlinx.coroutines.Job? = null
     private var knownRoutesRefreshJob: Job? = null
     private var knownRoutesIndicatorJob: Job? = null
+    private var fastRelayPullJob: Job? = null
+    @Volatile
+    private var lastTransportRecoveryAtMs: Long = 0L
     @Volatile
     private var appContext: Context? = null
 
@@ -142,7 +149,7 @@ object ChatNodeManager {
     var profileAllowScreenshots: Boolean = false
         private set
 
-    fun ensureBackgroundNetwork(context: Context): Boolean {
+    fun ensureBackgroundNetwork(context: Context, startSyncLoop: Boolean = true): Boolean {
         val appContext = context.applicationContext
         AppSecurityManager.initialize(appContext)
         if (
@@ -151,11 +158,15 @@ object ChatNodeManager {
         ) {
             return false
         }
-        start(appContext, autoStartTor = true)
+        start(appContext, autoStartTor = true, startSyncLoop = startSyncLoop)
         return true
     }
 
-    fun start(context: Context, autoStartTor: Boolean = false) {
+    fun setChatMessageAuthorization(gate: ((String) -> Boolean)?) {
+        chatMessageAuthorization = gate
+    }
+
+    fun start(context: Context, autoStartTor: Boolean = false, startSyncLoop: Boolean = true) {
         val appContext = context.applicationContext
         val shouldEnsureTor = autoStartTor
         synchronized(startLock) {
@@ -166,6 +177,7 @@ object ChatNodeManager {
             started = true
             this.appContext = appContext
             RouteIdentityRegistry.initialize(appContext)
+            FastRelayTransport.initialize(appContext)
             RouteIdentityRegistry.sendTokenManager().ensureToken()
             notifier = MessageNotifier(appContext)
             chatStore = ChatStore(appContext)
@@ -215,18 +227,25 @@ object ChatNodeManager {
                 username = savedRoute
                 node.setPublicRoute(savedRoute)
             }
-            startRetryLoop()
-            startPresenceHeartbeatLoop()
+            if (startSyncLoop) {
+                startRetryLoop()
+                startPresenceHeartbeatLoop()
+                startFastRelayPullLoop()
+            }
             messageSyncWorker = MessageSyncWorker(
                 scope = scope,
                 store = distributedMessageStore!!,
                 peerDiscoveryManager = peerDiscoveryManager!!,
-                sendMessage = { peer, text -> node.sendMessage(peer, text) },
+                sendMessage = { peer, text -> sendTransportText(peer, text) },
                 onLocalMessage = { peer, envelope, text ->
                     handleDeliveredEnvelope(peer, envelope, text)
                 },
                 localRecipientHash = { RouteIdentityRegistry.identityManager().getPublicKeyHash() }
-            ).also { it.start() }
+            ).also {
+                if (startSyncLoop) {
+                    it.start()
+                }
+            }
 
             node.start(
                 scope = scope,
@@ -274,6 +293,7 @@ object ChatNodeManager {
                     val parsed = parseChatMessage(text)
                     val rawText = parsed?.text ?: text
                     val incomingMessageId = parsed?.id
+                    val incomingTimestamp = parsed?.timestamp ?: System.currentTimeMillis()
                     val normalizedFrom = normalizeRoute(from)
                     val messagePeer = normalizedFrom ?: peer
                     val normalizedPublicRoute = normalizeRoute(publicRoute)
@@ -284,41 +304,54 @@ object ChatNodeManager {
 
                     if (rawText == CLEAR_HISTORY_COMMAND) {
                         return@onMessage
-                    } else {
-                        if (isSelfEcho) {
-                            chatStore?.updateDeliveryStatus(messagePeer, incomingMessageId, DeliveryState.Delivered)
-                            listeners.forEach { it.onDeliveryAck(messagePeer, incomingMessageId) }
-                        }
-                        val isDuplicate = incomingMessageId?.let { id ->
-                            chatStore?.hasMessage(messagePeer, id, isMine = false) == true
-                        } == true
-                        if (isDuplicate) {
-                            incomingMessageId?.let { id ->
-                                scope.launch { node.sendMessage(messagePeer, "$CHAT_ACK_PREFIX$id") }
-                            }
-                            return@onMessage
-                        }
-                        requestPublicProfile(messagePeer)
-                        val name = displayNameFor(messagePeer)
-                        chatStore?.append(
-                            messagePeer,
-                            Message(
-                                id = incomingMessageId ?: java.util.UUID.randomUUID().toString(),
-                                text = rawText,
-                                isMine = false,
-                                delivery = DeliveryState.Delivered
-                            )
-                        )
-                        if (AppVisibility.isChatOpen(messagePeer)) {
-                            notifier?.cancelMessage(messagePeer)
-                        } else {
-                            notifier?.showMessage(messagePeer, name, rawText)
-                        }
-                        incomingMessageId?.let { id ->
-                            scope.launch { node.sendMessage(messagePeer, "$CHAT_ACK_PREFIX$id") }
-                        }
                     }
-                    listeners.forEach { it.onMessage(messagePeer, rawText, incomingMessageId) }
+
+                    if (isContactControlMessage(rawText)) {
+                        incomingMessageId?.let { id ->
+                            scope.launch { sendTransportText(messagePeer, "$CHAT_ACK_PREFIX$id") }
+                        }
+                        listeners.forEach { it.onMessage(messagePeer, rawText, incomingMessageId, incomingTimestamp) }
+                        return@onMessage
+                    }
+
+                    if (!isChatMessageAuthorized(messagePeer)) {
+                        return@onMessage
+                    }
+
+                    if (isSelfEcho) {
+                        chatStore?.updateDeliveryStatus(messagePeer, incomingMessageId, DeliveryState.Delivered)
+                        listeners.forEach { it.onDeliveryAck(messagePeer, incomingMessageId) }
+                    }
+                    val isDuplicate = incomingMessageId?.let { id ->
+                        chatStore?.hasMessage(messagePeer, id, isMine = false) == true
+                    } == true
+                    if (isDuplicate) {
+                        incomingMessageId?.let { id ->
+                            scope.launch { sendTransportText(messagePeer, "$CHAT_ACK_PREFIX$id") }
+                        }
+                        return@onMessage
+                    }
+                    requestPublicProfile(messagePeer)
+                    val name = displayNameFor(messagePeer)
+                    chatStore?.append(
+                        messagePeer,
+                        Message(
+                            id = incomingMessageId ?: java.util.UUID.randomUUID().toString(),
+                            text = rawText,
+                            isMine = false,
+                            timestamp = incomingTimestamp,
+                            delivery = DeliveryState.Delivered
+                        )
+                    )
+                    if (AppVisibility.isChatOpen(messagePeer)) {
+                        notifier?.cancelMessage(messagePeer)
+                    } else {
+                        notifier?.showMessage(messagePeer, name, rawText)
+                    }
+                    incomingMessageId?.let { id ->
+                        scope.launch { sendTransportText(messagePeer, "$CHAT_ACK_PREFIX$id") }
+                    }
+                    listeners.forEach { it.onMessage(messagePeer, rawText, incomingMessageId, incomingTimestamp) }
                 },
                 onPeersChanged = { users, _ ->
                     peers = users
@@ -357,6 +390,32 @@ object ChatNodeManager {
         }
         if (shouldEnsureTor) {
             ensureTorRunning(appContext)
+        }
+    }
+
+    suspend fun runBackgroundSyncCycle() {
+        messageSyncWorker?.runCycle()
+    }
+
+    fun stop(context: Context) {
+        synchronized(startLock) {
+            messageSyncWorker?.stop()
+            messageSyncWorker = null
+            retryJob?.cancel()
+            retryJob = null
+            presenceHeartbeatJob?.cancel()
+            presenceHeartbeatJob = null
+            knownRoutesRefreshJob?.cancel()
+            knownRoutesRefreshJob = null
+            knownRoutesIndicatorJob?.cancel()
+            knownRoutesIndicatorJob = null
+            fastRelayPullJob?.cancel()
+            fastRelayPullJob = null
+            torStartJob?.cancel()
+            torStartJob = null
+            node.stop()
+            TorManager.stop(context.applicationContext)
+            started = false
         }
     }
 
@@ -447,6 +506,7 @@ object ChatNodeManager {
     private fun handleDeliveredEnvelope(peer: String, envelope: MessageEnvelope, text: String) {
         val conversationPeer = canonicalPeer(envelope.senderRoute ?: peer)
         if (conversationPeer.isBlank()) return
+        if (!isChatMessageAuthorized(conversationPeer)) return
         chatStore?.rememberPeer(conversationPeer, displayNameFor(conversationPeer))
         val alreadyStored = chatStore?.hasMessage(conversationPeer, envelope.messageId, isMine = false) == true
         if (!alreadyStored) {
@@ -467,7 +527,7 @@ object ChatNodeManager {
         distributedMessageStore?.acknowledge(ack)
         scope.launch {
             (peerDiscoveryManager?.discoverPeers() ?: knownPeers()).forEach { knownPeer ->
-                node.sendMessage(knownPeer, P2PMessageRouter.encodeAck(ack))
+                sendTransportText(knownPeer, P2PMessageRouter.encodeAck(ack))
             }
         }
         if (alreadyStored) return
@@ -476,7 +536,7 @@ object ChatNodeManager {
         } else {
             notifier?.showMessage(conversationPeer, displayNameFor(conversationPeer), text)
         }
-        listeners.forEach { it.onMessage(conversationPeer, text, envelope.messageId) }
+        listeners.forEach { it.onMessage(conversationPeer, text, envelope.messageId, envelope.timestamp) }
     }
 
     private fun handleP2PProtocol(fromPeer: String, rawText: String): Boolean {
@@ -506,7 +566,7 @@ object ChatNodeManager {
                     .map { it.envelope }
                     .toList()
                 if (matches.isNotEmpty()) {
-                    node.sendMessage(fromPeer, P2PMessageRouter.encodePullResponse(matches))
+                    sendTransportText(fromPeer, P2PMessageRouter.encodePullResponse(matches))
                 }
             }
             return true
@@ -547,7 +607,6 @@ object ChatNodeManager {
             return Result.failure(IllegalArgumentException("Rota onion inválida"))
         }
         migratePeerIfNeeded(toUsername, peer)
-        publishLocalProfileTo(peer)
         val existing = chatStore?.load(peer)?.firstOrNull { it.isMine && it.id == id }
         val pendingMessage = Message(
             id = id,
@@ -579,6 +638,20 @@ object ChatNodeManager {
         }
 
         return trySendStoredMessage(peer, id, text)
+    }
+
+    suspend fun sendChatMessage(toUsername: String, text: String, messageId: String? = null): Result<Unit> {
+        val peer = normalizeRoute(toUsername) ?: toUsername.trim()
+        if (peer.isBlank()) {
+            return Result.failure(IllegalArgumentException("Rota onion inválida"))
+        }
+        if (!canSendChatMessage(peer)) {
+            return Result.failure(IllegalStateException("Rota não autorizada para envio"))
+        }
+        if (!isChatMessageAuthorized(peer)) {
+            return Result.failure(IllegalStateException("Contato ainda não aceitou mensagens"))
+        }
+        return sendMessage(peer, text, messageId)
     }
 
     fun loadMessages(peer: String): List<Message> {
@@ -648,7 +721,7 @@ object ChatNodeManager {
         val port = value.substring(separator + 1)
             .takeIf { candidate -> candidate.all { it.isDigit() } }
             ?: "5000"
-        return "$host#$port"
+        return "$host:$port"
     }
 
     fun publicProfileFor(route: String): PublicRouteProfile? {
@@ -696,7 +769,7 @@ object ChatNodeManager {
         val peer = normalizeRoute(route) ?: return
         scope.launch {
             markKnownRoutesRefreshing()
-            node.sendMessage(peer, "$CHAT_PROFILE_REQUEST_PREFIX${java.util.UUID.randomUUID()}")
+            sendTransportText(peer, "$CHAT_PROFILE_REQUEST_PREFIX${java.util.UUID.randomUUID()}")
         }
     }
 
@@ -711,7 +784,7 @@ object ChatNodeManager {
             _knownRoutesRefreshing.value = true
             try {
                 peers.forEach { peer ->
-                    node.sendMessage(peer, "$CHAT_PROFILE_REQUEST_PREFIX${java.util.UUID.randomUUID()}")
+                    sendTransportText(peer, "$CHAT_PROFILE_REQUEST_PREFIX${java.util.UUID.randomUUID()}")
                     delay(120)
                 }
                 delay(900)
@@ -736,7 +809,7 @@ object ChatNodeManager {
         val peer = normalizeRoute(route) ?: return
         if (state !in setOf("open", "closed", "typing", "idle")) return
         scope.launch {
-            node.sendMessage(peer, "$CHAT_PRESENCE_PREFIX$state")
+            sendTransportText(peer, "$CHAT_PRESENCE_PREFIX$state")
         }
     }
 
@@ -788,8 +861,26 @@ object ChatNodeManager {
                 delay(25_000)
                 if (publicRoute.isBlank() || !node.isServerReady()) continue
                 knownPeers().forEach { peer ->
-                    node.sendMessage(peer, "$CHAT_PRESENCE_PREFIX$CHAT_PRESENCE_IDLE")
+                    sendTransportText(peer, "$CHAT_PRESENCE_PREFIX$CHAT_PRESENCE_IDLE")
                 }
+            }
+        }
+    }
+
+    private fun startFastRelayPullLoop() {
+        if (fastRelayPullJob?.isActive == true) return
+        val context = appContext ?: return
+        fastRelayPullJob = scope.launch {
+            while (isActive) {
+                val route = currentPublicRoute()
+                if (route.isNotBlank()) {
+                    FastRelayTransport.pull(context, route)
+                        .getOrDefault(emptyList())
+                        .forEach { packet ->
+                            node.handleEncryptedTransportLine(packet)
+                        }
+                }
+                delay(if (FastRelayTransport.currentConfig(context).active) 1_200 else 5_000)
             }
         }
     }
@@ -798,12 +889,30 @@ object ChatNodeManager {
         val store = chatStore ?: return
         val pending = store.pendingOutgoing(limit = 25)
         if (pending.isEmpty()) return
-        pending.forEach { (peer, message) ->
-            if (message.text == CLEAR_HISTORY_COMMAND || message.delivery == DeliveryState.Delivered) {
-                return@forEach
+        pending.groupBy { it.first }.forEach { (peer, items) ->
+            for ((_, message) in items) {
+                if (message.text == CLEAR_HISTORY_COMMAND || message.delivery == DeliveryState.Delivered) {
+                    continue
+                }
+                if (!isContactControlMessage(message.text) && !isChatMessageAuthorized(peer)) {
+                    break
+                }
+                val result = trySendStoredMessage(peer, message.id, message.text)
+                if (result.isFailure) {
+                    break
+                }
             }
-            trySendStoredMessage(peer, message.id, message.text)
         }
+    }
+
+    private fun isChatMessageAuthorized(peer: String): Boolean {
+        val cleanPeer = canonicalPeer(peer)
+        if (cleanPeer.isBlank()) return false
+        return chatMessageAuthorization?.invoke(cleanPeer) ?: true
+    }
+
+    private fun isContactControlMessage(text: String): Boolean {
+        return text.startsWith(CONTACT_CONTROL_PREFIX)
     }
 
     private suspend fun trySendStoredMessage(peer: String, messageId: String, text: String): Result<Unit> {
@@ -822,12 +931,41 @@ object ChatNodeManager {
             return Result.failure(IllegalStateException("Servidor local ainda nao esta pronto"))
         }
 
-        val wrapped = "$CHAT_MSG_PREFIX$messageId|${encodePayloadText(text)}"
-        val result = node.sendMessage(cleanPeer, wrapped)
+        val timestamp = store?.load(cleanPeer)
+            ?.firstOrNull { it.isMine && it.id == messageId }
+            ?.timestamp
+            ?: System.currentTimeMillis()
+        val wrapped = "$CHAT_MSG_PREFIX$messageId|$timestamp|${encodePayloadText(text)}"
+        val result = sendTransportText(cleanPeer, wrapped)
         val state = if (result.isSuccess) DeliveryState.Sent else DeliveryState.Pending
         store?.updateDeliveryStatus(cleanPeer, messageId, state)
         listeners.forEach { it.onOutgoingDeliveryStateChanged(cleanPeer, messageId, state) }
+        if (result.isFailure) {
+            requestTorRecoveryAfterSendFailure(result.exceptionOrNull())
+        }
         return result
+    }
+
+    private fun requestTorRecoveryAfterSendFailure(error: Throwable?) {
+        val context = appContext ?: return
+        val now = System.currentTimeMillis()
+        if (now - lastTransportRecoveryAtMs < 60_000L) return
+        lastTransportRecoveryAtMs = now
+        val reason = error?.message.orEmpty()
+        Log.w("NullChatTransport", "Falha ao enviar via Tor; tentando recuperar transporte: $reason")
+        TorManager.recoverAfterTransportFailure(context, reason)
+    }
+
+    private suspend fun sendTransportText(peer: String, text: String): Result<Unit> {
+        val cleanPeer = normalizeRoute(peer)
+            ?: return Result.failure(IllegalArgumentException("Rota onion inválida"))
+        val context = appContext
+        val fromRoute = publicRoute
+        if (context != null && fromRoute.isNotBlank()) {
+            val fastResult = FastRelayTransport.send(context, cleanPeer, fromRoute, text)
+            if (fastResult.isSuccess) return fastResult
+        }
+        return node.sendMessage(cleanPeer, text)
     }
 
     private fun parseChatMessage(raw: String): ParsedIncomingMessage? {
@@ -836,12 +974,23 @@ object ChatNodeManager {
         val firstSep = payload.indexOf('|')
         if (firstSep <= 0) return null
         val id = payload.substring(0, firstSep).trim()
-        val encodedText = payload.substring(firstSep + 1)
+        val remaining = payload.substring(firstSep + 1)
         if (id.isBlank() || id.length > MAX_MESSAGE_ID_CHARS) return null
+        val secondSep = remaining.indexOf('|')
+        val timestamp = if (secondSep > 0) {
+            remaining.substring(0, secondSep).toLongOrNull()?.takeIf { it > 0L }
+        } else {
+            null
+        }
+        val encodedText = if (timestamp != null) {
+            remaining.substring(secondSep + 1)
+        } else {
+            remaining
+        }
         val text = runCatching {
             String(Base64.decode(encodedText, Base64.DEFAULT), Charsets.UTF_8)
         }.getOrNull() ?: return null
-        return ParsedIncomingMessage(id = id, text = text)
+        return ParsedIncomingMessage(id = id, timestamp = timestamp, text = text)
     }
 
     private fun encodePayloadText(text: String): String {
@@ -912,7 +1061,21 @@ object ChatNodeManager {
             .put("allowScreenshots", profileAllowScreenshots)
             .put("updatedAt", System.currentTimeMillis())
         val encoded = Base64.encodeToString(json.toString().toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
-        return node.sendMessage(peer, "$CHAT_PROFILE_PREFIX$encoded")
+        return sendTransportText(peer, "$CHAT_PROFILE_PREFIX$encoded")
+    }
+
+    private fun canSendChatMessage(peer: String): Boolean {
+        val cleanPeer = canonicalPeer(peer)
+        if (cleanPeer.isBlank()) return false
+        val selfRoute = canonicalPeer(publicRoute)
+        val selfUser = canonicalPeer(username)
+        if (cleanPeer == selfRoute || cleanPeer == selfUser) {
+            return true
+        }
+        val profile = publicProfileFor(cleanPeer) ?: return false
+        return profile.exchangePublicKey.isNotBlank() &&
+            profile.publicKeyHash.isNotBlank() &&
+            RouteIdentityRegistry.identityManager().isUnlocked()
     }
 
     private fun normalizeRoute(route: String): String? {
@@ -964,6 +1127,7 @@ object ChatNodeManager {
 
     private data class ParsedIncomingMessage(
         val id: String,
+        val timestamp: Long?,
         val text: String
     )
 }

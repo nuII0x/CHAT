@@ -19,11 +19,11 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.VpnKey
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -43,6 +43,7 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.null0x.chat.ui.common.CursorAwareOutlinedTextField
 import com.null0x.chat.ui.maskedRouteLabel
 import com.null0x.chat.ui.common.SwipeToCloseContainer
 import com.null0x.chat.ui.security.ProtectedWindowCapture
@@ -52,6 +53,7 @@ import com.null0x.chat.viewmodel.ChatViewModel
 fun RouteProfileScreen(
     profile: ChatViewModel.PublicProfile,
     onBack: () -> Unit,
+    onLockApp: () -> Unit,
     onSaveLocalName: (String, String) -> Unit
 ) {
     var localName by rememberSaveable(profile.route) { mutableStateOf(profile.localName) }
@@ -91,6 +93,16 @@ fun RouteProfileScreen(
                             color = Color.White,
                             fontWeight = FontWeight.SemiBold
                         )
+                        IconButton(
+                            onClick = onLockApp,
+                            modifier = Modifier.align(Alignment.CenterEnd)
+                        ) {
+                            Icon(
+                                Icons.Filled.VpnKey,
+                                contentDescription = "Trancar app",
+                                tint = Color.White
+                            )
+                        }
                     }
                 }
             }
@@ -154,7 +166,7 @@ fun RouteProfileScreen(
                             )
                         }
 
-                        OutlinedTextField(
+                        CursorAwareOutlinedTextField(
                             value = localName,
                             onValueChange = { localName = it.take(MAX_LOCAL_NAME_CHARS) },
                             modifier = Modifier.fillMaxWidth(),

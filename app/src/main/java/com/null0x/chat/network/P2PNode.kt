@@ -9,9 +9,11 @@ import kotlinx.coroutines.launch
 import com.null0x.chat.security.identity.OnionHttpRequest
 import com.null0x.chat.security.identity.OnionHttpResponse
 import java.io.BufferedReader
+import java.io.BufferedWriter
 import java.io.IOException
 import java.io.InputStream
 import java.io.InputStreamReader
+import java.io.OutputStreamWriter
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
@@ -23,6 +25,9 @@ class P2PNode(
 ) {
     private companion object {
         private const val INCOMING_SOCKET_TIMEOUT_MS = 30_000
+        private const val OUTGOING_SOCKET_TIMEOUT_MS = 12_000
+        private const val SOCKS_CONNECT_TIMEOUT_MS = 10_000
+        private const val OUTGOING_CONNECTION_IDLE_MS = 35_000L
         private const val MAX_INCOMING_CIPHER_CHARS = 192 * 1024
         private const val MAX_INCOMING_PLAIN_CHARS = 64 * 1024
         private val ONION_HOST_REGEX = Regex("^[a-z2-7]{56}\\.onion$")
@@ -32,6 +37,8 @@ class P2PNode(
     private var serverSocket: ServerSocket? = null
     private var localUsername: String = ""
     @Volatile
+    private var messageHandler: ((fromUsername: String, text: String) -> Unit)? = null
+    @Volatile
     private var publicRoute: String = ""
     @Volatile
     private var serverReady: Boolean = false
@@ -40,11 +47,17 @@ class P2PNode(
     private var socksPort: Int = 9050
     @Volatile
     private var socksEnabled: Boolean = false
+    private val outgoingConnections = mutableMapOf<RouteEndpoint, OutgoingConnection>()
+    private val outgoingConnectionsLock = Any()
 
     fun setTransportViaSocks(enabled: Boolean, host: String = "127.0.0.1", port: Int = 9050) {
+        val transportChanged = socksEnabled != enabled || socksHost != host || socksPort != port
         socksEnabled = enabled
         socksHost = host
         socksPort = port
+        if (!enabled || transportChanged) {
+            closeOutgoingConnections()
+        }
     }
 
     fun setPublicRoute(route: String) {
@@ -66,6 +79,7 @@ class P2PNode(
         if (tcpJob?.isActive == true) return
 
         localUsername = publicRoute.ifBlank { "Aguardando rede..." }
+        messageHandler = onMessage
         onUsernameReady(localUsername)
         onPeersChanged(emptyList(), emptyMap())
 
@@ -110,17 +124,11 @@ class P2PNode(
                 if (!socksEnabled || socksPort !in 1..65535) {
                     throw IllegalStateException("Rede ainda nao esta pronta")
                 }
-                openSocks5Socket(endpoint).use { socket ->
-                    val fromRoute = publicRoute.ifBlank {
-                        throw IllegalStateException("Rota onion local ainda nao esta pronta")
-                    }
-                    val encrypted = SimpleCipher.encrypt("$fromRoute|$text")
-                    socket.getOutputStream().bufferedWriter(Charsets.UTF_8).use { writer ->
-                        writer.write(encrypted)
-                        writer.newLine()
-                        writer.flush()
-                    }
+                val fromRoute = publicRoute.ifBlank {
+                    throw IllegalStateException("Rota onion local ainda nao esta pronta")
                 }
+                val encrypted = SimpleCipher.encrypt("$fromRoute|$text")
+                sendEncryptedLine(endpoint, encrypted)
             }
         }
     }
@@ -128,9 +136,10 @@ class P2PNode(
     private fun openSocks5Socket(endpoint: RouteEndpoint): Socket {
         val socket = Socket()
         try {
-            socket.soTimeout = 30_000
+            socket.soTimeout = OUTGOING_SOCKET_TIMEOUT_MS
             socket.tcpNoDelay = true
-            socket.connect(InetSocketAddress(socksHost, socksPort), 30_000)
+            socket.keepAlive = true
+            socket.connect(InetSocketAddress(socksHost, socksPort), SOCKS_CONNECT_TIMEOUT_MS)
             socket.socks5Connect(endpoint)
             return socket
         } catch (error: Throwable) {
@@ -139,10 +148,83 @@ class P2PNode(
         }
     }
 
+    private fun sendEncryptedLine(endpoint: RouteEndpoint, encrypted: String) {
+        var lastError: Throwable? = null
+        repeat(2) { attempt ->
+            val connection = openOutgoingConnection(endpoint, forceNew = attempt > 0)
+            val result = runCatching {
+                synchronized(connection) {
+                    connection.writer.write(encrypted)
+                    connection.writer.newLine()
+                    connection.writer.flush()
+                    connection.lastUsedAtMs = System.currentTimeMillis()
+                }
+            }
+            if (result.isSuccess) return
+            lastError = result.exceptionOrNull()
+            dropOutgoingConnection(endpoint, connection)
+        }
+        throw IOException("Falha ao enviar mensagem pela conexao ativa", lastError)
+    }
+
+    private fun openOutgoingConnection(endpoint: RouteEndpoint, forceNew: Boolean = false): OutgoingConnection {
+        synchronized(outgoingConnectionsLock) {
+            pruneIdleOutgoingConnectionsLocked()
+            val existing = outgoingConnections[endpoint]
+            if (!forceNew && existing != null && !existing.socket.isClosed) {
+                return existing
+            }
+            existing?.closeQuietly()
+            val socket = openSocks5Socket(endpoint)
+            val writer = BufferedWriter(OutputStreamWriter(socket.getOutputStream(), Charsets.UTF_8))
+            return OutgoingConnection(socket, writer, System.currentTimeMillis()).also {
+                outgoingConnections[endpoint] = it
+            }
+        }
+    }
+
+    private fun dropOutgoingConnection(endpoint: RouteEndpoint, connection: OutgoingConnection) {
+        synchronized(outgoingConnectionsLock) {
+            if (outgoingConnections[endpoint] === connection) {
+                outgoingConnections.remove(endpoint)
+            }
+        }
+        connection.closeQuietly()
+    }
+
+    private fun pruneIdleOutgoingConnectionsLocked() {
+        val now = System.currentTimeMillis()
+        val idle = outgoingConnections
+            .filterValues { connection ->
+                connection.socket.isClosed || now - connection.lastUsedAtMs > OUTGOING_CONNECTION_IDLE_MS
+            }
+            .keys
+            .toList()
+        idle.forEach { endpoint ->
+            outgoingConnections.remove(endpoint)?.closeQuietly()
+        }
+    }
+
+    private fun closeOutgoingConnections() {
+        val connections = synchronized(outgoingConnectionsLock) {
+            outgoingConnections.values.toList().also {
+                outgoingConnections.clear()
+            }
+        }
+        connections.forEach { it.closeQuietly() }
+    }
+
+    fun handleEncryptedTransportLine(line: String) {
+        val handler = messageHandler ?: return
+        handleEncryptedLine(line, handler)
+    }
+
     fun stop() {
         tcpJob?.cancel()
         tcpJob = null
         runCatching { serverSocket?.close() }
+        closeOutgoingConnections()
+        messageHandler = null
         serverSocket = null
         serverReady = false
     }
@@ -340,4 +422,15 @@ class P2PNode(
 
     private suspend fun <T> withContextIo(block: () -> T): T =
         kotlinx.coroutines.withContext(Dispatchers.IO) { block() }
+
+    private data class OutgoingConnection(
+        val socket: Socket,
+        val writer: BufferedWriter,
+        var lastUsedAtMs: Long
+    ) {
+        fun closeQuietly() {
+            runCatching { writer.close() }
+            runCatching { socket.close() }
+        }
+    }
 }

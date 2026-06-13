@@ -1,8 +1,11 @@
 package com.null0x.chat
 
+import android.app.Activity
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.Context
+import android.content.ContextWrapper
 import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
@@ -17,10 +20,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.mutableStateOf
@@ -46,16 +55,19 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
+import android.view.WindowManager
 import com.null0x.chat.notification.MessageNotifier
 import com.null0x.chat.security.AppSecurityManager
 import com.null0x.chat.security.SensitiveClipboard
-import com.null0x.chat.network.BackgroundNetworkPreference
-import com.null0x.chat.network.BackgroundRelaunchPreference
-import com.null0x.chat.network.ChatNodeManager
-import com.null0x.chat.network.AppNetworkService
+import com.null0x.chat.security.identity.MnemonicLanguage
+import com.null0x.chat.network.BackgroundConnectionModeController
+import com.null0x.chat.network.BackgroundConnectionModePreference
+import com.null0x.chat.network.BackgroundConnectionMode
 import com.null0x.chat.network.AppRestartReceiver
-import com.null0x.chat.network.NetworkBootstrapScheduler
 import com.null0x.chat.ui.chat.ChatScreen
+import com.null0x.chat.ui.common.MnemonicLanguagePicker
+import com.null0x.chat.ui.common.CursorAwareOutlinedTextField
 import com.null0x.chat.ui.home.HomeScreen
 import com.null0x.chat.ui.security.ProtectedWindowCapture
 import com.null0x.chat.ui.theme.ChatTheme
@@ -66,42 +78,33 @@ class MainActivity : ComponentActivity() {
     private var openChatUsername by mutableStateOf<String?>(null)
     private var launchedFromNotification = false
     private var lastNavigationBarColor = Color.Black
-
-    companion object {
-        @Volatile
-        private var backgroundBootstrapRequested = false
-    }
+    private var initialContentReady = false
 
     override fun onStart() {
         super.onStart()
         AppVisibility.markVisible()
+        BackgroundConnectionModeController.onAppVisible(applicationContext)
         AppRestartReceiver.clearPendingRelaunch(applicationContext)
     }
 
     override fun onStop() {
         AppVisibility.markHidden()
+        if (!isChangingConfigurations) {
+            BackgroundConnectionModeController.onAppHidden(applicationContext)
+        }
         super.onStop()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        val splashScreen = installSplashScreen()
+        splashScreen.setKeepOnScreenCondition { !initialContentReady }
         super.onCreate(savedInstanceState)
         AppSecurityManager.initialize(this)
         val initialOpenChatUsername = MessageNotifier.consumeOpenChatUsername(this, intent)
         openChatUsername = initialOpenChatUsername
         launchedFromNotification = !initialOpenChatUsername.isNullOrBlank()
-        if (
-            AppSecurityManager.currentState() == AppSecurityManager.GateState.Locked ||
-            AppSecurityManager.currentState() == AppSecurityManager.GateState.Unlocked
-        ) {
-            if (!launchedFromNotification) {
-                AppNetworkService.start(applicationContext)
-                NetworkBootstrapScheduler.schedule(applicationContext)
-                ChatNodeManager.ensureBackgroundNetwork(applicationContext)
-            }
-        }
         ThemePreference.initialize(this)
-        BackgroundNetworkPreference.initialize(this)
-        BackgroundRelaunchPreference.initialize(this)
+        BackgroundConnectionModeController.initialize(this)
         requestNotificationPermission()
 
         val vmFactory = object : ViewModelProvider.Factory {
@@ -115,9 +118,11 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
+            LaunchedEffect(Unit) {
+                initialContentReady = true
+            }
             val themeMode by ThemePreference.themeMode.collectAsState()
-            val backgroundNetworkEnabled by BackgroundNetworkPreference.enabled.collectAsState()
-            val backgroundRelaunchEnabled by BackgroundRelaunchPreference.enabled.collectAsState()
+            val backgroundConnectionMode by BackgroundConnectionModePreference.mode.collectAsState()
             ChatTheme(themeMode = themeMode) {
                 val navigationBarColor = MaterialTheme.colorScheme.background
                 SideEffect {
@@ -172,18 +177,18 @@ class MainActivity : ComponentActivity() {
                                 onThemeModeChange = { mode ->
                                     ThemePreference.setThemeMode(this@MainActivity, mode)
                                 },
-                                backgroundNetworkEnabled = backgroundNetworkEnabled,
-                                onBackgroundNetworkChange = { enabled ->
-                                    BackgroundNetworkPreference.setEnabled(this@MainActivity, enabled)
-                                },
-                                backgroundRelaunchEnabled = backgroundRelaunchEnabled,
-                                onBackgroundRelaunchChange = { enabled ->
-                                    BackgroundRelaunchPreference.setEnabled(this@MainActivity, enabled)
+                                backgroundConnectionMode = backgroundConnectionMode,
+                                onBackgroundConnectionModeChange = { mode ->
+                                    BackgroundConnectionModeController.setMode(this@MainActivity, mode)
                                 },
                                 onLockApp = { AppSecurityManager.lock() }
                             ) { peer -> vm.selectTarget(peer) }
                             if (vm.inChat) {
-                                ChatScreen(vm, onBack = { vm.openHome() })
+                                ChatScreen(
+                                    vm,
+                                    onBack = { vm.openHome() },
+                                    onLockApp = { AppSecurityManager.lock() }
+                                )
                             }
                         }
                     }
@@ -245,25 +250,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun requestBackgroundBootstrap() {
-        val shouldBootstrap = synchronized(MainActivity::class.java) {
-            if (backgroundBootstrapRequested) {
-                false
-            } else {
-                backgroundBootstrapRequested = true
-                true
-            }
-        }
-        if (!shouldBootstrap) return
-
-        runCatching {
-            AppNetworkService.start(applicationContext)
-            NetworkBootstrapScheduler.schedule(applicationContext)
-            ChatNodeManager.ensureBackgroundNetwork(applicationContext)
-        }.onFailure {
-            synchronized(MainActivity::class.java) {
-                backgroundBootstrapRequested = false
-            }
-        }
+        BackgroundConnectionModeController.onAppVisible(applicationContext)
     }
 }
 
@@ -277,9 +264,11 @@ private fun PrivateAccessSetupScreen(
     var generatedPhrase by rememberSaveable { mutableStateOf("") }
     var restorePhrase by rememberSaveable { mutableStateOf("") }
     var restoreError by rememberSaveable { mutableStateOf("") }
+    var mnemonicLanguageName by rememberSaveable { mutableStateOf(MnemonicLanguage.ENGLISH.name) }
+    val mnemonicLanguage = MnemonicLanguage.valueOf(mnemonicLanguageName)
 
     fun createNewRoute() {
-        AppSecurityManager.createNewRouteIdentity(context)
+        AppSecurityManager.createNewRouteIdentity(context, mnemonicLanguage)
             .onSuccess {
                 generatedPhrase = it
                 restoreError = ""
@@ -296,7 +285,7 @@ private fun PrivateAccessSetupScreen(
     }
 
     fun restoreRoute() {
-        AppSecurityManager.restoreRouteIdentityFromSetup(context, restorePhrase)
+        AppSecurityManager.restoreRouteIdentityFromSetup(context, restorePhrase, mnemonicLanguage)
             .onSuccess {
                 restoreError = ""
                 onReady()
@@ -310,10 +299,19 @@ private fun PrivateAccessSetupScreen(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(20.dp),
+                .imePadding()
+                .navigationBarsPadding()
+                .padding(20.dp)
+                .verticalScroll(rememberScrollState()),
             contentAlignment = Alignment.Center
         ) {
-            Surface(shape = MaterialTheme.shapes.large, tonalElevation = 2.dp) {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .widthIn(max = 420.dp),
+                shape = MaterialTheme.shapes.large,
+                tonalElevation = 2.dp
+            ) {
                 Column(
                     modifier = Modifier.padding(20.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -325,6 +323,10 @@ private fun PrivateAccessSetupScreen(
                                 text = "Escolha como configurar sua rota antes de entrar no app.",
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            MnemonicLanguagePicker(
+                                currentLanguage = mnemonicLanguage,
+                                onLanguageSelected = { mnemonicLanguageName = it.name }
                             )
                             Button(
                                 onClick = { createNewRoute() },
@@ -346,6 +348,11 @@ private fun PrivateAccessSetupScreen(
                             Text(
                                 text = "Guarde estas 12 palavras. Elas não serão mostradas novamente.",
                                 style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                text = "Idioma: ${mnemonicLanguage.label}",
+                                style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                             Surface(
@@ -384,9 +391,13 @@ private fun PrivateAccessSetupScreen(
                         }
                         PrivateAccessMode.Restore -> {
                             Text(
-                                text = "Digite sua palavra-passe de 12 palavras para restaurar a rota.",
+                                text = "Selecione o idioma correto e digite sua palavra-passe de 12 palavras para restaurar a rota.",
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            MnemonicLanguagePicker(
+                                currentLanguage = mnemonicLanguage,
+                                onLanguageSelected = { mnemonicLanguageName = it.name }
                             )
                             OutlinedTextField(
                                 value = restorePhrase,
@@ -448,6 +459,19 @@ private fun AppLockScreen(
     var password by rememberSaveable { mutableStateOf("") }
     var confirmPassword by rememberSaveable { mutableStateOf("") }
     var error by rememberSaveable { mutableStateOf("") }
+    val context = LocalContext.current
+
+    DisposableEffect(context) {
+        val activity = context.findActivity()
+        val previousMode = activity?.window?.attributes?.softInputMode
+        activity?.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
+        onDispose {
+            if (previousMode != null) {
+                activity?.window?.setSoftInputMode(previousMode)
+            }
+        }
+    }
+
     fun submit() {
         if (readOnly) return
         if (password.isBlank()) {
@@ -476,17 +500,26 @@ private fun AppLockScreen(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(20.dp),
+                .imePadding()
+                .navigationBarsPadding()
+                .padding(20.dp)
+                .verticalScroll(rememberScrollState()),
             contentAlignment = Alignment.Center
         ) {
-            Surface(shape = MaterialTheme.shapes.large, tonalElevation = 2.dp) {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .widthIn(max = 420.dp),
+                shape = MaterialTheme.shapes.large,
+                tonalElevation = 2.dp
+            ) {
                 Column(
                     modifier = Modifier.padding(20.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     Text(title, style = MaterialTheme.typography.headlineSmall)
                     Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    OutlinedTextField(
+                    CursorAwareOutlinedTextField(
                         value = password,
                         onValueChange = {
                             password = it
@@ -508,7 +541,7 @@ private fun AppLockScreen(
                         }
                     )
                     if (!readOnly && confirmLabel == "Criar senha") {
-                        OutlinedTextField(
+                        CursorAwareOutlinedTextField(
                             value = confirmPassword,
                             onValueChange = {
                                 confirmPassword = it
@@ -539,5 +572,13 @@ private fun AppLockScreen(
                 }
             }
         }
+    }
+}
+
+private tailrec fun Context.findActivity(): Activity? {
+    return when (this) {
+        is Activity -> this
+        is ContextWrapper -> baseContext.findActivity()
+        else -> null
     }
 }

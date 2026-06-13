@@ -21,7 +21,7 @@ data class IdentityCreationResult(
 )
 
 class CryptoIdentityManager(
-    private val mnemonicManager: MnemonicManager,
+    private val appContext: android.content.Context,
     private val keyStore: EncryptedKeyStore,
     private val secureRandom: SecureRandom = SecureRandom()
 ) {
@@ -35,12 +35,20 @@ class CryptoIdentityManager(
 
     private var unlockedSeed: ByteArray? = null
 
-    fun createIdentity(password: String): IdentityCreationResult {
-        val mnemonic = mnemonicManager.generate12Words()
-        return restoreIdentity(mnemonic, password)
+    fun createIdentity(
+        password: String,
+        language: MnemonicLanguage = MnemonicLanguage.ENGLISH
+    ): IdentityCreationResult {
+        val mnemonic = mnemonicManager(language).generate12Words()
+        return restoreIdentity(mnemonic, password, language)
     }
 
-    fun restoreIdentity(mnemonic: String, password: String): IdentityCreationResult {
+    fun restoreIdentity(
+        mnemonic: String,
+        password: String,
+        language: MnemonicLanguage = MnemonicLanguage.ENGLISH
+    ): IdentityCreationResult {
+        val mnemonicManager = mnemonicManager(language)
         require(mnemonicManager.validateMnemonic(mnemonic)) {
             "Mnemonic inválida"
         }
@@ -161,6 +169,10 @@ class CryptoIdentityManager(
     private fun unlockSeed(seed: ByteArray) {
         unlockedSeed?.fill(0)
         unlockedSeed = seed.clone()
+    }
+
+    private fun mnemonicManager(language: MnemonicLanguage): MnemonicManager {
+        return MnemonicManager.fromAssets(appContext, language)
     }
 
     private fun signingSeedFrom(seed: ByteArray): ByteArray {

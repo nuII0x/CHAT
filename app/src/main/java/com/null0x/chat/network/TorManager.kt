@@ -4,12 +4,16 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.net.Uri
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import androidx.core.content.ContextCompat
 import org.torproject.jni.TorService
+import java.io.BufferedInputStream
+import java.io.BufferedOutputStream
 import java.io.File
+import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -18,10 +22,14 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import java.util.zip.ZipEntry
+import java.util.zip.ZipInputStream
+import java.util.zip.ZipOutputStream
 
 object TorManager {
     sealed class Status {
@@ -43,6 +51,8 @@ object TorManager {
     private const val HOSTNAME_TIMEOUT_MS = 30_000L
     private const val HOSTNAME_CHECK_INTERVAL_MS = 250L
     private const val DEFAULT_SOCKS_PORT = 9050
+    private const val MIN_RESTART_DELAY_MS = 5_000L
+    private const val MAX_RESTART_DELAY_MS = 5 * 60_000L
     private const val MAX_DIAGNOSTICS = 80
     private const val WAITING_NETWORK_MESSAGE = "Aguardando rede..."
     private const val TOR_IDENTITY_PREFS = "tor_identity"
@@ -65,11 +75,85 @@ object TorManager {
     private var restartJob: Job? = null
     private var hostnameWaitJob: Job? = null
     private var startTimeoutJob: Job? = null
+    private var networkLossJob: Job? = null
+    private var networkRecoveryJob: Job? = null
+    @Volatile
+    private var restartFailureCount: Int = 0
+    @Volatile
+    private var lastRestartAtMs: Long = 0L
+    @Volatile
+    private var nextRestartAllowedAtMs: Long = 0L
 
     fun socksHost(): String = "127.0.0.1"
     fun socksPort(): Int = TorService.socksPort.takeIf { it > 0 } ?: DEFAULT_SOCKS_PORT
     fun onionAddress(): String = onionHost
     fun isNetworkAvailable(): Boolean = networkAvailable
+
+    fun exportOnionIdentity(context: Context, destination: Uri): Result<Unit> {
+        return runCatching {
+            val appContext = context.applicationContext
+            val sourceDir = hiddenServiceDir(appContext)
+            if (readOnionHostname(sourceDir).isNullOrBlank()) {
+                throw IllegalStateException("Ainda não existe uma onion para exportar")
+            }
+            appContext.contentResolver.openOutputStream(destination)?.use { output ->
+                ZipOutputStream(BufferedOutputStream(output)).use { zip ->
+                    sourceDir.walkTopDown()
+                        .filter { it.isFile }
+                        .forEach { file ->
+                            val relativePath = sourceDir.toPath().relativize(file.toPath())
+                                .toString()
+                                .replace(File.separatorChar, '/')
+                            zip.putNextEntry(ZipEntry(relativePath))
+                            file.inputStream().use { input ->
+                                input.copyTo(zip)
+                            }
+                            zip.closeEntry()
+                        }
+                    zip.finish()
+                }
+            } ?: throw IllegalStateException("Não foi possível abrir o arquivo de backup")
+            record(appContext, "backup onion exportado")
+        }
+    }
+
+    fun importOnionIdentity(context: Context, source: Uri): Result<Unit> {
+        return runCatching {
+            val appContext = context.applicationContext
+            val targetDir = hiddenServiceDir(appContext)
+            val stagingDir = File(targetDir.parentFile, "${targetDir.name}.importing")
+            stagingDir.deleteRecursively()
+            stagingDir.mkdirs()
+            appContext.contentResolver.openInputStream(source)?.use { input ->
+                ZipInputStream(BufferedInputStream(input)).use { zip ->
+                    unzipSafely(zip, stagingDir)
+                }
+            } ?: throw IllegalStateException("Não foi possível abrir o backup")
+
+            if (readOnionHostname(stagingDir).isNullOrBlank()) {
+                throw IllegalStateException("Backup inválido ou incompleto")
+            }
+
+            clearDirectoryContents(targetDir)
+            stagingDir.copyRecursively(targetDir, overwrite = true)
+            stagingDir.deleteRecursively()
+
+            appContext.getSharedPreferences(TOR_IDENTITY_PREFS, Context.MODE_PRIVATE)
+                .edit()
+                .putString(HIDDEN_SERVICE_DIR_KEY, targetDir.absolutePath)
+                .apply()
+
+            val shouldRestart = _status.value is Status.Ready || _status.value is Status.Starting || onionHost.isNotBlank()
+            if (shouldRestart) {
+                val localPort = lastLocalPort
+                stop(appContext)
+                configureOnionService(appContext, localPort)
+                ensureStarted(appContext)
+            }
+            record(appContext, "backup onion importado")
+        }
+    }
+
     fun ensureNetworkMonitoring(context: Context) {
         val appContext = context.applicationContext
         appContextRef = appContext
@@ -136,11 +220,32 @@ object TorManager {
             }
     }
 
+    fun recoverAfterTransportFailure(context: Context, reason: String) {
+        val appContext = context.applicationContext
+        appContextRef = appContext
+        if (manualStop) return
+        ensureNetworkCallback(appContext)
+        networkAvailable = isNetworkAvailable(appContext)
+        _networkAvailableState.value = networkAvailable
+        if (!networkAvailable) {
+            record(appContext, "recuperacao Tor adiada: rede Android indisponivel")
+            waitForNetwork(appContext)
+            return
+        }
+        record(appContext, "recuperando Tor apos falha de envio: ${reason.ifBlank { "sem detalhe" }}")
+        registerRestartFailure()
+        scheduleRestart(appContext, delayMs = nextRestartDelay(requestedDelayMs = 10_000L))
+    }
+
     fun stop(context: Context) {
         manualStop = true
         restartJob?.cancel()
         hostnameWaitJob?.cancel()
         startTimeoutJob?.cancel()
+        networkLossJob?.cancel()
+        networkLossJob = null
+        networkRecoveryJob?.cancel()
+        networkRecoveryJob = null
         runCatching {
             context.applicationContext.stopService(Intent(context, TorService::class.java))
         }
@@ -182,6 +287,42 @@ object TorManager {
         return stableDir
     }
 
+    private fun clearDirectoryContents(dir: File) {
+        if (!dir.exists()) return
+        dir.listFiles()?.forEach { child ->
+            child.deleteRecursively()
+        }
+    }
+
+    private fun unzipSafely(zip: ZipInputStream, targetDir: File) {
+        val targetCanonical = targetDir.canonicalFile
+        while (true) {
+            val entry = zip.nextEntry ?: break
+            val entryName = entry.name.trim().removePrefix("/")
+            if (entryName.isBlank()) {
+                zip.closeEntry()
+                continue
+            }
+            val outFile = File(targetDir, entryName)
+            val canonicalOut = outFile.canonicalFile
+            if (!canonicalOut.path.startsWith(targetCanonical.path + File.separator) &&
+                canonicalOut.path != targetCanonical.path
+            ) {
+                zip.closeEntry()
+                throw IllegalStateException("Backup inválido")
+            }
+            if (entry.isDirectory) {
+                canonicalOut.mkdirs()
+            } else {
+                canonicalOut.parentFile?.mkdirs()
+                FileOutputStream(canonicalOut).use { output ->
+                    zip.copyTo(output)
+                }
+            }
+            zip.closeEntry()
+        }
+    }
+
     private fun ensureReceiver(context: Context) {
         if (receiverRegistered) return
         val filter = IntentFilter().apply {
@@ -213,12 +354,12 @@ object TorManager {
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
             val appContext = appContextRef ?: return
+            cancelPendingNetworkLoss()
             networkAvailable = isNetworkAvailable(appContext)
             _networkAvailableState.value = networkAvailable
             if (!networkAvailable) {
                 record(appContext, "rede Android sem internet validada")
-                _status.value = Status.Error(WAITING_NETWORK_MESSAGE)
-                waitForNetwork(appContext)
+                scheduleNetworkLoss(appContext, "rede Android sem internet validada")
                 return
             }
             record(appContext, "rede Android disponivel")
@@ -231,29 +372,26 @@ object TorManager {
         override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
             val appContext = appContextRef ?: return
             val available = hasValidatedInternet(networkCapabilities)
-            if (available == networkAvailable) return
-            networkAvailable = available
-            _networkAvailableState.value = available
             if (available) {
+                cancelPendingNetworkLoss()
+                if (networkAvailable == available) return
+                networkAvailable = true
+                _networkAvailableState.value = true
                 record(appContext, "rede Android validada")
                 val status = _status.value
                 if (!manualStop && status !is Status.Ready && status !is Status.Starting) {
                     scheduleRestart(appContext, delayMs = 250)
                 }
             } else {
-                record(appContext, "rede Android sem internet validada")
-                _status.value = Status.Error(WAITING_NETWORK_MESSAGE)
-                waitForNetwork(appContext)
+                if (networkAvailable == available) return
+                scheduleNetworkLoss(appContext, "rede Android sem internet validada")
             }
         }
 
         override fun onLost(network: Network) {
             val appContext = appContextRef ?: return
-            networkAvailable = false
-            _networkAvailableState.value = false
             record(appContext, "rede Android perdida")
-            _status.value = Status.Error(WAITING_NETWORK_MESSAGE)
-            waitForNetwork(appContext)
+            scheduleNetworkLoss(appContext, "rede Android perdida")
         }
     }
 
@@ -274,6 +412,7 @@ object TorManager {
                                     hostnameWaitJob?.cancel()
                                     restartJob?.cancel()
                                     startTimeoutJob?.cancel()
+                                    resetRestartBackoff()
                                     record(appContext, "Tor pronto: nome onion=${maskedOnionHost(onionHost)}")
                                     _status.value = Status.Ready
                                 } else {
@@ -304,6 +443,7 @@ object TorManager {
                                 startTimeoutJob?.cancel()
                                 _status.value = Status.Starting
                             } else if (!manualStop && appContext != null) {
+                                registerRestartFailure()
                                 scheduleRestart(appContext)
                             } else {
                                 startTimeoutJob?.cancel()
@@ -321,7 +461,10 @@ object TorManager {
                         _status.value = Status.Starting
                     } else {
                         _status.value = Status.Error(WAITING_NETWORK_MESSAGE)
-                        appContext?.let { scheduleRestart(it) }
+                        appContext?.let {
+                            registerRestartFailure()
+                            scheduleRestart(it)
+                        }
                     }
                 }
             }
@@ -358,17 +501,23 @@ object TorManager {
         _networkAvailableState.value = networkAvailable
         if (!networkAvailable) {
             record(appContext, "restart adiado: rede Android indisponivel")
+            cancelPendingNetworkLoss()
             waitForNetwork(appContext)
             return
+        }
+        val effectiveDelay = nextRestartDelay(delayMs)
+        if (effectiveDelay > delayMs) {
+            record(appContext, "restart desacelerado para ${effectiveDelay}ms")
         }
         _status.value = Status.Error(WAITING_NETWORK_MESSAGE)
         restartJob?.cancel()
         hostnameWaitJob?.cancel()
         startTimeoutJob?.cancel()
         restartJob = scope.launch {
-            record(appContext, "reiniciando Tor em ${delayMs}ms")
+            lastRestartAtMs = System.currentTimeMillis()
+            record(appContext, "reiniciando Tor em ${effectiveDelay}ms")
             runCatching { appContext.stopService(Intent(appContext, TorService::class.java)) }
-            delay(delayMs)
+            delay(effectiveDelay)
             if (manualStop) {
                 _status.value = Status.Idle
                 return@launch
@@ -379,13 +528,50 @@ object TorManager {
             }
             markStarting(appContext)
             startTorService(appContext).onFailure {
+                registerRestartFailure()
                 record(appContext, "falha no restart: ${it.message.orEmpty()}")
-                delay(1_500)
+                delay(nextRestartDelay(requestedDelayMs = 15_000L))
                 if (!manualStop) {
-                    scheduleRestart(appContext, delayMs = 1_500)
+                    scheduleRestart(appContext, delayMs = nextRestartDelay(requestedDelayMs = 15_000L))
                 }
             }
         }
+    }
+
+    private fun scheduleNetworkLoss(appContext: Context, reason: String, delayMs: Long = 1_200L) {
+        if (manualStop) return
+        if (networkLossJob?.isActive == true) {
+            record(appContext, "queda de rede já aguardando confirmação")
+            return
+        }
+        networkLossJob?.cancel()
+        networkLossJob = scope.launch {
+            record(appContext, "$reason; confirmando em ${delayMs}ms")
+            delay(delayMs)
+            if (manualStop) return@launch
+            val available = isNetworkAvailable(appContext)
+            networkAvailable = available
+            _networkAvailableState.value = available
+            if (!available) {
+                _status.value = Status.Error(WAITING_NETWORK_MESSAGE)
+                networkLossJob = null
+                waitForNetwork(appContext)
+            } else {
+                record(appContext, "queda de rede cancelada: conexao voltou")
+                networkRecoveryJob?.cancel()
+                networkRecoveryJob = null
+                if (_status.value !is Status.Ready && _status.value !is Status.Starting) {
+                    scheduleRestart(appContext, delayMs = 250)
+                }
+            }
+        }
+    }
+
+    private fun cancelPendingNetworkLoss() {
+        networkLossJob?.cancel()
+        networkLossJob = null
+        networkRecoveryJob?.cancel()
+        networkRecoveryJob = null
     }
 
     private fun waitForOnionHostname(appContext: Context) {
@@ -444,6 +630,9 @@ object TorManager {
         restartJob?.cancel()
         hostnameWaitJob?.cancel()
         startTimeoutJob?.cancel()
+        networkRecoveryJob?.cancel()
+        networkLossJob = null
+        networkRecoveryJob = null
         networkAvailable = false
         _networkAvailableState.value = false
         onionHost = ""
@@ -451,6 +640,28 @@ object TorManager {
         NetworkBootstrapScheduler.schedule(appContext)
         if (!manualStop) {
             _status.value = Status.Error(WAITING_NETWORK_MESSAGE)
+            startNetworkRecoveryWatch(appContext)
+        }
+    }
+
+    private fun startNetworkRecoveryWatch(appContext: Context) {
+        if (manualStop) return
+        if (networkRecoveryJob?.isActive == true) return
+        networkRecoveryJob = scope.launch {
+            record(appContext, "aguardando reconexao automatica")
+            while (isActive && !manualStop) {
+                delay(2_000L)
+                if (manualStop) return@launch
+                if (!isNetworkAvailable(appContext)) {
+                    continue
+                }
+                networkAvailable = true
+                _networkAvailableState.value = true
+                networkRecoveryJob = null
+                record(appContext, "internet voltou; retomando Tor")
+                scheduleRestart(appContext, delayMs = 250)
+                return@launch
+            }
         }
     }
 
@@ -492,6 +703,30 @@ object TorManager {
         val host = readOnionHostname(context) ?: return false
         onionHost = host
         return true
+    }
+
+    private fun nextRestartDelay(requestedDelayMs: Long): Long {
+        val baseDelay = requestedDelayMs.coerceAtLeast(MIN_RESTART_DELAY_MS)
+        val cappedCount = restartFailureCount.coerceAtMost(6)
+        val exponentialDelay = MIN_RESTART_DELAY_MS shl cappedCount
+        val candidate = maxOf(baseDelay, exponentialDelay).coerceAtMost(MAX_RESTART_DELAY_MS)
+        val now = System.currentTimeMillis()
+        if (nextRestartAllowedAtMs > now) {
+            return maxOf(candidate, nextRestartAllowedAtMs - now)
+        }
+        return candidate
+    }
+
+    private fun registerRestartFailure() {
+        restartFailureCount = (restartFailureCount + 1).coerceAtMost(10)
+        val now = System.currentTimeMillis()
+        nextRestartAllowedAtMs = now + nextRestartDelay(requestedDelayMs = MIN_RESTART_DELAY_MS)
+    }
+
+    private fun resetRestartBackoff() {
+        restartFailureCount = 0
+        lastRestartAtMs = 0L
+        nextRestartAllowedAtMs = 0L
     }
 
     private fun maskedOnionHost(host: String): String {

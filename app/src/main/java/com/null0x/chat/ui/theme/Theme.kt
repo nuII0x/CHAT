@@ -157,6 +157,7 @@ fun ChatTheme(
 
     MaterialTheme(
         colorScheme = colorScheme,
+        shapes = ChatShapes,
         typography = Typography,
         content = content
     )

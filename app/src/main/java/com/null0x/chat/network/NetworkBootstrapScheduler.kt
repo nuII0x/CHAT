@@ -1,22 +1,29 @@
 package com.null0x.chat.network
 
-import android.app.job.JobInfo
-import android.app.job.JobScheduler
-import android.content.ComponentName
 import android.content.Context
+import androidx.work.Constraints
+import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.PeriodicWorkRequestBuilder
+import androidx.work.NetworkType
+import androidx.work.WorkManager
+import java.util.concurrent.TimeUnit
 
 object NetworkBootstrapScheduler {
-    private const val BOOTSTRAP_JOB_ID = 5000
+    private const val BOOTSTRAP_WORK_NAME = "nullchat_background_sync"
 
     fun schedule(context: Context) {
         val appContext = context.applicationContext
-        val scheduler = appContext.getSystemService(JobScheduler::class.java) ?: return
-        val component = ComponentName(appContext, NetworkBootstrapJobService::class.java)
-        val job = JobInfo.Builder(BOOTSTRAP_JOB_ID, component)
-            .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
-            .setPersisted(true)
-            .setBackoffCriteria(30_000L, JobInfo.BACKOFF_POLICY_EXPONENTIAL)
+        val request = PeriodicWorkRequestBuilder<BackgroundSyncWorker>(15, TimeUnit.MINUTES)
+            .setConstraints(
+                Constraints.Builder()
+                    .setRequiredNetworkType(NetworkType.CONNECTED)
+                    .build()
+            )
             .build()
-        scheduler.schedule(job)
+        WorkManager.getInstance(appContext).enqueueUniquePeriodicWork(
+            BOOTSTRAP_WORK_NAME,
+            ExistingPeriodicWorkPolicy.UPDATE,
+            request
+        )
     }
 }

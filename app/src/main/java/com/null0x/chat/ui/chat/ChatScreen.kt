@@ -1,6 +1,8 @@
 package com.null0x.chat.ui.chat
 
 import android.content.Context
+import android.content.ContextWrapper
+import android.app.Activity
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -38,8 +40,10 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.Send
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Done
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.VpnKey
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
@@ -55,6 +59,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -103,18 +108,21 @@ import com.null0x.chat.model.Message
 import com.null0x.chat.network.TorManager
 import com.null0x.chat.security.SensitiveClipboard
 import com.null0x.chat.ui.common.SwipeToCloseContainer
+import com.null0x.chat.ui.AppTitleBarShape
 import com.null0x.chat.ui.maskedRouteLabel
 import com.null0x.chat.ui.profile.RouteProfileScreen
 import com.null0x.chat.ui.security.ProtectedWindowCapture
 import com.null0x.chat.viewmodel.ChatViewModel
 import android.widget.Toast
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 
 private val ChatHeaderHeight = 86.dp
 private val TitleBarColor = Color.Black
 
 @Composable
-fun ChatScreen(vm: ChatViewModel, onBack: () -> Unit) {
+fun ChatScreen(vm: ChatViewModel, onBack: () -> Unit, onLockApp: () -> Unit) {
     var input by rememberSaveable { mutableStateOf("") }
     var profileRoute by rememberSaveable { mutableStateOf("") }
     var showProfile by rememberSaveable { mutableStateOf(false) }
@@ -122,7 +130,7 @@ fun ChatScreen(vm: ChatViewModel, onBack: () -> Unit) {
     var selectedMessage by remember { mutableStateOf<Message?>(null) }
     var selectableMessageIds by remember { mutableStateOf(emptySet<String>()) }
     val context = LocalContext.current
-    val torStatus by TorManager.status.collectAsState()
+    val serviceStatus by TorManager.status.collectAsState()
     val networkAvailable by TorManager.networkAvailableState.collectAsState()
     val keyboardController = LocalSoftwareKeyboardController.current
     val composerFocusRequester = remember { FocusRequester() }
@@ -174,9 +182,10 @@ fun ChatScreen(vm: ChatViewModel, onBack: () -> Unit) {
     val headerUser = peers.getOrNull(pagerState.currentPage)?.trim().orEmpty().ifBlank { vm.targetUsername }
     val chatTitle = vm.chatTitleFor(headerUser)
     val sourceTitle = "Chats"
+    val serviceReady = serviceStatus is TorManager.Status.Ready
     val chatRouteLabel = chatRoutePresenceLabel(
         networkAvailable = networkAvailable,
-        torReady = torStatus is TorManager.Status.Ready,
+        serviceReady = serviceReady,
         partnerConnected = vm.isPartnerOnline(headerUser)
     )
     val unreadHintCount = vm.unreadEntryCountFor(headerUser)
@@ -184,6 +193,17 @@ fun ChatScreen(vm: ChatViewModel, onBack: () -> Unit) {
 
     LaunchedEffect(context) {
         TorManager.ensureNetworkMonitoring(context)
+    }
+
+    DisposableEffect(Unit) {
+        val activity = context.findActivity()
+        val previousMode = activity?.window?.attributes?.softInputMode
+        activity?.window?.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
+        onDispose {
+            if (previousMode != null) {
+                activity?.window?.setSoftInputMode(previousMode)
+            }
+        }
     }
 
     LaunchedEffect(headerUser) {
@@ -220,6 +240,7 @@ fun ChatScreen(vm: ChatViewModel, onBack: () -> Unit) {
         val flingThreshold = 700f
         val offsetX = remember(screenWidthPx) { Animatable(screenWidthPx) }
         var dragX by remember { mutableFloatStateOf(0f) }
+        var keyboardHiddenDuringDrag by remember { mutableStateOf(false) }
         val openingProgress = ((screenWidthPx - offsetX.value) / screenWidthPx).coerceIn(0f, 1f)
 
         LaunchedEffect(screenWidthPx) {
@@ -236,6 +257,10 @@ fun ChatScreen(vm: ChatViewModel, onBack: () -> Unit) {
                 .draggable(
                     orientation = Orientation.Horizontal,
                     state = rememberDraggableState { delta ->
+                        if (!keyboardHiddenDuringDrag) {
+                            keyboardController?.hide()
+                            keyboardHiddenDuringDrag = true
+                        }
                         dragX += delta
                         scope.launch {
                             val nextOffset = (offsetX.value + delta).coerceIn(-screenWidthPx, screenWidthPx)
@@ -262,6 +287,7 @@ fun ChatScreen(vm: ChatViewModel, onBack: () -> Unit) {
                             }
                         }
                         dragX = 0f
+                        keyboardHiddenDuringDrag = false
                     }
                 )
                 .background(MaterialTheme.colorScheme.background)
@@ -278,16 +304,9 @@ fun ChatScreen(vm: ChatViewModel, onBack: () -> Unit) {
                             sourceEmoji = vm.profileEmojiSymbol,
                             targetEmoji = vm.emojiForRoute(headerUser),
                             openingProgress = openingProgress,
+                            networkAvailable = networkAvailable,
                             onBack = onBack,
                             onClear = { vm.clearConversation(headerUser) },
-                            contactBlocked = vm.isContactBlocked(headerUser),
-                            onToggleContactBlock = {
-                                if (vm.isContactBlocked(headerUser)) {
-                                    vm.unblockContact(headerUser)
-                                } else {
-                                    vm.blockContact(headerUser)
-                                }
-                            },
                             onOpenProfile = {
                                 profileRoute = headerUser
                                 showProfile = true
@@ -296,7 +315,10 @@ fun ChatScreen(vm: ChatViewModel, onBack: () -> Unit) {
                                 SensitiveClipboard.copy(context, "Rota contato", maskedRouteLabel(headerUser))
                                 Toast.makeText(context, "Token sensível copiado por 60 segundos", Toast.LENGTH_SHORT).show()
                             },
-                            onOpenSettings = { showChatSettings = true }
+                            onOpenSettings = {
+                                keyboardController?.hide()
+                                showChatSettings = true
+                            }
                         )
                         if (unreadHintCount > 0) {
                             UnreadHintBar(
@@ -386,6 +408,7 @@ fun ChatScreen(vm: ChatViewModel, onBack: () -> Unit) {
         RouteProfileScreen(
             profile = profile,
             onBack = { showProfile = false },
+            onLockApp = onLockApp,
             onSaveLocalName = { route, name -> vm.setLocalNameForRoute(route, name) }
         )
     }
@@ -399,8 +422,18 @@ fun ChatScreen(vm: ChatViewModel, onBack: () -> Unit) {
             chatTitle = vm.chatTitleFor(vm.targetUsername),
             keepViewedMessages = vm.isCurrentChatLocalKeepViewedMessagesEnabled(),
             screenshotsEnabled = vm.isCurrentChatLocalScreenshotsEnabled(),
+            contactBlocked = vm.isContactBlocked(vm.targetUsername),
             onKeepViewedMessagesChange = vm::updateCurrentChatKeepViewedMessagesPreference,
             onScreenshotsEnabledChange = vm::updateCurrentChatScreenshotsPreference,
+            onToggleContactBlock = {
+                if (vm.isContactBlocked(vm.targetUsername)) {
+                    vm.unblockContact(vm.targetUsername)
+                } else {
+                    vm.blockContact(vm.targetUsername)
+                    onBack()
+                }
+            },
+            onLockApp = onLockApp,
             onBack = { showChatSettings = false }
         )
     }
@@ -421,6 +454,14 @@ fun ChatScreen(vm: ChatViewModel, onBack: () -> Unit) {
     }
 }
 
+private tailrec fun Context.findActivity(): Activity? {
+    return when (this) {
+        is Activity -> this
+        is ContextWrapper -> baseContext.findActivity()
+        else -> null
+    }
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ChatHeader(
@@ -431,10 +472,9 @@ private fun ChatHeader(
     sourceEmoji: String,
     targetEmoji: String,
     openingProgress: Float,
+    networkAvailable: Boolean,
     onBack: () -> Unit,
     onClear: () -> Unit,
-    contactBlocked: Boolean,
-    onToggleContactBlock: () -> Unit,
     onOpenProfile: () -> Unit,
     onCopyRoute: () -> Unit,
     onOpenSettings: () -> Unit
@@ -443,14 +483,16 @@ private fun ChatHeader(
     val sourceAlpha = (1f - openingProgress).coerceIn(0f, 1f)
     val targetAlpha = openingProgress.coerceIn(0f, 1f)
     Surface(
+        shape = AppTitleBarShape,
         color = TitleBarColor,
-        tonalElevation = 3.dp
+        tonalElevation = 0.dp,
+        shadowElevation = 0.dp
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(ChatHeaderHeight)
-                .padding(horizontal = 10.dp),
+                .padding(horizontal = 0.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             IconButton(
@@ -524,19 +566,17 @@ private fun ChatHeader(
                         modifier = Modifier.alpha(sourceAlpha),
                         text = sourceSubtitle,
                         color = Color.White.copy(alpha = 0.78f),
-                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp),
-                        maxLines = 2,
-                        softWrap = true,
-                        overflow = TextOverflow.Clip
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                     Text(
                         modifier = Modifier.alpha(targetAlpha),
                         text = subtitle,
                         color = Color.White.copy(alpha = 0.78f),
-                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp),
-                        maxLines = 2,
-                        softWrap = true,
-                        overflow = TextOverflow.Clip
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
             }
@@ -563,13 +603,6 @@ private fun ChatHeader(
                         }
                     )
                     DropdownMenuItem(
-                        text = { Text(if (contactBlocked) "Desbloquear" else "Bloquear") },
-                        onClick = {
-                            showMenu = false
-                            onToggleContactBlock()
-                        }
-                    )
-                    DropdownMenuItem(
                         text = { Text("Configuração") },
                         leadingIcon = {
                             Icon(
@@ -593,22 +626,35 @@ private fun ChatSettingsScreen(
     chatTitle: String,
     keepViewedMessages: Boolean,
     screenshotsEnabled: Boolean,
+    contactBlocked: Boolean,
     onKeepViewedMessagesChange: (Boolean) -> Unit,
     onScreenshotsEnabledChange: (Boolean) -> Unit,
+    onToggleContactBlock: () -> Unit,
+    onLockApp: () -> Unit,
     onBack: () -> Unit
 ) {
     SwipeToCloseContainer(onClose = onBack) {
+        val keyboardController = LocalSoftwareKeyboardController.current
+        DisposableEffect(Unit) {
+            keyboardController?.hide()
+            onDispose { }
+        }
         Surface(
             modifier = Modifier.fillMaxSize(),
             color = MaterialTheme.colorScheme.background
         ) {
             Column(modifier = Modifier.fillMaxSize()) {
-                Surface(color = TitleBarColor) {
+                Surface(
+                    shape = AppTitleBarShape,
+                    color = TitleBarColor,
+                    tonalElevation = 0.dp,
+                    shadowElevation = 0.dp
+                ) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(ChatHeaderHeight)
-                            .padding(horizontal = 10.dp),
+                            .padding(horizontal = 0.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         IconButton(onClick = onBack) {
@@ -638,6 +684,13 @@ private fun ChatSettingsScreen(
                                 overflow = TextOverflow.Ellipsis
                             )
                         }
+                        IconButton(onClick = onLockApp) {
+                            Icon(
+                                imageVector = Icons.Filled.VpnKey,
+                                contentDescription = "Trancar app",
+                                tint = Color.White
+                            )
+                        }
                     }
                 }
 
@@ -647,24 +700,57 @@ private fun ChatSettingsScreen(
                         .padding(horizontal = 16.dp, vertical = 18.dp),
                     verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
-                    Text(
-                        text = "Privacidade desta conversa",
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    ChatSettingsChoiceRow(
-                        title = "Limpar histórico ao sair?",
-                        subtitle = if (keepViewedMessages) "Mantém mensagens ao fechar" else "Apaga mensagens lidas ao sair",
-                        checked = !keepViewedMessages,
-                        onCheckedChange = { onKeepViewedMessagesChange(!it) }
-                    )
-                    ChatSettingsRow(
-                        title = "Print da tela",
-                        subtitle = if (screenshotsEnabled) "Permitido neste chat" else "Bloqueado neste chat",
-                        checked = screenshotsEnabled,
-                        onCheckedChange = onScreenshotsEnabledChange
-                    )
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(14.dp)
+                    ) {
+                        Text(
+                            text = "Privacidade desta conversa",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        ChatSettingsChoiceRow(
+                            title = "Limpar histórico ao sair?",
+                            subtitle = if (keepViewedMessages) "Mantém mensagens ao fechar" else "Apaga mensagens lidas ao sair",
+                            checked = !keepViewedMessages,
+                            onCheckedChange = { onKeepViewedMessagesChange(!it) }
+                        )
+                        ChatSettingsRow(
+                            title = "Print da tela",
+                            subtitle = if (screenshotsEnabled) "Permitido neste chat" else "Bloqueado neste chat",
+                            checked = screenshotsEnabled,
+                            onCheckedChange = onScreenshotsEnabledChange
+                        )
+                    }
+                    Spacer(Modifier.weight(1f))
+                    Button(
+                        onClick = onToggleContactBlock,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 4.dp),
+                        shape = RoundedCornerShape(14.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (contactBlocked) {
+                                MaterialTheme.colorScheme.surfaceVariant
+                            } else {
+                                MaterialTheme.colorScheme.error
+                            },
+                            contentColor = if (contactBlocked) {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            } else {
+                                MaterialTheme.colorScheme.onError
+                            }
+                        )
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Lock,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(if (contactBlocked) "Desbloquear contato" else "Bloquear contato")
+                    }
                 }
             }
         }
@@ -1285,24 +1371,24 @@ private fun compactOnionRoute(value: String): String {
 
 private fun chatRoutePresenceLabel(
     networkAvailable: Boolean,
-    torReady: Boolean,
+    serviceReady: Boolean,
     partnerConnected: Boolean
 ): String {
     val networkStatus = chatNetworkStatusLabel(
         networkAvailable = networkAvailable,
-        torReady = torReady
+        serviceReady = serviceReady
     )
     if (networkStatus.isNotBlank()) return networkStatus
-    return if (partnerConnected) "disponível" else ""
+    return if (partnerConnected) "online" else "Aguardando contato..."
 }
 
 private fun chatNetworkStatusLabel(
     networkAvailable: Boolean,
-    torReady: Boolean
+    serviceReady: Boolean
 ): String {
     return when {
-        !networkAvailable -> "Aguardando rede..."
-        !torReady -> "Conectando..."
+        !networkAvailable -> "Sem conexão"
+        !serviceReady -> "Iniciando..."
         else -> ""
     }
 }

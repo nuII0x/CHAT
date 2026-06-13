@@ -12,5 +12,5 @@ fun maskedRouteLabel(value: String): String {
     val port = route.substring(separator + 1)
         .takeIf { candidate -> candidate.all { it.isDigit() } }
         ?: "5000"
-    return "$host#$port"
+    return "$host:$port"
 }

@@ -5,6 +5,7 @@ import android.provider.Settings
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
+import com.null0x.chat.security.identity.MnemonicLanguage
 import com.null0x.chat.security.identity.RouteIdentityRegistry
 import com.null0x.chat.storage.LocalStoreCipher
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -175,12 +176,15 @@ object AppSecurityManager {
 
     fun currentState(): GateState = _state.value
 
-    fun createNewRouteIdentity(context: Context): Result<String> {
+    fun createNewRouteIdentity(
+        context: Context,
+        language: MnemonicLanguage = MnemonicLanguage.ENGLISH
+    ): Result<String> {
         return runCatching {
             val contextRef = context.applicationContext
             val prefs = contextRef.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             val passphrase = autoUnlockPassphrase(prefs)
-            val result = RouteIdentityRegistry.createIdentity(passphrase)
+            val result = RouteIdentityRegistry.createIdentity(passphrase, language)
             result.mnemonic
         }.sanitizePrivateAccessStringFailure()
     }
@@ -191,24 +195,33 @@ object AppSecurityManager {
         }
     }
 
-    fun restoreRouteIdentityFromSetup(context: Context, mnemonic: String): Result<Unit> {
+    fun restoreRouteIdentityFromSetup(
+        context: Context,
+        mnemonic: String,
+        language: MnemonicLanguage = MnemonicLanguage.ENGLISH
+    ): Result<Unit> {
         return runCatching {
             val contextRef = context.applicationContext
             val prefs = contextRef.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             val passphrase = autoUnlockPassphrase(prefs)
-            RouteIdentityRegistry.restoreIdentity(mnemonic, passphrase)
+            RouteIdentityRegistry.restoreIdentity(mnemonic, passphrase, language)
             _state.value = GateState.Unlocked
             Unit
         }.sanitizePrivateAccessFailure()
     }
 
-    fun restoreRouteIdentity(context: Context, mnemonic: String, password: String): Result<Unit> {
+    fun restoreRouteIdentity(
+        context: Context,
+        mnemonic: String,
+        password: String,
+        language: MnemonicLanguage = MnemonicLanguage.ENGLISH
+    ): Result<Unit> {
         return verifyPassword(context, password).mapCatching {
             val contextRef = context.applicationContext
             val prefs = contextRef.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             val salt = loadSalt(prefs) ?: throw IllegalStateException("Proteção ainda não configurada")
             val derivedPassphrase = derivePgpPassphrase(contextRef, password, salt)
-            RouteIdentityRegistry.restoreIdentity(mnemonic, derivedPassphrase)
+            RouteIdentityRegistry.restoreIdentity(mnemonic, derivedPassphrase, language)
             if (_state.value is GateState.PrivateAccessRequired) {
                 _state.value = GateState.Unlocked
             }

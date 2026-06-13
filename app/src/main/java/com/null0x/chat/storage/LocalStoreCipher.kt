@@ -1,14 +1,21 @@
 package com.null0x.chat.storage
 
+import org.bouncycastle.bcpg.SymmetricKeyAlgorithmTags
+import org.bouncycastle.openpgp.PGPEncryptedDataGenerator
+import org.bouncycastle.openpgp.PGPLiteralData
+import org.bouncycastle.openpgp.PGPLiteralDataGenerator
+import org.bouncycastle.openpgp.PGPPublicKey
 import org.bouncycastle.openpgp.PGPPublicKeyRing
 import org.bouncycastle.openpgp.PGPSecretKeyRing
+import org.bouncycastle.openpgp.operator.bc.BcPGPDataEncryptorBuilder
+import org.bouncycastle.openpgp.operator.bc.BcPublicKeyKeyEncryptionMethodGenerator
 import org.pgpainless.PGPainless
 import org.pgpainless.decryption_verification.ConsumerOptions
-import org.pgpainless.encryption_signing.EncryptionOptions
-import org.pgpainless.encryption_signing.ProducerOptions
 import org.pgpainless.key.protection.SecretKeyRingProtector
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
+import java.security.SecureRandom
+import java.util.Date
 
 object LocalStoreCipher {
     private const val PREFIX = "PGP:"
@@ -48,16 +55,40 @@ object LocalStoreCipher {
 
     fun encrypt(text: String): String {
         val target = publicKeyRing ?: throw IllegalStateException("App bloqueado")
+        val encryptionKey = target.publicKeys.asSequence()
+            .firstOrNull { it.isEncryptionKey }
+            ?: throw IllegalStateException("Chave local sem subchave de criptografia")
+        val encrypted = encryptWithPublicKey(text.toByteArray(Charsets.UTF_8), encryptionKey)
+        return PREFIX + android.util.Base64.encodeToString(encrypted, android.util.Base64.NO_WRAP)
+    }
+
+    private fun encryptWithPublicKey(data: ByteArray, encryptionKey: PGPPublicKey): ByteArray {
+        val random = SecureRandom()
         val output = ByteArrayOutputStream()
-        val encryptionOptions = EncryptionOptions.encryptDataAtRest().addRecipient(target)
-        val producerOptions = ProducerOptions.encrypt(encryptionOptions).setAsciiArmor(false)
-        PGPainless.encryptAndOrSign()
-            .onOutputStream(output)
-            .withOptions(producerOptions)
-            .use { stream ->
-                stream.write(text.toByteArray(Charsets.UTF_8))
+        val encryptor = BcPGPDataEncryptorBuilder(SymmetricKeyAlgorithmTags.AES_256)
+            .setWithIntegrityPacket(true)
+            .setSecureRandom(random)
+        val encryptedDataGenerator = PGPEncryptedDataGenerator(encryptor)
+        encryptedDataGenerator.addMethod(
+            BcPublicKeyKeyEncryptionMethodGenerator(encryptionKey).setSecureRandom(random)
+        )
+        encryptedDataGenerator.open(output, ByteArray(1 shl 16)).use { encryptedOut ->
+            val literalDataGenerator = PGPLiteralDataGenerator()
+            try {
+                literalDataGenerator.open(
+                    encryptedOut,
+                    PGPLiteralData.BINARY,
+                    PGPLiteralData.CONSOLE,
+                    data.size.toLong(),
+                    Date()
+                ).use { literalOut ->
+                    literalOut.write(data)
+                }
+            } finally {
+                literalDataGenerator.close()
             }
-        return PREFIX + android.util.Base64.encodeToString(output.toByteArray(), android.util.Base64.NO_WRAP)
+        }
+        return output.toByteArray()
     }
 
     fun decrypt(text: String): String? {

@@ -1,0 +1,7 @@
+SocksPort 9052
+DataDirectory /home/willian/Documents/PrimalisChat/NullChat-Source/node/data/tor-node2
+
+HiddenServiceDir /home/willian/Documents/PrimalisChat/NullChat-Source/node/data/node2/hidden_service
+HiddenServiceVersion 3
+HiddenServicePort 80 127.0.0.1:5081
+HiddenServicePort 5000 127.0.0.1:5001
