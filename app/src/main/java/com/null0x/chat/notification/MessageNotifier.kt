@@ -1,13 +1,14 @@
 package com.null0x.chat.notification
 
-import android.graphics.Bitmap
-import android.graphics.Canvas
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
-import android.media.AudioAttributes
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.media.AudioAttributes
+import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.os.Build
 import android.net.Uri
 import androidx.core.app.NotificationCompat
@@ -39,13 +40,15 @@ class MessageNotifier(private val context: Context) {
         }
     }
 
-    private val channelId = "chat_messages_v2"
+    private val channelId = "chat_messages_v3"
 
     init {
         createChannel()
     }
 
     fun showMessage(fromUsername: String, fromName: String, text: String) {
+        if (!canPostNotifications()) return
+
         val notificationId = fromUsername.hashCode()
         val token = UUID.randomUUID().toString()
         context.getSharedPreferences(OPEN_CHAT_PREFS, Context.MODE_PRIVATE)
@@ -76,18 +79,22 @@ class MessageNotifier(private val context: Context) {
         val notification = NotificationCompat.Builder(context, channelId)
             .setSmallIcon(R.drawable.ic_stat_nullchat)
             .setLargeIcon(createLargeIcon())
-            .setContentTitle("NullChat")
-            .setContentText(fromName.ifBlank { "Nova mensagem" })
+            .setContentTitle(fromName.ifBlank { "NullChat" })
+            .setContentText(text.trim().ifBlank { "Nova mensagem" }.take(120))
             .setContentIntent(pendingIntent)
             .setAutoCancel(true)
             .setOngoing(false)
             .setLocalOnly(true)
             .setGroup("chat_messages_group")
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
-            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setVisibility(NotificationCompat.VISIBILITY_SECRET)
             .setPublicVersion(publicNotification)
             .setAllowSystemGeneratedContextualActions(false)
+            .setStyle(
+                NotificationCompat.BigTextStyle()
+                    .bigText(text.trim().ifBlank { "Nova mensagem" })
+            )
             .build()
 
         runCatching {
@@ -106,7 +113,7 @@ class MessageNotifier(private val context: Context) {
         val channel = NotificationChannel(
             channelId,
             "Mensagens NullChat",
-            NotificationManager.IMPORTANCE_DEFAULT
+            NotificationManager.IMPORTANCE_HIGH
         ).apply {
             description = "Notificacoes privadas de novas mensagens"
             lockscreenVisibility = NotificationCompat.VISIBILITY_SECRET
@@ -121,6 +128,16 @@ class MessageNotifier(private val context: Context) {
 
         val manager = context.getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(channel)
+    }
+
+    private fun canPostNotifications(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return true
+        val permissionGranted = ContextCompat.checkSelfPermission(
+            context,
+            android.Manifest.permission.POST_NOTIFICATIONS
+        ) == PackageManager.PERMISSION_GRANTED
+        if (!permissionGranted) return false
+        return NotificationManagerCompat.from(context).areNotificationsEnabled()
     }
 
     private fun createLargeIcon(): Bitmap? {

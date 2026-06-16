@@ -13,10 +13,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.zIndex
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.null0x.chat.ui.common.CursorAwareOutlinedTextField
+import com.null0x.chat.util.normalizeProfileEmojiInput
+import com.null0x.chat.util.normalizeProfileNameInput
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -62,28 +68,34 @@ internal fun InitialAvatar(
     }
     val textColor = if (prominent) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.primary
 
-    Surface(shape = CircleShape, color = color, modifier = Modifier.size(size)) {
-        Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
-            Text(
-                text = if (emoji.isNullOrBlank()) {
-                    text.trim().take(1).ifBlank { "P" }.uppercase()
-                } else {
-                    emoji
-                },
-                color = textColor,
-                fontWeight = FontWeight.Bold,
-                style = if (large) MaterialTheme.typography.headlineMedium else MaterialTheme.typography.bodyLarge
-            )
-            if (active) {
-                Surface(
-                    shape = CircleShape,
-                    color = Color(0xFF2ECC71),
-                    modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(end = 1.dp, bottom = 1.dp)
-                        .size(8.dp)
-                ) {}
+    Box(
+        modifier = Modifier.size(size + 10.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Surface(shape = CircleShape, color = color, modifier = Modifier.size(size)) {
+            Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                Text(
+                    text = if (emoji.isNullOrBlank()) {
+                        text.trim().take(1).ifBlank { "P" }.uppercase()
+                    } else {
+                        emoji
+                    },
+                    color = textColor,
+                    fontWeight = FontWeight.Bold,
+                    style = if (large) MaterialTheme.typography.headlineMedium else MaterialTheme.typography.bodyLarge
+                )
             }
+        }
+        if (active) {
+            Surface(
+                shape = CircleShape,
+                color = Color(0xFF2ECC71),
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .offset(x = 0.dp, y = 0.dp)
+                    .size(10.dp)
+                    .zIndex(1f)
+            ) {}
         }
     }
 }
@@ -95,14 +107,14 @@ internal fun ProfileIdentityDialog(
     onDismiss: () -> Unit,
     onSave: (String, String) -> Unit
 ) {
-    var name by rememberSaveable { mutableStateOf(currentName) }
-    var emoji by rememberSaveable { mutableStateOf(currentEmoji.ifBlank { "🙂" }) }
+    var name by rememberSaveable { mutableStateOf(normalizeProfileNameInput(currentName)) }
+    var emoji by rememberSaveable { mutableStateOf(normalizeProfileEmojiInput(currentEmoji).ifBlank { "🙂" }) }
 
     LaunchedEffect(currentName) {
-        name = currentName
+        name = normalizeProfileNameInput(currentName)
     }
     LaunchedEffect(currentEmoji) {
-        emoji = currentEmoji.ifBlank { "🙂" }
+        emoji = normalizeProfileEmojiInput(currentEmoji).ifBlank { "🙂" }
     }
 
     AlertDialog(
@@ -119,26 +131,37 @@ internal fun ProfileIdentityDialog(
                 )
                 CursorAwareOutlinedTextField(
                     value = name,
-                    onValueChange = { name = it },
+                    onValueChange = { name = normalizeProfileNameInput(it) },
                     singleLine = true,
                     label = { Text("Nome do perfil") },
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(14.dp)
+                    shape = RoundedCornerShape(14.dp),
+                    keyboardOptions = KeyboardOptions(
+                        capitalization = KeyboardCapitalization.Words,
+                        autoCorrectEnabled = false,
+                        imeAction = ImeAction.Done
+                    )
                 )
                 CursorAwareOutlinedTextField(
                     value = emoji,
-                    onValueChange = { emoji = it.take(16) },
+                    onValueChange = {
+                        emoji = normalizeProfileEmojiInput(it)
+                    },
                     singleLine = true,
                     label = { Text("Emoji do perfil") },
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(14.dp)
+                    shape = RoundedCornerShape(14.dp),
+                    keyboardOptions = KeyboardOptions(
+                        autoCorrectEnabled = false,
+                        imeAction = ImeAction.Done
+                    )
                 )
             }
         },
         confirmButton = {
             TextButton(onClick = {
-                val clean = name.trim()
-                if (clean.isNotBlank()) onSave(clean, emoji.trim().ifBlank { "🙂" })
+                val clean = normalizeProfileNameInput(name)
+                if (clean.isNotBlank()) onSave(clean, normalizeProfileEmojiInput(emoji).ifBlank { "🙂" })
             }) { Text("Salvar") }
         },
         dismissButton = {

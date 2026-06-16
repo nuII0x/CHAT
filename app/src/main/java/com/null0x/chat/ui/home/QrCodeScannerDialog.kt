@@ -5,24 +5,26 @@ import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
+import androidx.camera.core.resolutionselector.ResolutionSelector
+import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.sizeIn
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -30,7 +32,10 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
@@ -55,49 +60,83 @@ import java.util.concurrent.atomic.AtomicBoolean
 @Composable
 fun QrCodeScannerDialog(
     onDismiss: () -> Unit,
+    isValidQrCode: (String) -> Boolean,
     onQrCodeScanned: (String) -> Unit
 ) {
-    val previewSize = 240.dp
+    val context = LocalContext.current
+    val mainExecutor = remember(context) { ContextCompat.getMainExecutor(context) }
+    var warningText by remember { mutableStateOf("") }
+    LaunchedEffect(warningText) {
+        if (warningText.isBlank()) return@LaunchedEffect
+        kotlinx.coroutines.delay(1_600)
+        warningText = ""
+    }
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
-        Surface(
+        Box(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 18.dp),
-            shape = RoundedCornerShape(20.dp),
-            color = MaterialTheme.colorScheme.surface,
-            tonalElevation = 4.dp
+                .fillMaxSize()
+                .clickable(
+                    indication = null,
+                    interactionSource = remember { MutableInteractionSource() }
+                ) {
+                    onDismiss()
+                },
+            contentAlignment = Alignment.Center
         ) {
             Column(
-                modifier = Modifier.padding(14.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+                modifier = Modifier.padding(horizontal = 18.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
             ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "Ler QR da rota",
-                        style = MaterialTheme.typography.titleMedium
-                    )
-                    TextButton(onClick = onDismiss) {
-                        Text("Cancelar")
-                    }
-                }
-                Surface(
+                Box(
                     modifier = Modifier
-                        .align(Alignment.CenterHorizontally)
-                        .fillMaxWidth(0.78f)
-                        .sizeIn(maxWidth = previewSize, maxHeight = previewSize)
-                        .aspectRatio(1f),
-                    shape = RoundedCornerShape(16.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant
+                        .fillMaxWidth(0.70f)
+                        .aspectRatio(1f)
+                        .heightIn(max = 190.dp)
+                        .background(Color.Black)
+                        .clipToBounds()
+                        .clickable(
+                            indication = null,
+                            interactionSource = remember { MutableInteractionSource() }
+                        ) { }
                 ) {
                     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        QrCameraPreview(onQrCodeScanned = onQrCodeScanned)
+                        QrCameraPreview(onQrCodeRead = { code ->
+                            if (isValidQrCode(code)) {
+                                mainExecutor.execute { onQrCodeScanned(code) }
+                                true
+                            } else {
+                                mainExecutor.execute { warningText = "QR sem token NullChat" }
+                                false
+                            }
+                        })
+                    }
+                }
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 12.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .background(Color.Black)
+                            .padding(horizontal = 12.dp, vertical = 8.dp)
+                            .clickable(
+                                indication = null,
+                                interactionSource = remember { MutableInteractionSource() }
+                            ) { },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = warningText.ifBlank { "Leia o QR do token de perfil do NullChat" },
+                            textAlign = TextAlign.Center,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.White
+                        )
                     }
                 }
             }
@@ -106,16 +145,17 @@ fun QrCodeScannerDialog(
 }
 
 @Composable
-private fun QrCameraPreview(onQrCodeScanned: (String) -> Unit) {
+private fun QrCameraPreview(onQrCodeRead: (String) -> Boolean) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    val onQrCodeScannedState by rememberUpdatedState(onQrCodeScanned)
+    val onQrCodeReadState by rememberUpdatedState(onQrCodeRead)
     var previewView by remember { mutableStateOf<PreviewView?>(null) }
 
     AndroidView(
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier.fillMaxSize().clipToBounds(),
         factory = { viewContext ->
             PreviewView(viewContext).apply {
+                implementationMode = PreviewView.ImplementationMode.COMPATIBLE
                 scaleType = PreviewView.ScaleType.FILL_CENTER
                 layoutParams = android.view.ViewGroup.LayoutParams(
                     android.view.ViewGroup.LayoutParams.MATCH_PARENT,
@@ -131,53 +171,68 @@ private fun QrCameraPreview(onQrCodeScanned: (String) -> Unit) {
         val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
         val cameraExecutor = Executors.newSingleThreadExecutor()
         var cameraProvider: ProcessCameraProvider? = null
+        var analyzer: QrCodeAnalyzer? = null
+        val disposed = AtomicBoolean(false)
+        val resolutionSelector = ResolutionSelector.Builder()
+            .setResolutionStrategy(
+                ResolutionStrategy(
+                    Size(720, 720),
+                    ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER
+                )
+            )
+            .build()
 
         cameraProviderFuture.addListener(
             {
                 val provider = cameraProviderFuture.get()
                 cameraProvider = provider
-                val rotation = activePreviewView.display?.rotation ?: 0
-                val preview = Preview.Builder()
-                    .setTargetResolution(QR_ANALYSIS_RESOLUTION)
-                    .setTargetRotation(rotation)
-                    .build()
-                    .also {
-                        it.setSurfaceProvider(activePreviewView.surfaceProvider)
-                    }
-                val analysis = ImageAnalysis.Builder()
-                    .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                    .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
-                    .setOutputImageRotationEnabled(true)
-                    .setTargetResolution(QR_ANALYSIS_RESOLUTION)
-                    .setTargetRotation(rotation)
-                    .build()
-                analysis.setAnalyzer(
-                    cameraExecutor,
-                    QrCodeAnalyzer { code -> onQrCodeScannedState(code) }
-                )
+                if (disposed.get()) {
+                    provider.unbindAll()
+                } else {
+                    val rotation = activePreviewView.display?.rotation ?: 0
+                    val preview = Preview.Builder()
+                        .setResolutionSelector(resolutionSelector)
+                        .setTargetRotation(rotation)
+                        .build()
+                        .also {
+                            it.setSurfaceProvider(activePreviewView.surfaceProvider)
+                        }
+                    val analysis = ImageAnalysis.Builder()
+                        .setResolutionSelector(resolutionSelector)
+                        .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                        .setOutputImageRotationEnabled(true)
+                        .setTargetRotation(rotation)
+                        .build()
+                    val qrAnalyzer = QrCodeAnalyzer { code -> onQrCodeReadState(code) }
+                    analyzer = qrAnalyzer
+                    analysis.setAnalyzer(cameraExecutor, qrAnalyzer)
 
-                provider.unbindAll()
-                provider.bindToLifecycle(
-                    lifecycleOwner,
-                    CameraSelector.DEFAULT_BACK_CAMERA,
-                    preview,
-                    analysis
-                )
+                    provider.unbindAll()
+                    provider.bindToLifecycle(
+                        lifecycleOwner,
+                        CameraSelector.DEFAULT_BACK_CAMERA,
+                        preview,
+                        analysis
+                    )
+                }
             },
             ContextCompat.getMainExecutor(context)
         )
 
         onDispose {
+            disposed.set(true)
             cameraProvider?.unbindAll()
+            analyzer?.close()
             cameraExecutor.shutdown()
         }
     }
 }
 
 private class QrCodeAnalyzer(
-    private val onQrCodeScanned: (String) -> Unit
+    private val onQrCodeRead: (String) -> Boolean
 ) : ImageAnalysis.Analyzer {
     private val finished = AtomicBoolean(false)
+    private var lastRejectedCode: String? = null
     private val qrReader = QRCodeReader()
     private val scanner: BarcodeScanner = BarcodeScanning.getClient(
         BarcodeScannerOptions.Builder()
@@ -195,8 +250,17 @@ private class QrCodeAnalyzer(
             val code = decodeWithZxing(image).ifBlank {
                 decodeWithMlKit(image)
             }
-            if (code.isNotBlank() && finished.compareAndSet(false, true)) {
-                onQrCodeScanned(code)
+            if (code.isNotBlank()) {
+                if (code == lastRejectedCode) {
+                    return
+                }
+                if (onQrCodeRead(code)) {
+                    finished.compareAndSet(false, true)
+                } else {
+                    lastRejectedCode = code
+                }
+            } else {
+                lastRejectedCode = null
             }
         } finally {
             image.close()
@@ -205,10 +269,12 @@ private class QrCodeAnalyzer(
 
     private fun decodeWithZxing(image: ImageProxy): String {
         return runCatching {
-            val source = rgbaImageToLuminanceSource(image)
+            val source = yPlaneToLuminanceSource(image)
             val hints = mapOf(DecodeHintType.TRY_HARDER to true)
             val result = qrReader.decode(BinaryBitmap(HybridBinarizer(source)), hints)
             result.text.trim()
+        }.also {
+            qrReader.reset()
         }.getOrElse { "" }
     }
 
@@ -224,28 +290,28 @@ private class QrCodeAnalyzer(
         }.getOrElse { "" }
     }
 
-    private fun rgbaImageToLuminanceSource(image: ImageProxy): RGBLuminanceSource {
+    fun close() {
+        scanner.close()
+    }
+
+    private fun yPlaneToLuminanceSource(image: ImageProxy): RGBLuminanceSource {
         val width = image.width
         val height = image.height
-        val plane = image.planes.firstOrNull() ?: error("Frame RGBA indisponivel")
+        val plane = image.planes.firstOrNull() ?: error("Frame YUV indisponivel")
         val buffer = plane.buffer.duplicate()
         val pixels = IntArray(width * height)
         val rowStride = plane.rowStride
-        val pixelStride = plane.pixelStride.takeIf { it > 0 } ?: 4
+        val pixelStride = plane.pixelStride.takeIf { it > 0 } ?: 1
 
         for (row in 0 until height) {
             val rowStart = row * rowStride
             for (col in 0 until width) {
                 val offset = rowStart + col * pixelStride
-                if (offset + 2 >= buffer.limit()) continue
-                val red = buffer.get(offset).toInt() and 0xFF
-                val green = buffer.get(offset + 1).toInt() and 0xFF
-                val blue = buffer.get(offset + 2).toInt() and 0xFF
-                pixels[row * width + col] = (red shl 16) or (green shl 8) or blue
+                if (offset >= buffer.limit()) continue
+                val luminance = buffer.get(offset).toInt() and 0xFF
+                pixels[row * width + col] = (luminance shl 16) or (luminance shl 8) or luminance
             }
         }
         return RGBLuminanceSource(width, height, pixels)
     }
 }
-
-private val QR_ANALYSIS_RESOLUTION = Size(720, 720)

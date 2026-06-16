@@ -15,6 +15,8 @@ import com.null0x.chat.model.Message
 import com.null0x.chat.network.ChatNodeManager
 import com.null0x.chat.security.identity.RouteIdentityRegistry
 import com.null0x.chat.storage.ChatStore
+import com.null0x.chat.util.normalizeProfileEmojiInput
+import com.null0x.chat.util.normalizeProfileNameInput
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -97,6 +99,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val conversationPoliciesPrefs = application.applicationContext.getSharedPreferences("conversation_policies", Context.MODE_PRIVATE)
     private val routeTokensPrefs = application.applicationContext.getSharedPreferences(ROUTE_TOKENS_PREFS, Context.MODE_PRIVATE)
     private val conversationStatePrefs = application.applicationContext.getSharedPreferences(CONVERSATION_STATE_PREFS, Context.MODE_PRIVATE)
+    private val conversationDraftsPrefs = application.applicationContext.getSharedPreferences("conversation_drafts", Context.MODE_PRIVATE)
     private val privacyNoticesKey = "privacy_notices"
     private val outgoingSendJobs = mutableMapOf<String, Job>()
     private val outgoingSendLock = Any()
@@ -164,6 +167,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     updateMessageDelivery(messageId, DeliveryState.Delivered)
                 }
                 conversationsVersion++
+            }
+        }
+
+        override fun onMessageDeleted(fromUsername: String, messageId: String) {
+            viewModelScope.launch(Dispatchers.Main.immediate) {
+                val route = canonicalConversationKey(fromUsername)
+                if (route.isBlank()) return@launch
+                deleteConversationMessage(route, messageId, broadcastDeletion = false)
             }
         }
 
@@ -356,7 +367,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         nodeManager.setProfilePolicy(defaultKeepViewedMessages, defaultAllowScreenshots)
         privacyNotices.addAll(loadPrivacyNotices())
         nodeManager.addListener(listener)
-        startOutgoingRetryLoop()
         schedulePendingOutgoingMessages()
     }
 
@@ -377,6 +387,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     fun selectTarget(username: String) {
         val cleanTarget = canonicalConversationKey(username)
         val previousTarget = canonicalConversationKey(targetUsername)
+        if (cleanTarget.isNotBlank() && cleanTarget == previousTarget && inChat && currentChatLoaded) {
+            return
+        }
         openChatJob?.cancel()
         if (previousTarget.isNotBlank() && previousTarget != cleanTarget) {
             AppVisibility.markChatClosed(previousTarget)
@@ -476,7 +489,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
      * Não altera diretamente o state — isso vem via callback do nodeManager.
      */
     fun updateProfileName(name: String) {
-        val cleanName = name.trim()
+        val cleanName = normalizeProfileNameInput(name)
         if (cleanName.isBlank()) return
 
         nodeManager.setProfileName(getApplication(), cleanName)
@@ -484,7 +497,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun updateProfileEmoji(emoji: String) {
-        val cleanEmoji = emoji.trim().ifBlank { "🙂" }
+        val cleanEmoji = normalizeProfileEmojiInput(emoji).ifBlank { "🙂" }
         profileEmoji = cleanEmoji
         profileEmojiSymbol = cleanEmoji
         profilePrefs.edit().putString("profile_emoji", cleanEmoji).apply()
@@ -938,6 +951,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         return token
     }
 
+    fun isValidNullChatQrToken(token: String): Boolean {
+        val clean = canonicalConversationKey(token)
+        if (clean.isBlank()) return false
+        return resolveContactRouteQuery(clean).isNotBlank()
+    }
+
     fun isLocalRoute(username: String): Boolean {
         return isLocalOwnerRoute(username)
     }
@@ -1097,6 +1116,37 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         return conversationPreviewCache
     }
 
+    fun draftFor(username: String): String {
+        val target = canonicalConversationKey(username)
+        if (target.isBlank()) return ""
+        return conversationDraftsPrefs.getString(conversationDraftKey(target), null).orEmpty()
+    }
+
+    fun updateDraft(username: String, draft: String) {
+        val target = canonicalConversationKey(username)
+        if (target.isBlank()) return
+        val cleanDraft = draft.trimEnd()
+        val editor = conversationDraftsPrefs.edit()
+        if (cleanDraft.isBlank()) {
+            editor.remove(conversationDraftKey(target))
+        } else {
+            editor.putString(conversationDraftKey(target), cleanDraft)
+        }
+        editor.apply()
+        refreshConversationPreviewsAsync()
+    }
+
+    fun clearDraft(username: String) {
+        val target = canonicalConversationKey(username)
+        if (target.isBlank()) return
+        conversationDraftsPrefs.edit().remove(conversationDraftKey(target)).apply()
+        refreshConversationPreviewsAsync()
+    }
+
+    fun hasDraft(username: String): Boolean {
+        return draftFor(username).isNotBlank()
+    }
+
     fun isCurrentChatLoaded(): Boolean {
         return currentChatLoaded
     }
@@ -1147,6 +1197,17 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun deleteMessage(message: Message) {
+        val target = canonicalConversationKey(targetUsername)
+        if (target.isBlank() || message.id.isBlank()) return
+        deleteConversationMessage(
+            target,
+            message.id,
+            broadcastDeletion = true,
+            messageWasMine = message.isMine
+        )
+    }
+
     fun send(text: String) {
         sendTo(targetUsername, text)
     }
@@ -1167,7 +1228,31 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         if (!canQueueOutgoingMessageFor(target)) return
         setConversationHidden(target, false)
 
+        val isSelfRoute = isLocalOwnerRoute(target)
         val localId = java.util.UUID.randomUUID().toString()
+        clearDraft(target)
+        chatStore.rememberPeer(target, conversationLabelFor(target))
+        if (isSelfRoute) {
+            val pendingMessage = Message(
+                id = localId,
+                text = message,
+                isMine = true,
+                delivery = DeliveryState.Pending
+            )
+            if (appendConversationMessage(target, pendingMessage)) {
+                appendVisibleMessage(pendingMessage)
+            }
+            chatStore.upsert(target, pendingMessage)
+            conversationsVersion++
+            refreshConversationPreviewsAsync()
+            nodeManager.requestPublicProfile(target)
+            sendChatPresence(target, "open")
+            viewModelScope.launch {
+                nodeManager.sendChatMessage(target, message, localId)
+            }
+            return
+        }
+
         val pendingMessage = Message(
             id = localId,
             text = message,
@@ -1178,7 +1263,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             appendVisibleMessage(pendingMessage)
         }
         chatStore.upsert(target, pendingMessage)
-        chatStore.rememberPeer(target, conversationLabelFor(target))
         conversationsVersion++
         refreshConversationPreviewsAsync()
 
@@ -1270,7 +1354,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun updateMessageDelivery(messageId: String, state: DeliveryState) {
-        val index = messages.indexOfFirst { it.id == messageId && it.isMine }
+        val index = messages.indexOfFirst { it.id == messageId }
         if (index < 0) return
         val current = messages[index]
         if (current.delivery == state) return
@@ -1301,10 +1385,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             val items = conversationMessagesFor(target).takeLast(16)
             val last = items.lastOrNull()
             val fallbackLine = when {
+                hasDraft(target) -> "Rascunho"
                 isContactBlocked(target) -> "Bloqueado"
                 isContactPending(target) -> "Pedido pendente"
+                isContactAccepted(target) -> "limpo"
                 isContactRequested(target) -> "Pedido enviado"
-                isContactAccepted(target) -> "Contato aceito"
                 else -> "Sem mensagens"
             }
             ConversationPreview(
@@ -1313,7 +1398,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 emoji = publicEmojiForRoute(target),
                 lastTimestamp = last?.timestamp ?: 0L,
                 unreadCount = unreadByPeer[target] ?: 0,
-                previewLine = if (items.isEmpty()) fallbackLine else previewLineFor(items, unreadByPeer[target] ?: 0)
+                previewLine = if (hasDraft(target)) {
+                    "Rascunho"
+                } else if (items.isEmpty()) {
+                    fallbackLine
+                } else {
+                    previewLineFor(items, unreadByPeer[target] ?: 0)
+                }
             )
         }.sortedWith(
             compareByDescending<ConversationPreview> { it.lastTimestamp }
@@ -1367,6 +1458,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun conversationHiddenKey(route: String): String = "hidden:${routeStorageKey(route)}"
+    private fun conversationDraftKey(route: String): String = "draft:${routeStorageKey(route)}"
 
     private fun isConversationHidden(route: String): Boolean {
         val clean = canonicalConversationKey(route)
@@ -1452,15 +1544,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         scheduleOutgoingDelivery(clean)
     }
 
-    private fun startOutgoingRetryLoop() {
-        viewModelScope.launch(Dispatchers.IO) {
-            while (true) {
-                delay(7_500)
-                schedulePendingOutgoingMessages()
-            }
-        }
-    }
-
     private fun schedulePendingOutgoingMessages() {
         chatStore.pendingOutgoing(limit = 250)
             .map { (peer, _) -> canonicalConversationKey(peer) }
@@ -1501,6 +1584,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             val priority = chatStore.pendingOutgoingForPeer(clean)
                 .firstOrNull { it.id == priorityMessageId }
             if (priority != null) {
+                if (chatStore.hasMessage(clean, priority.id, isMine = true) != true) return
                 if (!canMessageContact(clean)) return
                 val result = deliverPendingMessage(clean, priority.id, priority.text)
                 if (result.isFailure) return
@@ -1509,6 +1593,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         while (true) {
             if (!canMessageContact(clean)) return
             val next = chatStore.pendingOutgoingForPeer(clean, limit = 1).firstOrNull() ?: return
+            if (chatStore.hasMessage(clean, next.id, isMine = true) != true) return
             val result = deliverPendingMessage(clean, next.id, next.text)
             if (result.isFailure) return
         }
@@ -1642,6 +1727,56 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private fun deleteConversationMessage(
+        route: String,
+        messageId: String,
+        broadcastDeletion: Boolean,
+        messageWasMine: Boolean? = null
+    ) {
+        val clean = canonicalConversationKey(route)
+        if (clean.isBlank() || messageId.isBlank()) return
+
+        val removedMessages = removeMessageFromConversationCache(clean, messageId)
+        val removedFromStore = chatStore.removeMessage(clean, messageId)
+        if (removedMessages.isEmpty() && !removedFromStore) {
+            return
+        }
+
+        if (clean == targetUsername) {
+            messages.removeAll { it.id == messageId }
+        }
+
+        if (messageWasMine == false || removedMessages.any { !it.isMine }) {
+            val unread = (unreadByPeer[clean] ?: 0).coerceAtLeast(0)
+            if (unread > 0) {
+                unreadByPeer[clean] = (unread - 1).coerceAtLeast(0)
+            }
+            val hint = (unreadEntryCountByPeer[clean] ?: 0).coerceAtLeast(0)
+            if (hint > 0) {
+                unreadEntryCountByPeer[clean] = (hint - 1).coerceAtLeast(0)
+            }
+        }
+
+        if (broadcastDeletion) {
+            nodeManager.requestMessageDeletion(clean, messageId)
+        }
+
+        conversationsVersion++
+        refreshConversationPreviewsAsync()
+    }
+
+    private fun removeMessageFromConversationCache(route: String, messageId: String): List<Message> {
+        val clean = canonicalConversationKey(route)
+        if (clean.isBlank() || messageId.isBlank()) return emptyList()
+        synchronized(conversationHistoryLock) {
+            val cache = conversationHistoryCache[clean] ?: return emptyList()
+            val removed = cache.filter { it.id == messageId }
+            if (removed.isEmpty()) return emptyList()
+            cache.removeAll { it.id == messageId }
+            return removed
+        }
+    }
+
     private fun appendConversationMessage(route: String, message: Message): Boolean {
         val clean = canonicalConversationKey(route)
         if (clean.isBlank()) return false
@@ -1655,21 +1790,25 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun appendVisibleMessage(message: Message) {
-        if (messages.any { it.id == message.id && it.isMine == message.isMine }) return
-        messages.add(message)
+        val index = messages.indexOfFirst { it.id == message.id }
+        if (index >= 0) {
+            messages[index] = mergeMessage(messages[index], message)
+        } else {
+            messages.add(message)
+        }
         messages.sortWith(messageComparator())
     }
 
     private fun normalizeMessages(items: List<Message>): List<Message> {
         return items
-            .distinctBy { "${it.isMine}:${it.id}" }
+            .groupBy { it.id }
+            .map { (_, group) -> group.reduce { acc, item -> mergeMessage(acc, item) } }
             .sortedWith(messageComparator())
     }
 
     private fun messageComparator(): Comparator<Message> {
         return compareBy<Message> { it.timestamp }
             .thenBy { it.id }
-            .thenByDescending { it.isMine }
     }
 
     private fun updateConversationCacheDelivery(route: String, messageId: String, state: DeliveryState) {
@@ -1698,8 +1837,31 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         if (clean.isBlank()) return false
         return synchronized(conversationHistoryLock) {
             conversationHistoryCache[clean]
-                ?.any { it.id == message.id && it.isMine == message.isMine } == true
+                ?.any { it.id == message.id } == true
         }
+    }
+
+    private fun mergeMessage(existing: Message, incoming: Message): Message {
+        val timestamp = when {
+            existing.timestamp > 0L && incoming.timestamp > 0L -> minOf(existing.timestamp, incoming.timestamp)
+            existing.timestamp > 0L -> existing.timestamp
+            else -> incoming.timestamp
+        }
+        val delivery = if (incoming.delivery.ordinal > existing.delivery.ordinal) {
+            incoming.delivery
+        } else {
+            existing.delivery
+        }
+        val text = when {
+            existing.text.isNotBlank() -> existing.text
+            else -> incoming.text
+        }
+        return existing.copy(
+            text = text,
+            isMine = existing.isMine || incoming.isMine,
+            timestamp = timestamp,
+            delivery = delivery
+        )
     }
 
     private fun isLocalOwnerRoute(route: String): Boolean {

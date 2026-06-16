@@ -1,8 +1,5 @@
 package com.null0x.chat.security.identity
 
-import com.null0x.chat.storage.ChatStore
-import com.null0x.chat.model.DeliveryState
-import com.null0x.chat.model.Message
 import java.io.File
 import java.util.UUID
 
@@ -11,8 +8,6 @@ open class DistributedMessageStore(
     private val identityProvider: () -> CryptoIdentityManager,
     private val localRouteProvider: () -> String
 ) {
-    fun localPublicKeyHash(): String = identityProvider().getPublicKeyHash()
-
     fun createOutgoingEnvelope(
         recipientRoute: String,
         recipientPublicKeyHash: String,
@@ -73,6 +68,10 @@ open class DistributedMessageStore(
         database.markDelivered(messageId)
     }
 
+    fun remove(messageId: String) {
+        database.remove(messageId)
+    }
+
     fun acknowledge(ack: AckPacket): Boolean {
         val existing = database.get(ack.messageId) ?: return false
         val recipientPublicKey = existing.envelope.recipientPublicKey ?: return false
@@ -88,7 +87,7 @@ open class DistributedMessageStore(
     }
 
     fun pendingLocalDeliveries(limit: Int = 50): List<StoredEnvelopeRecord> {
-        val localHash = localPublicKeyHash()
+        val localHash = identityProvider().getPublicKeyHash()
         if (localHash.isBlank()) return emptyList()
         return database.listForRecipient(localHash, limit)
     }
@@ -104,21 +103,6 @@ open class DistributedMessageStore(
             nonceB64 = envelope.nonce,
             senderExchangePublicKeyB64 = senderExchangePublicKey,
             recipientExchangePrivateKeyB64 = recipientPrivateKey
-        )
-    }
-
-    fun saveToChat(chatStore: ChatStore, peer: String, envelope: MessageEnvelope, text: String) {
-        if (peer.isBlank()) return
-        if (chatStore.hasMessage(peer, envelope.messageId, isMine = false)) return
-        chatStore.upsert(
-            peer,
-            Message(
-                id = envelope.messageId,
-                text = text,
-                isMine = false,
-                timestamp = envelope.timestamp,
-                delivery = DeliveryState.Delivered
-            )
         )
     }
 

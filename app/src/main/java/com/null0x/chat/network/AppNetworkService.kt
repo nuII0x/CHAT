@@ -18,7 +18,7 @@ import com.null0x.chat.R
 class AppNetworkService : Service() {
 
     companion object {
-        private const val NOTIFICATION_CHANNEL_ID = "nullchat_network_live"
+        private const val NOTIFICATION_CHANNEL_ID = "nullchat_network_live_v2"
         private const val NOTIFICATION_ID = 4207
         private const val RELAUNCH_REQUEST_CODE = 5202
         @Volatile
@@ -85,8 +85,8 @@ class AppNetworkService : Service() {
 
     private fun buildNotification() = NotificationCompat.Builder(applicationContext, ensureChannel())
         .setSmallIcon(R.drawable.ic_stat_nullchat)
-        .setContentTitle("NullChat ativo")
-        .setContentText("Conexão em tempo real em segundo plano")
+        .setContentTitle("NullChat")
+        .setContentText("Conexão em segundo plano")
         .setOngoing(true)
         .setOnlyAlertOnce(true)
         .setCategory(NotificationCompat.CATEGORY_SERVICE)
@@ -108,9 +108,10 @@ class AppNetworkService : Service() {
         val channel = NotificationChannel(
             NOTIFICATION_CHANNEL_ID,
             "Conexão NullChat",
-            NotificationManager.IMPORTANCE_LOW
+            NotificationManager.IMPORTANCE_MIN
         ).apply {
             description = "Mantém a conexão em tempo real em segundo plano"
+            setShowBadge(false)
         }
         manager.createNotificationChannel(channel)
         return NOTIFICATION_CHANNEL_ID

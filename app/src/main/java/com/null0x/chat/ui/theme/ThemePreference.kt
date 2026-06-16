@@ -33,8 +33,8 @@ object ThemePreference {
         val resolvedMode = if (shouldMigrateOldSystemDefault) {
             ThemeMode.BLUE
         } else {
-            storedThemeMode
-                ?: if (prefs.contains(LEGACY_DARK_THEME_KEY)) {
+            when (storedThemeMode) {
+                null -> if (prefs.contains(LEGACY_DARK_THEME_KEY)) {
                     if (prefs.getBoolean(LEGACY_DARK_THEME_KEY, false)) {
                         ThemeMode.DARK
                     } else {
@@ -43,6 +43,8 @@ object ThemePreference {
                 } else {
                     ThemeMode.BLUE
                 }
+                else -> storedThemeMode
+            }
         }
 
         _themeMode.value = resolvedMode

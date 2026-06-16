@@ -20,25 +20,14 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.ChatBubble
-import androidx.compose.material.icons.filled.Contacts
-import androidx.compose.material.icons.filled.Devices
-import androidx.compose.material.icons.filled.DarkMode
-import androidx.compose.material.icons.filled.Done
-import androidx.compose.material.icons.filled.Favorite
-import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.VpnKey
-import androidx.compose.material.icons.filled.WbSunny
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
@@ -52,9 +41,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.core.app.NotificationManagerCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import com.null0x.chat.network.TorManager
-import com.null0x.chat.network.BackgroundConnectionMode
-import com.null0x.chat.network.FastRelayTransport
 import com.null0x.chat.security.AppSecurityManager
 import com.null0x.chat.security.SensitiveClipboard
 import com.null0x.chat.security.identity.MessageCrypto
@@ -65,7 +55,6 @@ import com.null0x.chat.security.identity.RouteIdentityRegistry
 import com.null0x.chat.ui.common.CursorAwareOutlinedTextField
 import com.null0x.chat.ui.common.MnemonicLanguagePicker
 import com.null0x.chat.ui.common.SwipeToCloseContainer
-import com.null0x.chat.ui.AppTitleBarShape
 import com.null0x.chat.ui.maskedRouteLabel
 import com.null0x.chat.ui.theme.ThemeMode
 import com.null0x.chat.viewmodel.ChatViewModel
@@ -75,12 +64,9 @@ import org.json.JSONObject
 internal fun SettingsTab(
     publicRoute: String,
     publicRouteToken: String,
-    batteryOptimizationIgnored: Boolean,
     bottomPadding: androidx.compose.ui.unit.Dp,
     themeMode: ThemeMode,
     onThemeModeChange: (ThemeMode) -> Unit,
-    backgroundConnectionMode: BackgroundConnectionMode,
-    onBackgroundConnectionModeChange: (BackgroundConnectionMode) -> Unit,
     keepViewedMessages: Boolean,
     onKeepViewedMessagesChange: (Boolean) -> Unit,
     screenshotsEnabled: Boolean,
@@ -98,7 +84,6 @@ internal fun SettingsTab(
     var showBlockedWindow by rememberSaveable { mutableStateOf(false) }
     var showRestoreIdentity by rememberSaveable { mutableStateOf(false) }
     var showPrivateInbox by rememberSaveable { mutableStateOf(false) }
-    val fastRelayConfig by FastRelayTransport.config.collectAsState()
     val onionInboxStore = remember(context) { OnionInboxStore(context) }
     val privateInboxMessages = remember(identityVersion, showPrivateInbox) {
         onionInboxStore.listMessages()
@@ -120,8 +105,20 @@ internal fun SettingsTab(
             .put("antiSpamToken", sendToken)
             .toString()
     }
-    LaunchedEffect(context) {
-        FastRelayTransport.initialize(context)
+    var notificationsEnabled by remember {
+        mutableStateOf(NotificationManagerCompat.from(context).areNotificationsEnabled())
+    }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, context) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                notificationsEnabled = NotificationManagerCompat.from(context).areNotificationsEnabled()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
     }
     val exportOnionBackupLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/zip")
@@ -178,7 +175,7 @@ internal fun SettingsTab(
     BackHandler(enabled = showBlockedWindow && !showRestoreIdentity && !showPrivateInbox) {
         showBlockedWindow = false
     }
-    BackHandler(enabled = showAccountWindow && !showBlockedWindow && !showRestoreIdentity && !showPrivateInbox) {
+    BackHandler(enabled = showAccountWindow && !showRestoreIdentity && !showPrivateInbox) {
         showAccountWindow = false
     }
     Box(modifier = Modifier.fillMaxSize()) {
@@ -197,7 +194,6 @@ internal fun SettingsTab(
                 SettingsRow(
                     title = "Tokens",
                     subtitle = "Itens para copiar sem bagunçar as ações",
-                    leading = Icons.Filled.VpnKey,
                     onClick = { showTokensWindow = true }
                 )
             }
@@ -205,7 +201,6 @@ internal fun SettingsTab(
                 SettingsRow(
                     title = "Conta",
                     subtitle = "Envio, inbox, rotacao e restauracao",
-                    leading = Icons.Filled.Person,
                     onClick = { showAccountWindow = true }
                 )
             }
@@ -217,23 +212,8 @@ internal fun SettingsTab(
                     } else {
                         "${blockedContacts.size} contatos bloqueados"
                     },
-                    leading = Icons.Filled.Lock,
                     onClick = { showBlockedWindow = true }
                 )
-            }
-            if (!batteryOptimizationIgnored) {
-                item {
-                    SettingsRow(
-                        title = "Retirar da economia de bateria",
-                        subtitle = "Importante para receber mensagens em segundo plano",
-                        leading = Icons.Filled.Devices,
-                        important = true,
-                        trailing = {
-                            AttentionBadge(count = 1)
-                        },
-                        onClick = { openBatteryOptimizationSettings(context) }
-                    )
-                }
             }
             item { SectionTitle("Tema") }
             item {
@@ -242,26 +222,24 @@ internal fun SettingsTab(
                     onModeSelected = onThemeModeChange
                 )
             }
-            item { SectionTitle("Conexão") }
-            item {
-                BackgroundModeOptions(
-                    currentMode = backgroundConnectionMode,
-                    onModeSelected = onBackgroundConnectionModeChange
-                )
-            }
-            item {
-                FastRelaySettingsCard(
-                    enabled = fastRelayConfig.enabled,
-                    discoveredUrl = fastRelayConfig.discoveredUrl,
-                    onEnabledChange = { enabled ->
-                        FastRelayTransport.setConfig(context, enabled)
-                            Toast.makeText(
-                                context,
-                                if (enabled) "Rota Tor ativada. Procurando automaticamente..." else "Rota Tor desativada",
-                                Toast.LENGTH_SHORT
-                            ).show()
-                    }
-                )
+            if (!notificationsEnabled) {
+                item {
+                    SettingsRow(
+                        title = "Ativar notificações",
+                        subtitle = if (notificationsEnabled) {
+                            "Ajuste útil se o Android limitou os alertas do app"
+                        } else {
+                            "Necessário para receber mensagens no Android 13+"
+                        },
+                        important = true,
+                        trailing = if (!notificationsEnabled) {
+                            {
+                                AttentionBadge(count = 1)
+                            }
+                        } else null,
+                        onClick = { openNotificationSettings(context) }
+                    )
+                }
             }
             item { SectionTitle("Privacidade") }
             item {
@@ -436,7 +414,6 @@ internal fun AccountTokensScreen(
             SettingsRow(
                 title = "Seu Token",
                 subtitle = if (tokenLabel == "Aguardando token...") tokenLabel else "Token protegido",
-                leading = Icons.Filled.VpnKey,
                 onClick = onCopyToken
             )
         }
@@ -444,7 +421,6 @@ internal fun AccountTokensScreen(
             SettingsRow(
                 title = "Token público de envio",
                 subtitle = if (sendToken.isBlank()) "Aguardando token..." else "Token protegido",
-                leading = Icons.Filled.Lock,
                 onClick = onCopySendToken
             )
         }
@@ -453,7 +429,6 @@ internal fun AccountTokensScreen(
             SettingsRow(
                 title = "Chave pública do dono",
                 subtitle = signingPublicKey.ifBlank { "Aguardando chave..." },
-                leading = Icons.Filled.VpnKey,
                 onClick = onCopySigningKey
             )
         }
@@ -461,7 +436,6 @@ internal fun AccountTokensScreen(
             SettingsRow(
                 title = "Chave de recebimento",
                 subtitle = exchangePublicKey.ifBlank { "Aguardando chave..." },
-                leading = Icons.Filled.Lock,
                 onClick = onCopyExchangeKey
             )
         }
@@ -492,7 +466,6 @@ internal fun AccountActionsScreen(
             SettingsRow(
                 title = "Dados para receber",
                 subtitle = "Copia as informações que permitem enviar mensagens para você",
-                leading = Icons.Filled.ChatBubble,
                 onClick = onCopyPublicSend
             )
         }
@@ -500,7 +473,6 @@ internal fun AccountActionsScreen(
             SettingsRow(
                 title = "Caixa privada",
                 subtitle = "${privateInboxMessages.size} mensagens recebidas fora da lista principal",
-                leading = Icons.Filled.ChatBubble,
                 onClick = onOpenInbox
             )
         }
@@ -509,7 +481,6 @@ internal fun AccountActionsScreen(
             SettingsRow(
                 title = "Backup de contatos",
                 subtitle = "Salva sua lista de contatos no Drive ou nos arquivos",
-                leading = Icons.Filled.Contacts,
                 onClick = onExportContactsBackup
             )
         }
@@ -517,7 +488,6 @@ internal fun AccountActionsScreen(
             SettingsRow(
                 title = "Backup da rota",
                 subtitle = "Guarda sua rota atual para recuperar depois",
-                leading = Icons.Filled.Refresh,
                 onClick = onExportOnionBackup
             )
         }
@@ -526,7 +496,6 @@ internal fun AccountActionsScreen(
             SettingsRow(
                 title = "Restaurar backup da rota",
                 subtitle = "Recupera uma rota salva anteriormente",
-                leading = Icons.Filled.VpnKey,
                 onClick = onImportOnionBackup
             )
         }
@@ -534,7 +503,6 @@ internal fun AccountActionsScreen(
             SettingsRow(
                 title = "Restaurar acesso privado",
                 subtitle = "Use suas 12 palavras e a senha local para recuperar o acesso",
-                leading = Icons.Filled.VpnKey,
                 onClick = onRestoreAccess
             )
         }
@@ -543,52 +511,8 @@ internal fun AccountActionsScreen(
             SettingsRow(
                 title = "Trocar token público",
                 subtitle = "Cancela o token antigo e cria um novo para receber mensagens",
-                leading = Icons.Filled.Refresh,
                 onClick = onRotateToken
             )
-        }
-    }
-}
-
-@Composable
-internal fun BlockedContactsScreen(
-    blockedContacts: List<ChatViewModel.ContactPreview>,
-    onBack: () -> Unit,
-    onLockApp: () -> Unit,
-    onUnblockContact: (String) -> Unit
-) {
-    SettingsWindowScaffold(
-        title = "Bloqueados",
-        subtitle = "A lista e as ações de bloqueio",
-        onBack = onBack,
-        onLockApp = onLockApp
-    ) {
-        item { SectionTitle("Contatos bloqueados") }
-        if (blockedContacts.isEmpty()) {
-            item {
-                SettingsRow(
-                    title = "Nenhum contato bloqueado",
-                    subtitle = "Quando você bloquear alguém, ele vai aparecer aqui",
-                    leading = Icons.Filled.Lock,
-                    onClick = { }
-                )
-            }
-        } else {
-            itemsIndexed(blockedContacts, key = { _, item -> item.username }) { _, item ->
-                SettingsRow(
-                    title = item.displayName,
-                    subtitle = maskedRouteLabel(item.username),
-                    leading = Icons.Filled.Lock,
-                    onClick = { },
-                    trailing = {
-                        HomeActionButton(
-                            label = "Desbloquear",
-                            icon = Icons.Filled.Lock,
-                            onClick = { onUnblockContact(item.username) }
-                        )
-                    }
-                )
-            }
         }
     }
 }
@@ -620,7 +544,7 @@ internal fun SettingsWindowScaffold(
             ) {
                 Column(modifier = Modifier.fillMaxSize()) {
                     Surface(
-                        shape = AppTitleBarShape,
+                        shape = RoundedCornerShape(0.dp),
                         color = TitleBarColor,
                         tonalElevation = 0.dp,
                         shadowElevation = 0.dp
@@ -677,20 +601,6 @@ internal fun SettingsWindowScaffold(
         }
     }
 }
-
-data class ThemeOption(
-    val mode: ThemeMode,
-    val title: String,
-    val subtitle: String,
-    val icon: ImageVector
-)
-
-data class BackgroundModeOption(
-    val mode: BackgroundConnectionMode,
-    val title: String,
-    val subtitle: String,
-    val icon: ImageVector
-)
 
 @Composable
 internal fun PrivateInboxScreen(
@@ -857,17 +767,62 @@ internal fun publicSendEndpoint(route: String): String {
 }
 
 @Composable
+internal fun BlockedContactsScreen(
+    blockedContacts: List<ChatViewModel.ContactPreview>,
+    onBack: () -> Unit,
+    onLockApp: () -> Unit,
+    onUnblockContact: (String) -> Unit
+) {
+    SettingsWindowScaffold(
+        title = "Bloqueados",
+        subtitle = "A lista e as ações de bloqueio",
+        onBack = onBack,
+        onLockApp = onLockApp
+    ) {
+        item { SectionTitle("Contatos bloqueados") }
+        if (blockedContacts.isEmpty()) {
+            item {
+                SettingsRow(
+                    title = "Nenhum contato bloqueado",
+                    subtitle = "Quando você bloquear alguém, ele vai aparecer aqui",
+                    onClick = { }
+                )
+            }
+        } else {
+            itemsIndexed(blockedContacts, key = { _, item -> item.username }) { _, item ->
+                SettingsRow(
+                    title = item.displayName,
+                    subtitle = maskedRouteLabel(item.username),
+                    onClick = { },
+                    trailing = {
+                        TextButton(onClick = { onUnblockContact(item.username) }) {
+                            Text("Desbloquear")
+                        }
+                    }
+                )
+            }
+        }
+    }
+}
+
+data class ThemeOption(
+    val mode: ThemeMode,
+    val title: String,
+    val subtitle: String
+)
+
+@Composable
 internal fun ThemeModeOptions(
     currentMode: ThemeMode,
     onModeSelected: (ThemeMode) -> Unit
 ) {
     val options = remember {
         listOf(
-            ThemeOption(ThemeMode.BLUE, "Azul", "Elegante, limpo e principal", Icons.Filled.Lock),
-            ThemeOption(ThemeMode.LIGHT, "Claro", "Leve, limpo e sempre legível", Icons.Filled.WbSunny),
-            ThemeOption(ThemeMode.DARK, "Escuro", "Contraste suave para uso noturno", Icons.Filled.DarkMode),
-            ThemeOption(ThemeMode.PINK, "Rosa", "Blush elegante com toque sofisticado", Icons.Filled.Favorite),
-            ThemeOption(ThemeMode.SYSTEM, "Sistema", "Segue a configuração do aparelho", Icons.Filled.Devices)
+            ThemeOption(ThemeMode.BLUE, "Azul", "Elegante, limpo e principal"),
+            ThemeOption(ThemeMode.LIGHT, "Claro", "Leve, limpo e sempre legível"),
+            ThemeOption(ThemeMode.DARK, "Escuro", "Contraste suave para uso noturno"),
+            ThemeOption(ThemeMode.PINK, "Rosa", "Blush elegante com toque sofisticado"),
+            ThemeOption(ThemeMode.SYSTEM, "Sistema", "Segue a configuração do aparelho")
         )
     }
 
@@ -893,20 +848,6 @@ internal fun ThemeModeOptions(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    Surface(
-                        shape = RoundedCornerShape(14.dp),
-                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
-                        tonalElevation = 0.dp,
-                        modifier = Modifier.size(44.dp)
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Icon(
-                                imageVector = selectedOption.icon,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary
-                            )
-                        }
-                    }
                     Column(modifier = Modifier.widthIn(max = 240.dp)) {
                         Text(
                             text = selectedOption.title,
@@ -919,13 +860,8 @@ internal fun ThemeModeOptions(
                             maxLines = 2
                         )
                     }
-                    Icon(
-                        imageVector = Icons.Filled.KeyboardArrowDown,
-                        contentDescription = "Escolher tema",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
                 }
-                ListSeparator(modifier = Modifier.padding(start = 70.dp))
+                ListSeparator()
             }
         }
 
@@ -946,228 +882,12 @@ internal fun ThemeModeOptions(
                             )
                         }
                     },
-                    leadingIcon = {
-                        Icon(
-                            imageVector = option.icon,
-                            contentDescription = null,
-                            tint = if (option.mode == currentMode) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    },
-                    trailingIcon = if (option.mode == currentMode) {
-                        {
-                            Icon(
-                                imageVector = Icons.Filled.Done,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary
-                            )
-                        }
-                    } else null,
                     onClick = {
                         expanded = false
                         onModeSelected(option.mode)
                     }
                 )
             }
-        }
-    }
-}
-
-@Composable
-internal fun BackgroundModeOptions(
-    currentMode: BackgroundConnectionMode,
-    onModeSelected: (BackgroundConnectionMode) -> Unit
-) {
-    val options = remember {
-        listOf(
-            BackgroundModeOption(
-                mode = BackgroundConnectionMode.PERIODIC_SYNC,
-                title = BackgroundConnectionMode.PERIODIC_SYNC.label,
-                subtitle = "Verifica novidades de tempos em tempos. Gasta menos bateria e menos internet.",
-                icon = Icons.Filled.Refresh
-            ),
-            BackgroundModeOption(
-                mode = BackgroundConnectionMode.REAL_TIME,
-                title = BackgroundConnectionMode.REAL_TIME.label,
-                subtitle = "Tenta receber novidades na hora. Gasta mais bateria e mais internet.",
-                icon = Icons.Filled.VpnKey
-            )
-        )
-    }
-    var expanded by rememberSaveable { mutableStateOf(false) }
-    val selectedOption = remember(currentMode, options) {
-        options.firstOrNull { it.mode == currentMode } ?: options.first()
-    }
-
-    Box(modifier = Modifier.fillMaxWidth()) {
-        Surface(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable { expanded = true },
-            shape = RoundedCornerShape(18.dp),
-            color = Color.Transparent,
-            tonalElevation = 0.dp
-        ) {
-            Column(modifier = Modifier.fillMaxWidth()) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 14.dp, vertical = 14.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    Surface(
-                        shape = RoundedCornerShape(14.dp),
-                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
-                        tonalElevation = 0.dp,
-                        modifier = Modifier.size(44.dp)
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Icon(
-                                imageVector = selectedOption.icon,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary
-                            )
-                        }
-                    }
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Segundo Plano",
-                            fontWeight = FontWeight.SemiBold
-                        )
-                        Text(
-                            text = "${selectedOption.title}: ${selectedOption.subtitle}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 3,
-                            softWrap = true,
-                            overflow = TextOverflow.Clip
-                        )
-                    }
-                    Icon(
-                        imageVector = Icons.Filled.KeyboardArrowDown,
-                        contentDescription = "Escolher modo de segundo plano",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                ListSeparator(modifier = Modifier.padding(start = 70.dp))
-            }
-        }
-
-        DropdownMenu(
-            expanded = expanded,
-            onDismissRequest = { expanded = false },
-            modifier = Modifier.fillMaxWidth(0.98f)
-        ) {
-            options.forEach { option ->
-                DropdownMenuItem(
-                    text = {
-                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                            Text(option.title, fontWeight = FontWeight.SemiBold)
-                            Text(
-                                text = option.subtitle,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    },
-                    leadingIcon = {
-                        Icon(
-                            imageVector = option.icon,
-                            contentDescription = null,
-                            tint = if (option.mode == currentMode) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    },
-                    trailingIcon = if (option.mode == currentMode) {
-                        {
-                            Icon(
-                                imageVector = Icons.Filled.Done,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary
-                            )
-                        }
-                    } else null,
-                    onClick = {
-                        expanded = false
-                        onModeSelected(option.mode)
-                    }
-                )
-            }
-        }
-    }
-}
-
-@Composable
-internal fun FastRelaySettingsCard(
-    enabled: Boolean,
-    discoveredUrl: String,
-    onEnabledChange: (Boolean) -> Unit,
-) {
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
-        color = Color.Transparent,
-        tonalElevation = 0.dp
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 14.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Surface(
-                    shape = RoundedCornerShape(14.dp),
-                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
-                    tonalElevation = 0.dp,
-                    modifier = Modifier.size(44.dp)
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            imageVector = Icons.Filled.ChatBubble,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary
-                        )
-                    }
-                }
-                Column(modifier = Modifier.weight(1f)) {
-                    Text("Rota Tor autenticada", fontWeight = FontWeight.SemiBold)
-                    Text(
-                        text = if (enabled) {
-                            "O app procura uma rota Tor e usa sua identidade NullChat para autenticar automaticamente."
-                        } else {
-                            "Desligado. O app usa a conexão padrão."
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                Switch(
-                    checked = enabled,
-                    onCheckedChange = onEnabledChange
-                )
-            }
-            Text(
-                text = "Quando uma rota Tor estiver disponível, o app descobre, autentica e guarda sozinho.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            val status = when {
-                !enabled -> "Rota Tor desligada"
-                FastRelayTransport.isTorRelayUrl(discoveredUrl) -> "Rota Tor em uso: $discoveredUrl"
-                discoveredUrl.isNotBlank() -> "Rota inválida para Tor"
-                else -> "Procurando rota Tor..."
-            }
-            Text(
-                text = status,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.primary,
-                fontWeight = FontWeight.SemiBold
-            )
-            ListSeparator()
         }
     }
 }
@@ -1176,17 +896,10 @@ internal fun FastRelaySettingsCard(
 internal fun SettingsRow(
     title: String,
     subtitle: String,
-    leading: ImageVector,
-    leadingEmoji: String? = null,
     important: Boolean = false,
     onClick: () -> Unit,
     trailing: (@Composable () -> Unit)? = null
 ) {
-    val iconColor = if (important) {
-        MaterialTheme.colorScheme.primary
-    } else {
-        MaterialTheme.colorScheme.primary
-    }
     Surface(
         modifier = Modifier
             .fillMaxWidth()
@@ -1203,17 +916,6 @@ internal fun SettingsRow(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (leadingEmoji.isNullOrBlank()) {
-                        Icon(
-                            imageVector = leading,
-                            contentDescription = null,
-                            tint = iconColor,
-                            modifier = Modifier.size(24.dp)
-                        )
-                    } else {
-                        InitialAvatar(text = title, emoji = leadingEmoji)
-                    }
-                    Spacer(Modifier.width(12.dp))
                     Column(modifier = Modifier.widthIn(max = 220.dp)) {
                         Text(
                             text = title,
@@ -1236,7 +938,7 @@ internal fun SettingsRow(
                     }
                 }
             }
-            ListSeparator(modifier = Modifier.padding(start = 50.dp))
+            ListSeparator()
         }
     }
 }
@@ -1396,6 +1098,25 @@ internal fun openBatteryOptimizationSettings(context: Context) {
         appContext.startActivity(targetIntent)
     }.onFailure {
         Toast.makeText(appContext, "Abra Bateria nas configuracoes do Android", Toast.LENGTH_SHORT).show()
+    }
+}
+
+internal fun openNotificationSettings(context: Context) {
+    val appContext = context.applicationContext
+    val directIntent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+        putExtra(Settings.EXTRA_APP_PACKAGE, appContext.packageName)
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+    val fallbackIntent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+        data = Uri.parse("package:${appContext.packageName}")
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+    val targetIntent = directIntent.takeIf { it.resolveActivity(appContext.packageManager) != null }
+        ?: fallbackIntent
+    runCatching {
+        appContext.startActivity(targetIntent)
+    }.onFailure {
+        Toast.makeText(appContext, "Abra as notificacoes do app nas configuracoes", Toast.LENGTH_SHORT).show()
     }
 }
 

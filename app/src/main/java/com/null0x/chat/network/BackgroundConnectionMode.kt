@@ -14,7 +14,7 @@ enum class BackgroundConnectionMode(
     val description: String
 ) {
     PERIODIC_SYNC(
-        label = "Automático",
+        label = "De tempos em tempos",
         description = "Mantém o app leve e sincroniza em segundo plano quando necessário."
     ),
     REAL_TIME(
@@ -27,34 +27,34 @@ object BackgroundConnectionModePreference {
     private const val PREFS_NAME = "background_connection_mode"
     private const val MODE_KEY = "mode"
 
-    private val _mode = MutableStateFlow(BackgroundConnectionMode.PERIODIC_SYNC)
+    private val _mode = MutableStateFlow(BackgroundConnectionMode.REAL_TIME)
     val mode: StateFlow<BackgroundConnectionMode> = _mode.asStateFlow()
 
     fun initialize(context: Context) {
         val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        _mode.value = prefs.getString(MODE_KEY, BackgroundConnectionMode.PERIODIC_SYNC.name)
-            ?.let { raw -> runCatching { BackgroundConnectionMode.valueOf(raw) }.getOrNull() }
-            ?: BackgroundConnectionMode.PERIODIC_SYNC
-        BackgroundRelaunchPreference.setEnabled(context.applicationContext, _mode.value == BackgroundConnectionMode.REAL_TIME)
+        prefs.edit().putString(MODE_KEY, BackgroundConnectionMode.REAL_TIME.name).apply()
+        _mode.value = BackgroundConnectionMode.REAL_TIME
+        BackgroundRelaunchPreference.setEnabled(context.applicationContext, true)
     }
 
     fun setMode(context: Context, mode: BackgroundConnectionMode) {
         val appContext = context.applicationContext
         appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
-            .putString(MODE_KEY, mode.name)
+            .putString(MODE_KEY, BackgroundConnectionMode.REAL_TIME.name)
             .apply()
-        _mode.value = mode
-        BackgroundRelaunchPreference.setEnabled(appContext, mode == BackgroundConnectionMode.REAL_TIME)
+        _mode.value = BackgroundConnectionMode.REAL_TIME
+        BackgroundRelaunchPreference.setEnabled(appContext, true)
         BackgroundConnectionModeController.apply(appContext, AppVisibility.isVisible)
     }
 
     fun currentMode(context: Context): BackgroundConnectionMode {
-        return context.applicationContext
+        context.applicationContext
             .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .getString(MODE_KEY, BackgroundConnectionMode.PERIODIC_SYNC.name)
-            ?.let { raw -> runCatching { BackgroundConnectionMode.valueOf(raw) }.getOrNull() }
-            ?: BackgroundConnectionMode.PERIODIC_SYNC
+            .edit()
+            .putString(MODE_KEY, BackgroundConnectionMode.REAL_TIME.name)
+            .apply()
+        return BackgroundConnectionMode.REAL_TIME
     }
 }
 
@@ -84,35 +84,14 @@ object BackgroundConnectionModeController {
     }
 
     fun isRealTimeMode(context: Context): Boolean {
-        return BackgroundConnectionModePreference.currentMode(context) == BackgroundConnectionMode.REAL_TIME
+        return true
     }
 
     internal fun apply(context: Context, visible: Boolean) {
         val appContext = context.applicationContext
-        val mode = BackgroundConnectionModePreference.currentMode(appContext)
-        if (visible) {
-            cancelPeriodicSync(appContext)
-            if (mode == BackgroundConnectionMode.REAL_TIME) {
-                AppNetworkService.start(appContext)
-            } else {
-                AppNetworkService.stop(appContext)
-            }
-            ChatNodeManager.ensureBackgroundNetwork(appContext)
-            return
-        }
-
-        when (mode) {
-            BackgroundConnectionMode.PERIODIC_SYNC -> {
-                AppNetworkService.stop(appContext)
-                ChatNodeManager.stop(appContext)
-                schedulePeriodicSync(appContext)
-            }
-            BackgroundConnectionMode.REAL_TIME -> {
-                cancelPeriodicSync(appContext)
-                AppNetworkService.start(appContext)
-                ChatNodeManager.ensureBackgroundNetwork(appContext)
-            }
-        }
+        cancelPeriodicSync(appContext)
+        AppNetworkService.start(appContext)
+        ChatNodeManager.ensureBackgroundNetwork(appContext)
     }
 }
 

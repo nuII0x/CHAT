@@ -28,7 +28,6 @@ import com.google.zxing.qrcode.QRCodeWriter
 import android.widget.Toast
 import com.null0x.chat.security.SensitiveClipboard
 import com.null0x.chat.ui.common.SwipeToCloseContainer
-import com.null0x.chat.ui.AppTitleBarShape
 
 @Composable
 internal fun RouteShareScreen(
@@ -49,7 +48,7 @@ internal fun RouteShareScreen(
         ) {
             Column(modifier = Modifier.fillMaxSize()) {
                 Surface(
-                    shape = AppTitleBarShape,
+                    shape = RoundedCornerShape(0.dp),
                     color = TitleBarColor,
                     tonalElevation = 0.dp,
                     shadowElevation = 0.dp
@@ -125,13 +124,13 @@ internal fun RouteShareScreen(
                                     text = "Compartilhar",
                                     style = MaterialTheme.typography.titleMedium,
                                     fontWeight = FontWeight.Bold,
-                                    color = Color.Black,
+                                    color = MaterialTheme.colorScheme.onSurface,
                                     textAlign = TextAlign.Center
                                 )
                                 Text(
                                     text = "Acesso rapido via QR",
                                     style = MaterialTheme.typography.bodySmall,
-                                    color = Color.Black.copy(alpha = 0.72f),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     textAlign = TextAlign.Center
                                 )
                             }
@@ -151,7 +150,7 @@ internal fun RouteShareScreen(
                                 Text(
                                     text = tokenLabel,
                                     style = MaterialTheme.typography.bodyMedium,
-                                    color = Color.Black,
+                                    color = MaterialTheme.colorScheme.onSurface,
                                     fontWeight = FontWeight.SemiBold,
                                     textAlign = TextAlign.Center,
                                     maxLines = 2,
@@ -160,7 +159,7 @@ internal fun RouteShareScreen(
                                 Text(
                                     text = "Token",
                                     style = MaterialTheme.typography.bodySmall,
-                                    color = Color.Black.copy(alpha = 0.72f),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     textAlign = TextAlign.Center
                                 )
                                 Button(

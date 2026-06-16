@@ -1,29 +1,20 @@
 package com.null0x.chat.ui.home
 
 import android.Manifest
-import android.content.Context
-import android.content.Intent
 import android.content.pm.PackageManager
-import android.net.Uri
-import android.os.Build
-import android.os.PowerManager
 import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.background
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -41,45 +32,27 @@ import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.ChatBubble
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ChatBubble
 import androidx.compose.material.icons.filled.Contacts
-import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Done
-import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.DarkMode
-import androidx.compose.material.icons.filled.Devices
 import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.Favorite
-import androidx.compose.material.icons.filled.WbSunny
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.QrCodeScanner
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.VpnKey
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.outlined.ChatBubble
-import androidx.compose.material.icons.outlined.ChatBubbleOutline
-import androidx.compose.material.icons.outlined.Contacts
-import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.Settings
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -100,22 +73,13 @@ import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.graphics.luminance
-import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.input.KeyboardCapitalization
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
@@ -123,29 +87,14 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.null0x.chat.network.ChatNodeManager
 import com.null0x.chat.network.TorManager
-import com.null0x.chat.network.BackgroundConnectionMode
-import com.null0x.chat.security.identity.MnemonicLanguage
-import com.null0x.chat.security.identity.MessageCrypto
-import com.null0x.chat.security.identity.OnionInboxMessage
-import com.null0x.chat.security.identity.OnionInboxStore
-import com.null0x.chat.security.identity.RouteIdentityRegistry
 import com.null0x.chat.ui.common.CursorAwareOutlinedTextField
-import com.null0x.chat.ui.common.SwipeToCloseContainer
-import com.null0x.chat.ui.common.MnemonicLanguagePicker
 import com.null0x.chat.ui.maskedRouteLabel
 import com.null0x.chat.ui.profile.RouteProfileScreen
 import com.null0x.chat.security.AppSecurityManager
-import com.null0x.chat.ui.theme.ThemeMode
+import com.null0x.chat.ui.theme.ThemePreference
 import com.null0x.chat.viewmodel.ChatViewModel
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
-import android.graphics.Bitmap
-import com.google.zxing.BarcodeFormat
-import com.google.zxing.qrcode.QRCodeWriter
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import org.json.JSONObject
 
 private sealed interface PendingProfileChange {
     data class Identity(val name: String, val emoji: String) : PendingProfileChange
@@ -155,10 +104,6 @@ private sealed interface PendingProfileChange {
 @Composable
 fun HomeScreen(
     vm: ChatViewModel,
-    themeMode: ThemeMode,
-    onThemeModeChange: (ThemeMode) -> Unit,
-    backgroundConnectionMode: BackgroundConnectionMode,
-    onBackgroundConnectionModeChange: (BackgroundConnectionMode) -> Unit,
     onLockApp: () -> Unit,
     onOpenChat: (String) -> Unit
 ) {
@@ -166,8 +111,10 @@ fun HomeScreen(
     val serviceStatus by TorManager.status.collectAsState()
     val networkAvailable by TorManager.networkAvailableState.collectAsState()
     val knownRoutesRefreshing by ChatNodeManager.knownRoutesRefreshing.collectAsState()
+    val themeMode by ThemePreference.themeMode.collectAsState()
     val publicRoute = vm.currentPublicRoute()
     val serviceReady = serviceStatus is TorManager.Status.Ready
+    val serviceStarting = serviceStatus is TorManager.Status.Starting
     val pagerState = rememberPagerState(initialPage = HomeTab.Chats.ordinal) { HomeTab.entries.size }
     val scope = rememberCoroutineScope()
     val tabIndex by remember {
@@ -191,25 +138,31 @@ fun HomeScreen(
     var selectedChatUsernames by remember { mutableStateOf(setOf<String>()) }
     var pendingProfileChange by remember { mutableStateOf<PendingProfileChange?>(null) }
     var profileAuthError by rememberSaveable { mutableStateOf("") }
+    var headerSearchActive by rememberSaveable { mutableStateOf(false) }
+    var showRouteQrScanner by rememberSaveable { mutableStateOf(false) }
+    val routeCameraPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            showRouteQrScanner = true
+        } else {
+            Toast.makeText(context, "Permita a câmera para ler QR", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    fun openRouteQrScanner() {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+            showRouteQrScanner = true
+        } else {
+            routeCameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+        }
+    }
     val publicRouteToken = remember(publicRoute) { vm.routeTokenFor(publicRoute) }
     val routeLabel = publicRouteToken.ifBlank { publicRoute.trim() }
     val conversations = vm.conversationPreviews()
     val contacts = vm.contactPreviews()
     val pendingContactRequests = vm.pendingContactRequests()
     val blockedContacts = vm.blockedContactPreviews()
-    var batteryOptimizationIgnored by remember { mutableStateOf(isBatteryOptimizationIgnored(context)) }
-    val lifecycleOwner = LocalLifecycleOwner.current
-    DisposableEffect(lifecycleOwner, context) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                batteryOptimizationIgnored = isBatteryOptimizationIgnored(context)
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose {
-            lifecycleOwner.lifecycle.removeObserver(observer)
-        }
-    }
     BackHandler(enabled = showShareRoute) {
         showShareRoute = false
     }
@@ -226,18 +179,17 @@ fun HomeScreen(
         vm.profileName,
         vm.profileEmojiSymbol,
         vm.profileBioText,
-        batteryOptimizationIgnored
     ) {
         mapOf(
             HomeTab.Chats to conversations.sumOf { it.unreadCount },
             HomeTab.Contacts to pendingContactRequests.size + if (vm.routeLookup?.isLocalOwner == false) 1 else 0,
             HomeTab.Profile to profileAttentionCount(vm.profileName, vm.profileEmojiSymbol, vm.profileBioText),
-            HomeTab.Settings to if (batteryOptimizationIgnored) 0 else 1
+            HomeTab.Settings to 0
         )
     }
-    val cleanQuery = query.trim()
     val visibleConversations = searchSummary?.conversations ?: conversations
     var showRefreshingTitle by remember { mutableStateOf(false) }
+    var showStartingTitle by remember { mutableStateOf(false) }
 
     LaunchedEffect(networkAvailable, serviceReady, knownRoutesRefreshing) {
         showRefreshingTitle = false
@@ -246,11 +198,21 @@ fun HomeScreen(
         showRefreshingTitle = networkAvailable && serviceReady && knownRoutesRefreshing
     }
 
+    LaunchedEffect(serviceStarting, networkAvailable) {
+        showStartingTitle = networkAvailable && serviceStarting
+        if (!showStartingTitle) return@LaunchedEffect
+        delay(10_000)
+        showStartingTitle = networkAvailable && serviceStarting
+    }
+
     LaunchedEffect(context) {
         TorManager.ensureNetworkMonitoring(context)
     }
 
     LaunchedEffect(tab) {
+        if (tab != HomeTab.Chats && tab != HomeTab.Contacts) {
+            headerSearchActive = false
+        }
         if (tab != HomeTab.Contacts) {
             selectedContactUsername = null
         }
@@ -259,15 +221,50 @@ fun HomeScreen(
         }
     }
 
+    LaunchedEffect(selectedContactUsername, selectedChatUsernames) {
+        if (selectedContactUsername != null || selectedChatUsernames.isNotEmpty()) {
+            headerSearchActive = false
+        }
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
         Scaffold(
             modifier = Modifier.fillMaxSize(),
             topBar = {
-                val headerTitle = when {
-                    !networkAvailable -> "Sem conexão"
-                    !serviceReady -> "Iniciando..."
-                    showRefreshingTitle -> "Atualizando..."
+                val headerTitle = when (tab) {
+                    HomeTab.Chats, HomeTab.Contacts -> when {
+                        !networkAvailable -> "Aguardando rede..."
+                        showStartingTitle -> "Iniciando..."
+                        showRefreshingTitle -> "Atualizando..."
+                        else -> tab.title
+                    }
                     else -> tab.title
+                }
+                val searchEnabled = tab == HomeTab.Chats || tab == HomeTab.Contacts
+                val headerSearchValue = when (tab) {
+                    HomeTab.Chats -> query
+                    HomeTab.Contacts -> vm.contactRouteInput
+                    else -> ""
+                }
+                val headerSearchPlaceholder = when (tab) {
+                    HomeTab.Chats -> "Buscar mensagens"
+                    HomeTab.Contacts -> "Rota ou token"
+                    else -> "Pesquisar"
+                }
+                fun submitHeaderSearch() {
+                    when (tab) {
+                        HomeTab.Chats -> {
+                            scope.launch {
+                                searchSummary = if (query.trim().isBlank()) {
+                                    null
+                                } else {
+                                    vm.searchExactMessages(query.trim())
+                                }
+                            }
+                        }
+                        HomeTab.Contacts -> vm.addContactRouteFromInput()
+                        else -> Unit
+                    }
                 }
                 AppHeader(
                     title = if (tab == HomeTab.Chats && selectedChatUsernames.isNotEmpty()) {
@@ -277,6 +274,28 @@ fun HomeScreen(
                     },
                     selectedContactUsername = selectedContactUsername.takeIf { tab == HomeTab.Contacts },
                     selectedChatsCount = selectedChatUsernames.takeIf { tab == HomeTab.Chats }?.size ?: 0,
+                    searchEnabled = searchEnabled,
+                    searchActive = headerSearchActive && searchEnabled,
+                    searchValue = headerSearchValue,
+                    searchPlaceholder = headerSearchPlaceholder,
+                    onSearchActiveChange = { active ->
+                        headerSearchActive = active
+                        if (!active && tab == HomeTab.Chats) {
+                            searchSummary = null
+                        }
+                    },
+                    onSearchValueChange = { value ->
+                        when (tab) {
+                            HomeTab.Chats -> {
+                                query = value
+                                searchSummary = null
+                            }
+                            HomeTab.Contacts -> vm.updateContactRouteInput(value)
+                            else -> Unit
+                        }
+                    },
+                    onSearchSubmit = { submitHeaderSearch() },
+                    onSearchQrClick = { openRouteQrScanner() },
                     onDeleteSelectedChats = {
                         selectedChatUsernames.forEach(vm::removeConversation)
                         selectedChatUsernames = emptySet()
@@ -294,22 +313,33 @@ fun HomeScreen(
                     },
                     onLockApp = onLockApp
                 )
+            },
+            bottomBar = {
+                Box(modifier = Modifier.navigationBarsPadding()) {
+                    BottomDock(
+                        selected = tab,
+                        badges = dockBadges,
+                        onSelect = { targetTab ->
+                            scope.launch {
+                                val currentPage = pagerState.currentPage
+                                val targetPage = targetTab.ordinal
+                                if (targetPage == currentPage) return@launch
+                                pagerState.animateScrollToPage(targetPage)
+                            }
+                        }
+                    )
+                }
             }
-        ) {
+        ) { innerPadding ->
             HorizontalPager(
                 state = pagerState,
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(top = HomeHeaderHeight),
+                    .padding(innerPadding),
                 beyondViewportPageCount = 1
             ) {
                 when (HomeTab.entries[it]) {
                     HomeTab.Chats -> ChatsTabSelectionAware(
-                        query = query,
-                        onQueryChange = {
-                            query = it
-                            searchSummary = null
-                        },
                         conversations = visibleConversations,
                         searchSummary = searchSummary,
                         myUsername = vm.myUsername,
@@ -317,15 +347,6 @@ fun HomeScreen(
                         hasSearch = searchSummary != null,
                         selectedChatUsernames = selectedChatUsernames,
                         isRouteActive = vm::isPartnerOnline,
-                        onSearch = {
-                            scope.launch {
-                                searchSummary = if (cleanQuery.isBlank()) {
-                                    null
-                                } else {
-                                    vm.searchExactMessages(cleanQuery)
-                                }
-                            }
-                        },
                         onSelect = {
                             vm.selectTarget(it)
                             onOpenChat(it)
@@ -344,8 +365,12 @@ fun HomeScreen(
                         routeLookup = vm.routeLookup,
                         routeStatus = vm.routeStatus,
                         onSearchRouteName = vm::addContactRouteFromInput,
+                        routeSearchInHeader = headerSearchActive && tab == HomeTab.Contacts,
+                        showQrScanner = showRouteQrScanner,
+                        onShowQrScannerChange = { showRouteQrScanner = it },
                         contacts = contacts,
                         pendingRequests = pendingContactRequests,
+                        isValidQrCode = vm::isValidNullChatQrToken,
                         isContactRequested = vm::isContactRequested,
                         isContactAccepted = vm::isContactAccepted,
                         isContactActive = vm::isContactActive,
@@ -396,12 +421,9 @@ fun HomeScreen(
                 HomeTab.Settings -> SettingsTab(
                     publicRoute = publicRoute,
                     publicRouteToken = publicRouteToken,
-                    batteryOptimizationIgnored = batteryOptimizationIgnored,
                     bottomPadding = 176.dp,
                     themeMode = themeMode,
-                    onThemeModeChange = onThemeModeChange,
-                    backgroundConnectionMode = backgroundConnectionMode,
-                    onBackgroundConnectionModeChange = onBackgroundConnectionModeChange,
+                    onThemeModeChange = { ThemePreference.setThemeMode(context, it) },
                     keepViewedMessages = vm.isKeepViewedMessagesEnabled(),
                     onKeepViewedMessagesChange = vm::updateKeepViewedMessagesPreference,
                     screenshotsEnabled = vm.isScreenshotsEnabled(),
@@ -515,101 +537,7 @@ fun HomeScreen(
 }
 
 @Composable
-private fun ChatsTab(
-    query: String,
-    onQueryChange: (String) -> Unit,
-    conversations: List<ChatViewModel.ConversationPreview>,
-    searchSummary: ChatViewModel.SearchSummary?,
-    myUsername: String,
-    profileEmoji: String,
-    hasSearch: Boolean,
-    isRouteActive: (String) -> Boolean = { false },
-    onSearch: () -> Unit,
-    onSelect: (String) -> Unit,
-    onClear: (String) -> Unit,
-    onRemove: (String) -> Unit
-) {
-    var pendingRemovalUsername by remember { mutableStateOf<String?>(null) }
-
-    LaunchedEffect(pendingRemovalUsername) {
-        val username = pendingRemovalUsername ?: return@LaunchedEffect
-        delay(5_000)
-        onRemove(username)
-        pendingRemovalUsername = null
-    }
-
-    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-        val listHeight = (maxHeight - 150.dp).coerceAtLeast(260.dp)
-        Column(modifier = Modifier.fillMaxSize()) {
-            SearchBar(
-                value = query,
-                onValueChange = onQueryChange,
-                searchSummary = searchSummary,
-                onSearch = onSearch
-            )
-            ConversationsPanel(
-                modifier = Modifier
-                    .height(listHeight)
-                    .imePadding(),
-                conversations = conversations.filter { it.username != pendingRemovalUsername },
-                myUsername = myUsername,
-                profileEmoji = profileEmoji,
-                hasSearch = hasSearch,
-                isRouteActive = isRouteActive,
-                onSelect = onSelect,
-                onClear = onClear,
-                onRemove = { username ->
-                    pendingRemovalUsername?.let { previous ->
-                        if (previous != username) {
-                            onRemove(previous)
-                        }
-                    }
-                    pendingRemovalUsername = username
-                }
-            )
-            pendingRemovalUsername?.let {
-                UndoRemoveBar(
-                    onUndo = { pendingRemovalUsername = null }
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun UndoRemoveBar(onUndo: () -> Unit) {
-    Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 10.dp),
-        shape = RoundedCornerShape(14.dp),
-        color = Color.Transparent,
-        tonalElevation = 0.dp
-    ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 12.dp)
-        ) {
-            Text(
-                text = "Conversa removida da lista",
-                modifier = Modifier.align(Alignment.CenterStart),
-                style = MaterialTheme.typography.bodyMedium
-            )
-            TextButton(
-                onClick = onUndo,
-                modifier = Modifier.align(Alignment.CenterEnd)
-            ) {
-                Text("Refazer")
-            }
-        }
-    }
-}
-
-@Composable
 private fun ChatsTabSelectionAware(
-    query: String,
-    onQueryChange: (String) -> Unit,
     conversations: List<ChatViewModel.ConversationPreview>,
     searchSummary: ChatViewModel.SearchSummary?,
     myUsername: String,
@@ -617,19 +545,14 @@ private fun ChatsTabSelectionAware(
     hasSearch: Boolean,
     selectedChatUsernames: Set<String>,
     isRouteActive: (String) -> Boolean,
-    onSearch: () -> Unit,
     onSelect: (String) -> Unit,
     onToggleSelection: (String) -> Unit
 ) {
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-        val listHeight = (maxHeight - 150.dp).coerceAtLeast(260.dp)
+        val summaryHeight = if (searchSummary != null) 42.dp else 0.dp
+        val listHeight = (maxHeight - summaryHeight).coerceAtLeast(260.dp)
         Column(modifier = Modifier.fillMaxSize()) {
-            SearchBar(
-                value = query,
-                onValueChange = onQueryChange,
-                searchSummary = searchSummary,
-                onSearch = onSearch
-            )
+            SearchSummaryRow(searchSummary)
             ConversationsPanelSelection(
                 modifier = Modifier
                     .height(listHeight)
@@ -644,6 +567,18 @@ private fun ChatsTabSelectionAware(
                 onToggleSelection = onToggleSelection
             )
         }
+    }
+}
+
+@Composable
+private fun SearchSummaryRow(searchSummary: ChatViewModel.SearchSummary?) {
+    searchSummary ?: return
+    Row(
+        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        InfoPill(text = pluralize(searchSummary.conversationCount, "conversa", "conversas"))
+        InfoPill(text = pluralize(searchSummary.resultCount, "resultado", "resultados"))
     }
 }
 
@@ -757,8 +692,12 @@ private fun ContactsTab(
     routeLookup: ChatViewModel.RouteLookup?,
     routeStatus: String,
     onSearchRouteName: () -> Unit,
+    routeSearchInHeader: Boolean,
+    showQrScanner: Boolean,
+    onShowQrScannerChange: (Boolean) -> Unit,
     contacts: List<ChatViewModel.ContactPreview>,
     pendingRequests: List<ChatViewModel.ConversationPreview>,
+    isValidQrCode: (String) -> Boolean,
     isContactRequested: (String) -> Boolean,
     isContactAccepted: (String) -> Boolean,
     isContactActive: (String) -> Boolean,
@@ -788,6 +727,10 @@ private fun ContactsTab(
                 routeLookup = routeLookup,
                 routeStatus = routeStatus,
                 onSearchRouteName = onSearchRouteName,
+                searchInHeader = routeSearchInHeader,
+                showQrScanner = showQrScanner,
+                onShowQrScannerChange = onShowQrScannerChange,
+                isValidQrCode = isValidQrCode,
                 isContactRequested = isContactRequested,
                 isContactAccepted = isContactAccepted,
                 isContactActive = isContactActive,
@@ -992,47 +935,6 @@ private fun ProfileTab(
 }
 
 @Composable
-private fun SearchBar(
-    value: String,
-    onValueChange: (String) -> Unit,
-    searchSummary: ChatViewModel.SearchSummary?,
-    onSearch: () -> Unit
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 12.dp)
-    ) {
-        CursorAwareOutlinedTextField(
-            value = value,
-            onValueChange = onValueChange,
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true,
-            shape = RoundedCornerShape(16.dp),
-            leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
-            placeholder = { Text("Buscar mensagens exatas") }
-        )
-        Row(
-            modifier = Modifier.padding(top = 8.dp),
-            horizontalArrangement = Arrangement.End
-        ) {
-            TextButton(onClick = onSearch) {
-                Text("Pesquisar")
-            }
-        }
-        searchSummary?.let { summary ->
-            Row(
-                modifier = Modifier.padding(top = 2.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                InfoPill(text = pluralize(summary.conversationCount, "conversa", "conversas"))
-                InfoPill(text = pluralize(summary.resultCount, "resultado", "resultados"))
-            }
-        }
-    }
-}
-
-@Composable
 private fun InfoPill(text: String) {
     Surface(
         shape = RoundedCornerShape(999.dp),
@@ -1044,121 +946,6 @@ private fun InfoPill(text: String) {
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.primary
         )
-    }
-}
-
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-private fun ConversationsPanel(
-    modifier: Modifier = Modifier,
-    conversations: List<ChatViewModel.ConversationPreview>,
-    myUsername: String,
-    profileEmoji: String,
-    hasSearch: Boolean,
-    isRouteActive: (String) -> Boolean = { false },
-    onSelect: (String) -> Unit,
-    onClear: (String) -> Unit,
-    onRemove: (String) -> Unit
-) {
-    var menuUsername by rememberSaveable { mutableStateOf<String?>(null) }
-
-    if (conversations.isEmpty()) {
-        Box(modifier = modifier.fillMaxWidth()) {
-            EmptyState(myUsername = myUsername, profileEmoji = profileEmoji, hasSearch = hasSearch)
-        }
-        return
-    }
-
-    LazyColumn(
-        modifier = modifier.fillMaxWidth(),
-        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-        verticalArrangement = Arrangement.spacedBy(2.dp)
-    ) {
-        itemsIndexed(conversations, key = { _, item -> item.username }) { _, item ->
-            Box(modifier = Modifier.fillMaxWidth()) {
-                ConversationRow(
-                    item = item,
-                    active = isRouteActive(item.username),
-                    onClick = { onSelect(item.username) },
-                    onLongClick = { menuUsername = item.username }
-                )
-                DropdownMenu(
-                    expanded = menuUsername == item.username,
-                    onDismissRequest = { menuUsername = null }
-                ) {
-                    DropdownMenuItem(text = { Text("Abrir conversa") }, onClick = {
-                        menuUsername = null
-                        onSelect(item.username)
-                    })
-                    DropdownMenuItem(text = { Text("Limpar conversa") }, onClick = {
-                        menuUsername = null
-                        onClear(item.username)
-                    })
-                    DropdownMenuItem(text = { Text("Remover da lista") }, onClick = {
-                        menuUsername = null
-                        onRemove(item.username)
-                    })
-                }
-            }
-        }
-    }
-}
-
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-private fun ConversationRow(
-    item: ChatViewModel.ConversationPreview,
-    active: Boolean,
-    onClick: () -> Unit,
-    onLongClick: () -> Unit
-) {
-    Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .combinedClickable(onClick = onClick, onLongClick = onLongClick),
-        color = Color.Transparent,
-        tonalElevation = 0.dp
-    ) {
-        Column(modifier = Modifier.fillMaxWidth()) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 12.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    InitialAvatar(text = item.displayName, emoji = item.emoji, active = active)
-                    Spacer(Modifier.width(11.dp))
-                    Column(modifier = Modifier.widthIn(max = 220.dp)) {
-                        Text(
-                            text = item.displayName,
-                            style = MaterialTheme.typography.bodyLarge,
-                            fontWeight = FontWeight.SemiBold,
-                            maxLines = 2,
-                            softWrap = true,
-                            overflow = TextOverflow.Clip
-                        )
-                        Text(
-                            text = snapLine(item),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                }
-                Column(horizontalAlignment = Alignment.End) {
-                    Text(
-                        text = formatTime(item.lastTimestamp),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    SnapCountBadge(unread = item.unreadCount)
-                }
-            }
-            ListSeparator(modifier = Modifier.padding(start = 64.dp))
-        }
     }
 }
 
@@ -1250,6 +1037,10 @@ private fun RouteSearchPanel(
     routeLookup: ChatViewModel.RouteLookup?,
     routeStatus: String,
     onSearchRouteName: () -> Unit,
+    searchInHeader: Boolean,
+    showQrScanner: Boolean,
+    onShowQrScannerChange: (Boolean) -> Unit,
+    isValidQrCode: (String) -> Boolean,
     isContactRequested: (String) -> Boolean,
     isContactAccepted: (String) -> Boolean,
     isContactActive: (String) -> Boolean,
@@ -1257,119 +1048,35 @@ private fun RouteSearchPanel(
     onRemoveContact: (String) -> Unit,
     onOpenProfile: (String) -> Unit
 ) {
-    val context = LocalContext.current
-    var showQrScanner by rememberSaveable { mutableStateOf(false) }
-    var routeField by remember {
-        mutableStateOf(TextFieldValue(routeName))
-    }
-    val cameraPermissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        if (granted) {
-            showQrScanner = true
-        } else {
-            Toast.makeText(context, "Permita a câmera para ler QR", Toast.LENGTH_SHORT).show()
-        }
-    }
-
-    fun openQrScanner() {
-        if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
-            showQrScanner = true
-        } else {
-            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
-        }
-    }
-
-    LaunchedEffect(routeName) {
-        if (routeName != routeField.text) {
-            routeField = TextFieldValue(routeName)
-        }
-    }
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        color = Color.Transparent,
-        tonalElevation = 0.dp
-    ) {
-        Column(modifier = Modifier.padding(14.dp)) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        if (routeStatus.isNotBlank()) {
             Text(
-                text = "Pesquise pela rota ou pelo token nome:porta.",
-                style = MaterialTheme.typography.bodySmall,
+                text = routeStatus,
+                modifier = Modifier.padding(top = 6.dp),
+                style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp),
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            Spacer(Modifier.height(10.dp))
-            CursorAwareOutlinedTextField(
-                value = routeField,
-                onValueChange = {
-                    routeField = it
-                    onRouteNameChange(it.text)
-                },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .onFocusChanged {
-                        if (it.isFocused && routeField.text.isNotBlank()) {
-                            routeField = routeField.copy(selection = TextRange(0, routeField.text.length))
-                        }
-                    },
-                singleLine = true,
-                shape = RoundedCornerShape(14.dp),
-                leadingIcon = {
-                    IconButton(onClick = ::openQrScanner) {
-                        Icon(
-                            imageVector = Icons.Filled.QrCodeScanner,
-                            contentDescription = "Ler QR da rota"
-                        )
-                    }
-                },
-                trailingIcon = {
-                    if (routeField.text.isNotBlank()) {
-                        IconButton(
-                            onClick = {
-                                routeField = TextFieldValue("")
-                                onRouteNameChange("")
-                            }
-                        ) {
-                            Icon(Icons.Filled.Close, contentDescription = "Limpar rota")
-                        }
-                    }
-                },
-                label = { Text("Rota ou token") }
+        }
+        routeLookup?.let { lookup ->
+            RouteLookupRow(
+                routeLookup = lookup,
+                alreadyAdded = isContactActive(lookup.username) && isContactAccepted(lookup.username),
+                requestSent = isContactActive(lookup.username) && isContactRequested(lookup.username),
+                onAddContact = onAddContact,
+                onRemoveContact = onRemoveContact,
+                onOpenProfile = onOpenProfile
             )
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End
-            ) {
-                TextButton(onClick = onSearchRouteName) { Text("Pesquisar") }
-            }
-            if (routeStatus.isNotBlank()) {
-                Text(
-                    text = routeStatus,
-                    modifier = Modifier.padding(top = 6.dp),
-                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            routeLookup?.let { lookup ->
-                RouteLookupRow(
-                    routeLookup = lookup,
-                    alreadyAdded = isContactActive(lookup.username) && isContactAccepted(lookup.username),
-                    requestSent = isContactActive(lookup.username) && isContactRequested(lookup.username),
-                    onAddContact = onAddContact,
-                    onRemoveContact = onRemoveContact,
-                    onOpenProfile = onOpenProfile
-                )
-            }
         }
     }
 
     if (showQrScanner) {
         QrCodeScannerDialog(
-            onDismiss = { showQrScanner = false },
+            onDismiss = { onShowQrScannerChange(false) },
+            isValidQrCode = isValidQrCode,
             onQrCodeScanned = { scannedCode ->
                 val cleanCode = scannedCode.trim()
-                routeField = TextFieldValue(cleanCode, selection = TextRange(cleanCode.length))
                 onRouteNameChange(cleanCode)
-                showQrScanner = false
+                onShowQrScannerChange(false)
                 onSearchRouteName()
             }
         )
@@ -1386,6 +1093,7 @@ private fun RouteLookupRow(
     onOpenProfile: (String) -> Unit
 ) {
     val added = alreadyAdded || requestSent
+    var showRemoveConfirm by rememberSaveable(routeLookup.username) { mutableStateOf(false) }
     Surface(
         shape = RoundedCornerShape(18.dp),
         color = Color.Transparent,
@@ -1436,7 +1144,7 @@ private fun RouteLookupRow(
                     HomeActionButton(
                         label = "Adicionado",
                         icon = Icons.Filled.Done,
-                        onClick = { onRemoveContact(routeLookup.username) }
+                        onClick = { showRemoveConfirm = true }
                     )
                 } else {
                     HomeActionButton(
@@ -1449,6 +1157,42 @@ private fun RouteLookupRow(
             }
             ListSeparator(modifier = Modifier.padding(start = 64.dp))
         }
+    }
+
+    if (showRemoveConfirm) {
+        AlertDialog(
+            onDismissRequest = { showRemoveConfirm = false },
+            title = {
+                Text("Quer remover?")
+            },
+            text = {
+                Text("Ao remover, o botão volta para Adicionar imediatamente.")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showRemoveConfirm = false
+                        onRemoveContact(routeLookup.username)
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary
+                    )
+                ) {
+                    Text("Sim")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { showRemoveConfirm = false },
+                    colors = ButtonDefaults.textButtonColors(
+                        contentColor = MaterialTheme.colorScheme.onSurface
+                    )
+                ) {
+                    Text("Não")
+                }
+            }
+        )
     }
 }
 

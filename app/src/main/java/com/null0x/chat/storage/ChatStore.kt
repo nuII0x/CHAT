@@ -29,17 +29,14 @@ class ChatStore(context: Context) {
 
     @Synchronized
     fun append(peer: String, message: Message) {
-        if (hasMessage(peer, message.id, message.isMine)) return
-        val direction = if (message.isMine) "me" else "peer"
-        val current = readNormalizedMessages(peer)
-        val shouldRewrite = current.lastOrNull()?.let { messageSortKey(message) < messageSortKey(it) } == true
-        if (shouldRewrite) {
-            writeAll(peer, current + message)
+        val current = readNormalizedMessages(peer).toMutableList()
+        val index = current.indexOfFirst { it.id == message.id }
+        if (index >= 0) {
+            current[index] = mergeMessage(current[index], message)
         } else {
-            chatFile(peer).appendText(
-                "$direction|${encodeText(message.text)}|${message.timestamp}|${message.id}|${message.delivery.name}\n"
-            )
+            current.add(message)
         }
+        writeAll(peer, current)
         addPeerToIndex(peer)
     }
 
@@ -52,14 +49,32 @@ class ChatStore(context: Context) {
     @Synchronized
     fun upsert(peer: String, message: Message) {
         val current = load(peer).toMutableList()
-        val index = current.indexOfFirst { it.id == message.id && it.isMine == message.isMine }
+        val index = current.indexOfFirst { it.id == message.id }
         if (index >= 0) {
-            current[index] = message
+            current[index] = mergeMessage(current[index], message)
         } else {
             current.add(message)
         }
         writeAll(peer, current)
         addPeerToIndex(peer)
+    }
+
+    @Synchronized
+    fun removeMessage(peer: String, messageId: String): Boolean {
+        val cleanPeer = peer.trim()
+        if (cleanPeer.isBlank() || messageId.isBlank()) return false
+
+        val current = load(cleanPeer)
+        val updated = current.filterNot { it.id == messageId }
+        if (updated.size == current.size) return false
+
+        if (updated.isEmpty()) {
+            chatFile(cleanPeer).delete()
+        } else {
+            writeAll(cleanPeer, updated)
+        }
+        addPeerToIndex(cleanPeer)
+        return true
     }
 
     @Synchronized
@@ -87,9 +102,9 @@ class ChatStore(context: Context) {
     }
 
     @Synchronized
-    fun hasMessage(peer: String, messageId: String, isMine: Boolean): Boolean {
+    fun hasMessage(peer: String, messageId: String, isMine: Boolean? = null): Boolean {
         if (messageId.isBlank()) return false
-        return load(peer).any { it.id == messageId && it.isMine == isMine }
+        return load(peer).any { it.id == messageId && (isMine == null || it.isMine == isMine) }
     }
 
     @Synchronized
@@ -166,8 +181,9 @@ class ChatStore(context: Context) {
         if (from.isBlank() || to.isBlank() || from == to) return
 
         val merged = (load(to) + load(from))
-            .distinctBy { "${it.isMine}:${it.id}" }
-            .sortedBy { it.timestamp }
+            .groupBy { it.id }
+            .map { (_, group) -> group.reduce { acc, item -> mergeMessage(acc, item) } }
+            .sortedWith(messageComparator())
         if (merged.isNotEmpty()) {
             writeAll(to, merged)
         }
@@ -317,7 +333,8 @@ class ChatStore(context: Context) {
             lines.mapNotNull { line -> decodeMessageLine(line) }.toList()
         }
         val normalized = decoded
-            .distinctBy { "${it.isMine}:${it.id}" }
+            .groupBy { it.id }
+            .map { (_, group) -> group.reduce { acc, item -> mergeMessage(acc, item) } }
             .sortedWith(messageComparator())
         if (normalized != decoded) {
             writeAll(peer, normalized)
@@ -328,11 +345,33 @@ class ChatStore(context: Context) {
     private fun messageComparator(): Comparator<Message> {
         return compareBy<Message> { it.timestamp }
             .thenBy { it.id }
-            .thenBy { if (it.isMine) 1 else 0 }
     }
 
     private fun messageSortKey(message: Message): String {
-        return "${message.timestamp.toString().padStart(20, '0')}|${message.id}|${if (message.isMine) 1 else 0}"
+        return "${message.timestamp.toString().padStart(20, '0')}|${message.id}"
+    }
+
+    private fun mergeMessage(existing: Message, incoming: Message): Message {
+        val timestamp = when {
+            existing.timestamp > 0L && incoming.timestamp > 0L -> minOf(existing.timestamp, incoming.timestamp)
+            existing.timestamp > 0L -> existing.timestamp
+            else -> incoming.timestamp
+        }
+        val delivery = if (incoming.delivery.ordinal > existing.delivery.ordinal) {
+            incoming.delivery
+        } else {
+            existing.delivery
+        }
+        val text = when {
+            existing.text.isNotBlank() -> existing.text
+            else -> incoming.text
+        }
+        return existing.copy(
+            text = text,
+            isMine = existing.isMine || incoming.isMine,
+            timestamp = timestamp,
+            delivery = delivery
+        )
     }
 
     @Synchronized

@@ -25,6 +25,8 @@ import com.null0x.chat.security.identity.StoredEnvelopeRecord
 import com.null0x.chat.security.identity.FileDistributedMessageStore
 import com.null0x.chat.storage.ChatStore
 import com.null0x.chat.storage.LocalStoreCipher
+import com.null0x.chat.util.normalizeProfileEmojiInput
+import com.null0x.chat.util.normalizeProfileNameInput
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -62,6 +64,7 @@ object ChatNodeManager {
     private const val MAX_MESSAGE_ID_CHARS = 128
     private const val CHAT_MSG_PREFIX = "CHAT_MSG|"
     private const val CHAT_ACK_PREFIX = "CHAT_ACK|"
+    private const val CHAT_DELETE_PREFIX = "CHAT_DELETE|"
     private const val CHAT_PROFILE_REQUEST_PREFIX = "CHAT_PROFILE_REQUEST|"
     private const val CHAT_PROFILE_PREFIX = "CHAT_PROFILE|"
     private const val CHAT_PRESENCE_PREFIX = "CHAT_PRESENCE|"
@@ -74,6 +77,7 @@ object ChatNodeManager {
     interface Listener {
         fun onUsernameReady(username: String)
         fun onMessage(fromUsername: String, text: String, messageId: String? = null, timestamp: Long? = null)
+        fun onMessageDeleted(fromUsername: String, messageId: String) {}
         fun onDeliveryAck(fromUsername: String, messageId: String) {}
         fun onOutgoingDeliveryStateChanged(toUsername: String, messageId: String, state: DeliveryState) {}
         fun onChatPresence(fromUsername: String, state: String) {}
@@ -290,6 +294,17 @@ object ChatNodeManager {
                         return@onMessage
                     }
 
+                    if (text.startsWith(CHAT_DELETE_PREFIX)) {
+                        val messageId = text.removePrefix(CHAT_DELETE_PREFIX).trim()
+                        if (messageId.isNotBlank() && messageId.length <= MAX_MESSAGE_ID_CHARS) {
+                            distributedMessageStore?.remove(messageId)
+                            chatStore?.removeMessage(peer, messageId)
+                            notifier?.cancelMessage(peer)
+                            listeners.forEach { it.onMessageDeleted(peer, messageId) }
+                        }
+                        return@onMessage
+                    }
+
                     val parsed = parseChatMessage(text)
                     val rawText = parsed?.text ?: text
                     val incomingMessageId = parsed?.id
@@ -321,9 +336,10 @@ object ChatNodeManager {
                     if (isSelfEcho) {
                         chatStore?.updateDeliveryStatus(messagePeer, incomingMessageId, DeliveryState.Delivered)
                         listeners.forEach { it.onDeliveryAck(messagePeer, incomingMessageId) }
+                        return@onMessage
                     }
                     val isDuplicate = incomingMessageId?.let { id ->
-                        chatStore?.hasMessage(messagePeer, id, isMine = false) == true
+                        chatStore?.hasMessage(messagePeer, id) == true
                     } == true
                     if (isDuplicate) {
                         incomingMessageId?.let { id ->
@@ -420,7 +436,7 @@ object ChatNodeManager {
     }
 
     fun setProfileName(context: Context, name: String) {
-        val cleanName = name.trim()
+        val cleanName = normalizeProfileNameInput(name)
         profileName = cleanName
         val prefs = profilePrefs ?: context.applicationContext.getSharedPreferences("profile", Context.MODE_PRIVATE)
         profilePrefs = prefs
@@ -432,7 +448,7 @@ object ChatNodeManager {
     }
 
     fun setProfileEmoji(context: Context, emoji: String) {
-        val cleanEmoji = emoji.trim().ifBlank { "🙂" }
+        val cleanEmoji = normalizeProfileEmojiInput(emoji).ifBlank { "🙂" }
         profileEmoji = cleanEmoji
         val prefs = profilePrefs ?: context.applicationContext.getSharedPreferences("profile", Context.MODE_PRIVATE)
         profilePrefs = prefs
@@ -508,19 +524,17 @@ object ChatNodeManager {
         if (conversationPeer.isBlank()) return
         if (!isChatMessageAuthorized(conversationPeer)) return
         chatStore?.rememberPeer(conversationPeer, displayNameFor(conversationPeer))
-        val alreadyStored = chatStore?.hasMessage(conversationPeer, envelope.messageId, isMine = false) == true
-        if (!alreadyStored) {
-            chatStore?.upsert(
-                conversationPeer,
-                Message(
-                    id = envelope.messageId,
-                    text = text,
-                    isMine = false,
-                    timestamp = envelope.timestamp,
-                    delivery = DeliveryState.Delivered
-                )
+        val alreadyStored = chatStore?.hasMessage(conversationPeer, envelope.messageId) == true
+        chatStore?.upsert(
+            conversationPeer,
+            Message(
+                id = envelope.messageId,
+                text = text,
+                isMine = false,
+                timestamp = envelope.timestamp,
+                delivery = DeliveryState.Delivered
             )
-        }
+        )
         distributedMessageStore?.markDelivered(envelope.messageId)
         val ack = AckManager { RouteIdentityRegistry.identityManager() }
             .createAck(envelope.messageId, envelope.recipientPublicKeyHash)
@@ -607,6 +621,20 @@ object ChatNodeManager {
             return Result.failure(IllegalArgumentException("Rota onion inválida"))
         }
         migratePeerIfNeeded(toUsername, peer)
+        val selfRoute = canonicalPeer(publicRoute)
+        val selfUser = canonicalPeer(username)
+        val isSelfRoute = peer == selfRoute || peer == selfUser
+        if (isSelfRoute) {
+            if (!node.isServerReady()) {
+                return Result.failure(IllegalStateException("Servidor local ainda nao esta pronto"))
+            }
+            val wrapped = "$CHAT_MSG_PREFIX$id|${System.currentTimeMillis()}|${encodePayloadText(text)}"
+            val result = node.sendMessage(peer, wrapped)
+            if (result.isFailure) {
+                requestTorRecoveryAfterSendFailure(result.exceptionOrNull())
+            }
+            return result
+        }
         val existing = chatStore?.load(peer)?.firstOrNull { it.isMine && it.id == id }
         val pendingMessage = Message(
             id = id,
@@ -666,6 +694,21 @@ object ChatNodeManager {
 
     fun clearMessages(peer: String) {
         chatStore?.clear(canonicalPeer(peer))
+    }
+
+    fun requestMessageDeletion(peer: String, messageId: String) {
+        val cleanPeer = normalizeRoute(peer) ?: return
+        val cleanMessageId = messageId.trim()
+        if (cleanMessageId.isBlank()) return
+        distributedMessageStore?.remove(cleanMessageId)
+        val selfRoute = canonicalPeer(publicRoute)
+        val selfUser = canonicalPeer(username)
+        if (cleanPeer == selfRoute || cleanPeer == selfUser) {
+            return
+        }
+        scope.launch {
+            sendTransportText(cleanPeer, "$CHAT_DELETE_PREFIX$cleanMessageId")
+        }
     }
 
     fun clearViewedMessages(peer: String, keepIncomingSince: Long = 0L) {

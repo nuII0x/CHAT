@@ -10,10 +10,10 @@ import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.compose.ui.Modifier
@@ -62,8 +62,6 @@ import com.null0x.chat.security.AppSecurityManager
 import com.null0x.chat.security.SensitiveClipboard
 import com.null0x.chat.security.identity.MnemonicLanguage
 import com.null0x.chat.network.BackgroundConnectionModeController
-import com.null0x.chat.network.BackgroundConnectionModePreference
-import com.null0x.chat.network.BackgroundConnectionMode
 import com.null0x.chat.network.AppRestartReceiver
 import com.null0x.chat.ui.chat.ChatScreen
 import com.null0x.chat.ui.common.MnemonicLanguagePicker
@@ -79,6 +77,16 @@ class MainActivity : ComponentActivity() {
     private var launchedFromNotification = false
     private var lastNavigationBarColor = Color.Black
     private var initialContentReady = false
+    private val notificationPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (!granted && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                Toast.makeText(
+                    this,
+                    "Ative notificações para receber mensagens em tempo real",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+        }
 
     override fun onStart() {
         super.onStart()
@@ -89,9 +97,6 @@ class MainActivity : ComponentActivity() {
 
     override fun onStop() {
         AppVisibility.markHidden()
-        if (!isChangingConfigurations) {
-            BackgroundConnectionModeController.onAppHidden(applicationContext)
-        }
         super.onStop()
     }
 
@@ -105,7 +110,6 @@ class MainActivity : ComponentActivity() {
         launchedFromNotification = !initialOpenChatUsername.isNullOrBlank()
         ThemePreference.initialize(this)
         BackgroundConnectionModeController.initialize(this)
-        requestNotificationPermission()
 
         val vmFactory = object : ViewModelProvider.Factory {
             override fun <T : ViewModel> create(modelClass: Class<T>): T {
@@ -121,10 +125,10 @@ class MainActivity : ComponentActivity() {
             LaunchedEffect(Unit) {
                 initialContentReady = true
             }
+            var notificationPermissionRequested by rememberSaveable { mutableStateOf(false) }
             val themeMode by ThemePreference.themeMode.collectAsState()
-            val backgroundConnectionMode by BackgroundConnectionModePreference.mode.collectAsState()
             ChatTheme(themeMode = themeMode) {
-                val navigationBarColor = MaterialTheme.colorScheme.background
+                val navigationBarColor = Color.Black
                 SideEffect {
                     applySystemBarColors(navigationBarColor)
                 }
@@ -162,6 +166,12 @@ class MainActivity : ComponentActivity() {
                     }
                     AppSecurityManager.GateState.Unlocked -> {
                         val vm: ChatViewModel = viewModel(factory = vmFactory)
+                        LaunchedEffect(Unit) {
+                            if (!notificationPermissionRequested) {
+                                notificationPermissionRequested = true
+                                requestNotificationPermission()
+                            }
+                        }
                         val pendingOpenChat = openChatUsername
                         LaunchedEffect(pendingOpenChat) {
                             val username = pendingOpenChat
@@ -173,19 +183,12 @@ class MainActivity : ComponentActivity() {
                         Box(modifier = Modifier.fillMaxSize()) {
                             HomeScreen(
                                 vm,
-                                themeMode = themeMode,
-                                onThemeModeChange = { mode ->
-                                    ThemePreference.setThemeMode(this@MainActivity, mode)
-                                },
-                                backgroundConnectionMode = backgroundConnectionMode,
-                                onBackgroundConnectionModeChange = { mode ->
-                                    BackgroundConnectionModeController.setMode(this@MainActivity, mode)
-                                },
                                 onLockApp = { AppSecurityManager.lock() }
                             ) { peer -> vm.selectTarget(peer) }
                             if (vm.inChat) {
                                 ChatScreen(
                                     vm,
+                                    themeMode = themeMode,
                                     onBack = { vm.openHome() },
                                     onLockApp = { AppSecurityManager.lock() }
                                 )
@@ -229,7 +232,7 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        ActivityCompat.requestPermissions(this, arrayOf(permission), 1001)
+        notificationPermissionLauncher.launch(permission)
     }
 
     private fun applySystemBarColors() {

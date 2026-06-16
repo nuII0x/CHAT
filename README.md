@@ -68,6 +68,20 @@ Este arquivo serve para anotar ideias, melhorias, correções e ajustes futuros 
 3. Execute `./gradlew installDebug` para instalar a versão de desenvolvimento.
 4. Se preferir gerar um APK, use o build do Android Studio e instale o pacote no aparelho.
 
+## Versionamento automatico
+
+O projeto usa `version.properties` para manter `major.minor.patch`.
+
+Para gerar release e atualizar a versao ao mesmo tempo:
+
+```bash
+./gradlew assembleRelease -PreleaseType=major
+./gradlew assembleRelease -PreleaseType=minor
+./gradlew assembleRelease -PreleaseType=security
+```
+
+`major` aumenta `x` e zera `y` e `z`, `minor` aumenta `y` e zera `z`, e `security` aumenta apenas `z`.
+
 ---
 
 🧪 Testes
@@ -82,9 +96,9 @@ Este arquivo serve para anotar ideias, melhorias, correções e ajustes futuros 
 
 💡 Ideias Futuras
 
-- [x] Foreground Service + Tor reconectável + fila local + ACK + relay onion opcional 24h. Nó de teste em `node/`.
-- [x] Sistema descentralizado de armazenamento temporário. Nó de teste em `node/`.
-- [x] Mensagens offline distribuídas. Nó de teste em `node/`.
+- [x] Foreground Service + Tor reconectável + fila local + ACK.
+- [x] Sistema descentralizado de armazenamento temporário.
+- [x] Mensagens offline distribuídas.
 - [x] Sons de notificação personalizados.
 - [x] Integração com avatares.
 - [x] Tema visual mais refinado.

@@ -1,4 +1,5 @@
 import java.util.Properties
+import org.gradle.api.GradleException
 
 plugins {
     alias(libs.plugins.android.application)
@@ -7,9 +8,90 @@ plugins {
 
 val keystoreProperties = Properties()
 val keystorePropertiesFile = rootProject.file("keystore.properties")
+val versionFile = rootProject.file("version.properties")
 
 if (keystorePropertiesFile.exists()) {
     keystoreProperties.load(keystorePropertiesFile.inputStream())
+}
+
+enum class ReleaseType {
+    MAJOR,
+    MINOR,
+    SECURITY
+}
+
+data class SemanticVersion(
+    val major: Int,
+    val minor: Int,
+    val patch: Int
+) {
+    fun versionName(): String = "$major.$minor.$patch"
+
+    fun versionCode(): Int = major * 1_000_000 + minor * 1_000 + patch
+
+    fun bump(type: ReleaseType): SemanticVersion {
+        return when (type) {
+            ReleaseType.MAJOR -> copy(major = major + 1, minor = 0, patch = 0)
+            ReleaseType.MINOR -> copy(minor = minor + 1, patch = 0)
+            ReleaseType.SECURITY -> copy(patch = patch + 1)
+        }
+    }
+}
+
+fun loadSemanticVersion(file: java.io.File): SemanticVersion {
+    val defaults = SemanticVersion(1, 0, 0)
+    if (!file.exists()) return defaults
+
+    val props = Properties()
+    file.inputStream().use { props.load(it) }
+    val major = props.getProperty("major")?.trim()?.toIntOrNull() ?: defaults.major
+    val minor = props.getProperty("minor")?.trim()?.toIntOrNull() ?: defaults.minor
+    val patch = props.getProperty("patch")?.trim()?.toIntOrNull() ?: defaults.patch
+    return SemanticVersion(major, minor, patch)
+}
+
+fun storeSemanticVersion(file: java.io.File, version: SemanticVersion) {
+    file.parentFile?.mkdirs()
+    file.writeText(
+        """
+        major=${version.major}
+        minor=${version.minor}
+        patch=${version.patch}
+        """.trimIndent() + "\n"
+    )
+}
+
+fun parseReleaseType(raw: String): ReleaseType? {
+    return when (raw.trim().lowercase()) {
+        "major" -> ReleaseType.MAJOR
+        "minor" -> ReleaseType.MINOR
+        "security" -> ReleaseType.SECURITY
+        else -> null
+    }
+}
+
+val requestedReleaseType = providers.gradleProperty("releaseType")
+    .orNull
+    ?.trim()
+    ?.takeIf { it.isNotBlank() }
+    ?.let { raw ->
+        parseReleaseType(raw) ?: throw GradleException(
+            "releaseType invalido: $raw. Use major, minor ou security."
+        )
+    }
+
+val versionOnDisk = loadSemanticVersion(versionFile)
+val versionForThisBuild = requestedReleaseType?.let { versionOnDisk.bump(it) } ?: versionOnDisk
+
+if (requestedReleaseType != null) {
+    val releaseTaskRequested = gradle.startParameter.taskNames.any { task ->
+        task.contains("release", ignoreCase = true)
+    }
+    if (!releaseTaskRequested) {
+        throw GradleException(
+            "releaseType so pode ser usado com tarefas de release, como assembleRelease ou installRelease."
+        )
+    }
 }
 
 android {
@@ -20,8 +102,8 @@ android {
         applicationId = "com.null0x.chat"
         minSdk = 24
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = versionForThisBuild.versionCode()
+        versionName = versionForThisBuild.versionName()
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -60,6 +142,21 @@ android {
 
     buildFeatures {
         compose = true
+    }
+}
+
+if (requestedReleaseType != null) {
+    val persistVersion = tasks.register("persistReleaseVersion") {
+        group = "versioning"
+        description = "Persiste a nova versao semanticamente versionada no arquivo do projeto."
+        doLast {
+            storeSemanticVersion(versionFile, versionForThisBuild)
+            println("Versao atualizada para ${versionForThisBuild.versionName()}")
+        }
+    }
+
+    tasks.named("preBuild") {
+        dependsOn(persistVersion)
     }
 }
 

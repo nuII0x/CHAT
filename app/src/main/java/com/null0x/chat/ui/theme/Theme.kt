@@ -133,11 +133,11 @@ private val BlueColorScheme = lightColorScheme(
 
 fun themeBackgroundColor(themeMode: ThemeMode, systemDarkTheme: Boolean): Color {
     return when (themeMode) {
-        ThemeMode.SYSTEM -> if (systemDarkTheme) AppBackgroundDark else AppBackgroundLight
-        ThemeMode.BLUE -> AppBlueBackground
-        ThemeMode.LIGHT -> AppBackgroundLight
+        ThemeMode.SYSTEM -> if (systemDarkTheme) AppBackgroundDark else Color.White
+        ThemeMode.BLUE -> Color.White
+        ThemeMode.LIGHT -> Color.White
         ThemeMode.DARK -> AppBackgroundDark
-        ThemeMode.PINK -> AppPinkBackground
+        ThemeMode.PINK -> Color.White
     }
 }
 

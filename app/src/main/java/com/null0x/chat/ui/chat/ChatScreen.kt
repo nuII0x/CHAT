@@ -73,6 +73,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -80,6 +81,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
@@ -108,7 +111,6 @@ import com.null0x.chat.model.Message
 import com.null0x.chat.network.TorManager
 import com.null0x.chat.security.SensitiveClipboard
 import com.null0x.chat.ui.common.SwipeToCloseContainer
-import com.null0x.chat.ui.AppTitleBarShape
 import com.null0x.chat.ui.maskedRouteLabel
 import com.null0x.chat.ui.profile.RouteProfileScreen
 import com.null0x.chat.ui.security.ProtectedWindowCapture
@@ -118,12 +120,14 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 
+import com.null0x.chat.ui.theme.ThemeMode
+
 private val ChatHeaderHeight = 86.dp
 private val TitleBarColor = Color.Black
 
 @Composable
-fun ChatScreen(vm: ChatViewModel, onBack: () -> Unit, onLockApp: () -> Unit) {
-    var input by rememberSaveable { mutableStateOf("") }
+fun ChatScreen(vm: ChatViewModel, themeMode: ThemeMode, onBack: () -> Unit, onLockApp: () -> Unit) {
+    var input by rememberSaveable(vm.targetUsername) { mutableStateOf(vm.draftFor(vm.targetUsername)) }
     var profileRoute by rememberSaveable { mutableStateOf("") }
     var showProfile by rememberSaveable { mutableStateOf(false) }
     var showChatSettings by rememberSaveable { mutableStateOf(false) }
@@ -182,17 +186,30 @@ fun ChatScreen(vm: ChatViewModel, onBack: () -> Unit, onLockApp: () -> Unit) {
     val headerUser = peers.getOrNull(pagerState.currentPage)?.trim().orEmpty().ifBlank { vm.targetUsername }
     val chatTitle = vm.chatTitleFor(headerUser)
     val sourceTitle = "Chats"
-    val serviceReady = serviceStatus is TorManager.Status.Ready
+    val serviceStarting = serviceStatus is TorManager.Status.Starting
+    var showStartingTitle by remember { mutableStateOf(false) }
     val chatRouteLabel = chatRoutePresenceLabel(
         networkAvailable = networkAvailable,
-        serviceReady = serviceReady,
+        serviceStarting = showStartingTitle,
         partnerConnected = vm.isPartnerOnline(headerUser)
     )
     val unreadHintCount = vm.unreadEntryCountFor(headerUser)
     val currentChatLoaded = vm.isCurrentChatLoaded()
+    val currentMessages = vm.messagesFor(vm.targetUsername)
+
+    LaunchedEffect(headerUser) {
+        input = vm.draftFor(headerUser)
+    }
 
     LaunchedEffect(context) {
         TorManager.ensureNetworkMonitoring(context)
+    }
+
+    LaunchedEffect(serviceStarting, networkAvailable) {
+        showStartingTitle = networkAvailable && serviceStarting
+        if (!showStartingTitle) return@LaunchedEffect
+        delay(10_000)
+        showStartingTitle = networkAvailable && serviceStarting
     }
 
     DisposableEffect(Unit) {
@@ -229,6 +246,13 @@ fun ChatScreen(vm: ChatViewModel, onBack: () -> Unit, onLockApp: () -> Unit) {
         while (true) {
             vm.refreshLocalChatPresence(target)
             delay(15_000)
+        }
+    }
+
+    LaunchedEffect(currentMessages, selectedMessage?.id) {
+        val selectedId = selectedMessage?.id ?: return@LaunchedEffect
+        if (currentMessages.none { it.id == selectedId }) {
+            selectedMessage = null
         }
     }
 
@@ -315,6 +339,7 @@ fun ChatScreen(vm: ChatViewModel, onBack: () -> Unit, onLockApp: () -> Unit) {
                                 SensitiveClipboard.copy(context, "Rota contato", maskedRouteLabel(headerUser))
                                 Toast.makeText(context, "Token sensível copiado por 60 segundos", Toast.LENGTH_SHORT).show()
                             },
+                            onLockApp = onLockApp,
                             onOpenSettings = {
                                 keyboardController?.hide()
                                 showChatSettings = true
@@ -352,6 +377,7 @@ fun ChatScreen(vm: ChatViewModel, onBack: () -> Unit, onLockApp: () -> Unit) {
                             unreadHintCount = unreadHintCount,
                             selectableMessageIds = selectableMessageIds,
                             onMessageClick = { selectedMessage = it },
+                            themeMode = themeMode,
                             modifier = Modifier.fillMaxSize(),
                             bottomContentPadding = 154.dp
                         )
@@ -376,16 +402,21 @@ fun ChatScreen(vm: ChatViewModel, onBack: () -> Unit, onLockApp: () -> Unit) {
                     .fillMaxWidth()
                     .imePadding()
             ) {
-                MessageComposer(
-                    input = input,
-                    focusRequester = composerFocusRequester,
-                    onInputChange = { input = it },
-                    onSend = {
-                        val text = input.trim()
+                    MessageComposer(
+                        input = input,
+                        focusRequester = composerFocusRequester,
+                        themeMode = themeMode,
+                        onInputChange = {
+                            input = it
+                            vm.updateDraft(headerUser, it)
+                        },
+                        onSend = {
+                            val text = input.trim()
                         if (text.isNotBlank()) {
                             vm.updateLocalTyping(headerUser, false)
                             vm.sendTo(headerUser, text)
                             input = ""
+                            vm.clearDraft(headerUser)
                         }
                     }
                 )
@@ -449,6 +480,10 @@ fun ChatScreen(vm: ChatViewModel, onBack: () -> Unit, onLockApp: () -> Unit) {
                     selectableMessageIds + message.id
                 }
             },
+            onDelete = {
+                vm.deleteMessage(message)
+                selectedMessage = null
+            },
             onDismiss = { selectedMessage = null }
         )
     }
@@ -477,13 +512,14 @@ private fun ChatHeader(
     onClear: () -> Unit,
     onOpenProfile: () -> Unit,
     onCopyRoute: () -> Unit,
+    onLockApp: () -> Unit,
     onOpenSettings: () -> Unit
 ) {
     var showMenu by rememberSaveable { mutableStateOf(false) }
     val sourceAlpha = (1f - openingProgress).coerceIn(0f, 1f)
     val targetAlpha = openingProgress.coerceIn(0f, 1f)
     Surface(
-        shape = AppTitleBarShape,
+        shape = RoundedCornerShape(0.dp),
         color = TitleBarColor,
         tonalElevation = 0.dp,
         shadowElevation = 0.dp
@@ -617,6 +653,18 @@ private fun ChatHeader(
                     )
                 }
             }
+            Box {
+                IconButton(
+                    onClick = onLockApp,
+                    modifier = Modifier.alpha(targetAlpha)
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.VpnKey,
+                        contentDescription = "Trancar app",
+                        tint = Color.White
+                    )
+                }
+            }
         }
     }
 }
@@ -645,7 +693,7 @@ private fun ChatSettingsScreen(
         ) {
             Column(modifier = Modifier.fillMaxSize()) {
                 Surface(
-                    shape = AppTitleBarShape,
+                    shape = RoundedCornerShape(0.dp),
                     color = TitleBarColor,
                     tonalElevation = 0.dp,
                     shadowElevation = 0.dp
@@ -901,6 +949,7 @@ private fun MessageList(
     unreadHintCount: Int,
     selectableMessageIds: Set<String>,
     onMessageClick: (Message) -> Unit,
+    themeMode: ThemeMode,
     modifier: Modifier = Modifier,
     bottomContentPadding: androidx.compose.ui.unit.Dp = 10.dp
 ) {
@@ -928,10 +977,12 @@ private fun MessageList(
     }
 
     val timelineItems = remember(messages, privacyNotices) {
-        (
-            messages.map { TimelineItem.MessageItem(it) } +
-                privacyNotices.map { TimelineItem.PrivacyNoticeItem(it) }
-        ).sortedBy { it.timestamp }
+        buildList {
+            messages.forEach { add(TimelineItem.MessageItem(it)) }
+            privacyNotices
+                .sortedBy { it.timestamp }
+                .forEach { add(TimelineItem.PrivacyNoticeItem(it)) }
+        }
     }
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
@@ -1007,6 +1058,7 @@ private fun MessageList(
                         MessageBubble(
                             msg = item.message,
                             allowTextSelection = selectableMessageIds.contains(item.message.id),
+                            themeMode = themeMode,
                             onClick = { onMessageClick(item.message) }
                         )
                     }
@@ -1137,88 +1189,252 @@ private fun UnreadHintBar(count: Int, onDismiss: () -> Unit) {
 private fun MessageBubble(
     msg: Message,
     allowTextSelection: Boolean,
+    themeMode: ThemeMode,
     onClick: () -> Unit
 ) {
+    val darkTheme = MaterialTheme.colorScheme.background.luminance() < 0.5f
+    val mineBubbleColor = when (themeMode) {
+        ThemeMode.BLUE -> Color(0xFF2D74FF)
+        ThemeMode.PINK -> Color(0xFFFF4FA0)
+        ThemeMode.DARK, ThemeMode.LIGHT, ThemeMode.SYSTEM -> MaterialTheme.colorScheme.primary
+    }
+    val peerBarColor = if (darkTheme) {
+        Color(0xFF8B8B8B)
+    } else {
+        Color(0xFF6E6E6E)
+    }
+    val sideBarColor = if (msg.isMine) mineBubbleColor else peerBarColor
+    val messageTextColor = if (darkTheme) Color.White else Color.Black
+    val deliveryTint = messageTextColor.copy(alpha = 0.56f)
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = if (msg.isMine) Arrangement.End else Arrangement.Start
     ) {
-        Surface(
+        Box(
             modifier = Modifier
-                .padding(vertical = 3.dp)
                 .widthIn(max = 312.dp)
                 .clickable(onClick = onClick),
-            color = if (msg.isMine) {
-                MaterialTheme.colorScheme.primaryContainer
-            } else {
-                MaterialTheme.colorScheme.surfaceVariant
-            },
-            shape = RoundedCornerShape(16.dp),
-            tonalElevation = 1.dp
         ) {
-            Column(modifier = Modifier.animateContentSize()) {
+            MessageBubbleBody(
+                msg = msg,
+                allowTextSelection = allowTextSelection,
+                textColor = messageTextColor,
+                metaColor = deliveryTint,
+                sideBarColor = sideBarColor
+            )
+        }
+    }
+}
+
+@Composable
+private fun MessageBubbleBody(
+    msg: Message,
+    allowTextSelection: Boolean,
+    textColor: Color,
+    metaColor: Color,
+    sideBarColor: Color
+) {
+    val sideBarWidth = 3.dp
+    val sideBarGap = 8.dp
+    Layout(
+        content = {
+            if (msg.isMine) {
+                MessageLineContent(
+                    msg = msg,
+                    allowTextSelection = allowTextSelection,
+                    textColor = textColor,
+                    metaColor = metaColor,
+                    modifier = Modifier.animateContentSize()
+                )
+                MessageSideBar(color = sideBarColor)
+            } else {
+                MessageSideBar(color = sideBarColor)
+                MessageLineContent(
+                    msg = msg,
+                    allowTextSelection = allowTextSelection,
+                    textColor = textColor,
+                    metaColor = metaColor,
+                    modifier = Modifier.animateContentSize()
+                )
+            }
+        }
+    ) { measurables, constraints ->
+        val barWidthPx = with(this) { sideBarWidth.roundToPx() }
+        val gapPx = with(this) { sideBarGap.roundToPx() }
+        val contentIndex = if (msg.isMine) 0 else 1
+        val barIndex = if (msg.isMine) 1 else 0
+        val contentMeasurable = measurables[contentIndex]
+        val barMeasurable = measurables[barIndex]
+
+        val contentConstraints = constraints.copy(
+            minWidth = 0,
+            minHeight = 0,
+            maxWidth = (constraints.maxWidth - barWidthPx - gapPx).coerceAtLeast(0)
+        )
+        val contentPlaceable = contentMeasurable.measure(contentConstraints)
+        val barPlaceable = barMeasurable.measure(
+            constraints.copy(
+                minWidth = barWidthPx,
+                maxWidth = barWidthPx,
+                minHeight = contentPlaceable.height,
+                maxHeight = contentPlaceable.height
+            )
+        )
+
+        val width = contentPlaceable.width + gapPx + barPlaceable.width
+        val height = maxOf(contentPlaceable.height, barPlaceable.height)
+
+        layout(width, height) {
+            if (msg.isMine) {
+                contentPlaceable.placeRelative(0, 0)
+                barPlaceable.placeRelative(contentPlaceable.width + gapPx, 0)
+            } else {
+                barPlaceable.placeRelative(0, 0)
+                contentPlaceable.placeRelative(barPlaceable.width + gapPx, 0)
+            }
+        }
+    }
+}
+
+@Composable
+private fun MessageSideBar(color: Color) {
+    Surface(
+        modifier = Modifier.width(3.dp),
+        shape = RoundedCornerShape(999.dp),
+        color = color,
+        tonalElevation = 0.dp
+    ) {}
+}
+
+@Composable
+private fun MessageLineContent(
+    msg: Message,
+    allowTextSelection: Boolean,
+    textColor: Color,
+    metaColor: Color,
+    modifier: Modifier = Modifier
+) {
+    val textMeasurer = rememberTextMeasurer()
+    val textStyle = MaterialTheme.typography.bodyLarge
+    BoxWithConstraints(
+        modifier = modifier.padding(vertical = 4.dp)
+    ) {
+        val density = LocalDensity.current
+        val availableWidthPx = with(density) { maxWidth.toPx() }
+        val metaReservePx = with(density) { if (msg.isMine) 78.dp.toPx() else 48.dp.toPx() }
+        val spacingPx = with(density) { 6.dp.toPx() }
+        val textWidthPx = textMeasurer.measure(
+            text = AnnotatedString(msg.text),
+            style = textStyle,
+            maxLines = 1,
+            overflow = TextOverflow.Clip
+        ).size.width.toFloat()
+        val keepMetaInline = textWidthPx + metaReservePx + spacingPx <= availableWidthPx
+
+        if (keepMetaInline) {
+            Row(
+                verticalAlignment = Alignment.Bottom,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
                 if (allowTextSelection) {
-                    SelectionContainer {
+                    SelectionContainer(modifier = Modifier.weight(1f, fill = false)) {
                         Text(
                             text = msg.text,
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
-                            color = if (msg.isMine) {
-                                MaterialTheme.colorScheme.onPrimaryContainer
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            }
+                            color = textColor
                         )
                     }
                 } else {
                     Text(
                         text = msg.text,
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
-                        color = if (msg.isMine) {
-                            MaterialTheme.colorScheme.onPrimaryContainer
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        }
+                        modifier = Modifier.weight(1f, fill = false),
+                        color = textColor
                     )
                 }
-                if (msg.isMine) {
-                    Row(
-                        modifier = Modifier
-                            .align(Alignment.End)
-                            .padding(end = 8.dp, bottom = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        val tint = when (msg.delivery) {
-                            DeliveryState.Pending -> MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.65f)
-                            DeliveryState.Sent -> MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.85f)
-                            DeliveryState.Delivered -> MaterialTheme.colorScheme.onSurface
-                            DeliveryState.Failed -> MaterialTheme.colorScheme.error
-                        }
-                        when (msg.delivery) {
-                            DeliveryState.Pending -> Text("...", color = tint)
-                            DeliveryState.Sent -> Icon(
-                                imageVector = Icons.Filled.Done,
-                                contentDescription = null,
-                                tint = tint,
-                                modifier = Modifier.size(14.dp)
-                            )
-                            DeliveryState.Delivered -> {
-                                Icon(
-                                    imageVector = Icons.Filled.Done,
-                                    contentDescription = null,
-                                    tint = tint,
-                                    modifier = Modifier.size(14.dp)
-                                )
-                                Icon(
-                                    imageVector = Icons.Filled.Done,
-                                    contentDescription = null,
-                                    tint = tint,
-                                    modifier = Modifier.size(14.dp)
-                                )
-                            }
-                            DeliveryState.Failed -> Text("!", color = tint, fontWeight = FontWeight.Bold)
-                        }
+                MessageInlineMeta(
+                    msg = msg,
+                    color = metaColor
+                )
+            }
+        } else {
+            Column(
+                horizontalAlignment = if (msg.isMine) Alignment.End else Alignment.Start
+            ) {
+                if (allowTextSelection) {
+                    SelectionContainer(modifier = Modifier.fillMaxWidth()) {
+                        Text(
+                            text = msg.text,
+                            color = textColor
+                        )
                     }
+                } else {
+                    Text(
+                        text = msg.text,
+                        modifier = Modifier.fillMaxWidth(),
+                        color = textColor
+                    )
                 }
+                MessageInlineMeta(
+                    msg = msg,
+                    color = metaColor,
+                    modifier = Modifier.padding(top = 2.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun MessageInlineMeta(
+    msg: Message,
+    color: Color,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier,
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(2.dp)
+    ) {
+        Text(
+            text = formatMessageTime(msg.timestamp),
+            style = MaterialTheme.typography.labelSmall,
+            color = color,
+            maxLines = 1
+        )
+        if (msg.isMine) {
+            val tint = when (msg.delivery) {
+                DeliveryState.Pending -> color.copy(alpha = 0.60f)
+                DeliveryState.Sent -> color
+                DeliveryState.Delivered -> color
+                DeliveryState.Failed -> MaterialTheme.colorScheme.error
+            }
+            when (msg.delivery) {
+                DeliveryState.Pending -> Text("...", color = tint, style = MaterialTheme.typography.labelSmall)
+                DeliveryState.Sent -> Icon(
+                    imageVector = Icons.Filled.Done,
+                    contentDescription = null,
+                    tint = tint,
+                    modifier = Modifier.size(14.dp)
+                )
+                DeliveryState.Delivered -> {
+                    Icon(
+                        imageVector = Icons.Filled.Done,
+                        contentDescription = null,
+                        tint = tint,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Icon(
+                        imageVector = Icons.Filled.Done,
+                        contentDescription = null,
+                        tint = tint,
+                        modifier = Modifier.size(14.dp)
+                    )
+                }
+                DeliveryState.Failed -> Text(
+                    "!",
+                    color = tint,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold
+                )
             }
         }
     }
@@ -1229,6 +1445,7 @@ private fun MessageDetailDialog(
     message: Message,
     selectionEnabled: Boolean,
     onToggleSelection: () -> Unit,
+    onDelete: () -> Unit,
     onDismiss: () -> Unit
 ) {
     AlertDialog(
@@ -1238,17 +1455,24 @@ private fun MessageDetailDialog(
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text("Horário: ${formatTimestamp(message.timestamp)}")
                 Text("Status: ${if (message.isMine) "Enviada por você" else "Recebida"}")
-                Text("Texto: ${message.text}")
+                if (message.isMine) {
+                    TextButton(onClick = onToggleSelection) {
+                        Text(if (selectionEnabled) "Bloquear seleção" else "Liberar seleção")
+                    }
+                }
             }
         },
         confirmButton = {
             TextButton(onClick = onDismiss) { Text("Fechar") }
         },
         dismissButton = {
-            if (message.isMine) {
-                TextButton(onClick = onToggleSelection) {
-                    Text(if (selectionEnabled) "Bloquear seleção" else "Liberar seleção")
-                }
+            TextButton(
+                onClick = onDelete,
+                colors = ButtonDefaults.textButtonColors(
+                    contentColor = MaterialTheme.colorScheme.error
+                )
+            ) {
+                Text("Apagar")
             }
         }
     )
@@ -1259,30 +1483,59 @@ private fun formatTimestamp(timestamp: Long): String {
         .format(java.util.Date(timestamp))
 }
 
+private fun formatMessageTime(timestamp: Long): String {
+    return java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault())
+        .format(java.util.Date(timestamp))
+}
+
 @Composable
 private fun MessageComposer(
     input: String,
     focusRequester: FocusRequester,
+    themeMode: ThemeMode,
     onInputChange: (String) -> Unit,
     onSend: () -> Unit
 ) {
-    val isLightSurface = MaterialTheme.colorScheme.surface.luminance() > 0.5f
-    val fieldBackground = if (isLightSurface) Color.White else Color.Black
-    val fieldForeground = if (isLightSurface) Color.Black else Color.White
-    val fieldBorder = fieldForeground.copy(alpha = 0.72f)
-    val fieldMuted = fieldForeground.copy(alpha = 0.58f)
+    val isDarkTheme = MaterialTheme.colorScheme.background.luminance() < 0.5f
+    val composerBackground = if (isDarkTheme) Color.Black else Color.White
+    val fieldBackground = if (isDarkTheme) Color.Black else Color.White
+    val fieldTextColor = if (isDarkTheme) Color.White else Color.Black
+    val fieldPlaceholderColor = fieldTextColor.copy(alpha = 0.58f)
+    val fieldBorder = if (isDarkTheme) {
+        Color.White.copy(alpha = 0.72f)
+    } else {
+        MaterialTheme.colorScheme.outline.copy(alpha = 0.54f)
+    }
+    val topBorderColor = if (isDarkTheme) {
+        Color.White.copy(alpha = 0.14f)
+    } else {
+        Color.Black.copy(alpha = 0.10f)
+    }
+    val sendButtonColor = when (themeMode) {
+        ThemeMode.PINK -> MaterialTheme.colorScheme.primary
+        ThemeMode.BLUE -> MaterialTheme.colorScheme.primary
+        else -> if (isDarkTheme) Color.White else MaterialTheme.colorScheme.primary
+    }
+    val sendIconColor = if (sendButtonColor.luminance() > 0.55f) Color.Black else Color.White
     Surface(
         modifier = Modifier.fillMaxWidth(),
         tonalElevation = 3.dp,
-        shape = RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp),
-        color = fieldBackground
+        shape = RoundedCornerShape(topStart = 0.dp, topEnd = 0.dp),
+        color = composerBackground
     ) {
         Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 10.dp)
+            modifier = Modifier.fillMaxWidth()
         ) {
-            Row(verticalAlignment = Alignment.Bottom) {
+            HorizontalDivider(
+                thickness = 1.dp,
+                color = topBorderColor
+            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.Bottom
+            ) {
                 OutlinedTextField(
                     value = input,
                     onValueChange = onInputChange,
@@ -1293,27 +1546,27 @@ private fun MessageComposer(
                     shape = RoundedCornerShape(20.dp),
                     placeholder = { Text("Mensagem") },
                     colors = OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = fieldForeground,
-                        unfocusedTextColor = fieldForeground,
+                        focusedTextColor = fieldTextColor,
+                        unfocusedTextColor = fieldTextColor,
                         focusedContainerColor = fieldBackground,
                         unfocusedContainerColor = fieldBackground,
                         disabledContainerColor = fieldBackground,
-                        cursorColor = fieldForeground,
+                        cursorColor = fieldTextColor,
                         focusedBorderColor = fieldBorder,
                         unfocusedBorderColor = fieldBorder,
-                        focusedPlaceholderColor = fieldMuted,
-                        unfocusedPlaceholderColor = fieldMuted
+                        focusedPlaceholderColor = fieldPlaceholderColor,
+                        unfocusedPlaceholderColor = fieldPlaceholderColor
                     ),
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                     keyboardActions = KeyboardActions(onSend = { onSend() })
                 )
                 Spacer(Modifier.width(8.dp))
-                Surface(shape = CircleShape, color = fieldForeground) {
+                Surface(shape = CircleShape, color = sendButtonColor) {
                     IconButton(onClick = onSend) {
                         Icon(
                             Icons.AutoMirrored.Outlined.Send,
                             contentDescription = "Enviar",
-                            tint = fieldBackground
+                            tint = sendIconColor
                         )
                     }
                 }
@@ -1371,12 +1624,12 @@ private fun compactOnionRoute(value: String): String {
 
 private fun chatRoutePresenceLabel(
     networkAvailable: Boolean,
-    serviceReady: Boolean,
+    serviceStarting: Boolean,
     partnerConnected: Boolean
 ): String {
     val networkStatus = chatNetworkStatusLabel(
         networkAvailable = networkAvailable,
-        serviceReady = serviceReady
+        serviceStarting = serviceStarting
     )
     if (networkStatus.isNotBlank()) return networkStatus
     return if (partnerConnected) "online" else "Aguardando contato..."
@@ -1384,11 +1637,11 @@ private fun chatRoutePresenceLabel(
 
 private fun chatNetworkStatusLabel(
     networkAvailable: Boolean,
-    serviceReady: Boolean
+    serviceStarting: Boolean
 ): String {
     return when {
         !networkAvailable -> "Sem conexão"
-        !serviceReady -> "Iniciando..."
+        serviceStarting -> "Iniciando..."
         else -> ""
     }
 }
