@@ -2,6 +2,7 @@ package com.null0x.chat.viewmodel
 
 import android.app.Application
 import android.content.Context
+import android.location.Location
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -9,6 +10,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.null0x.chat.AppBranding
 import com.null0x.chat.AppVisibility
 import com.null0x.chat.model.DeliveryState
 import com.null0x.chat.model.Message
@@ -25,14 +27,16 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.security.MessageDigest
+import kotlin.math.cos
+import kotlin.math.round
 
 class ChatViewModel(application: Application) : AndroidViewModel(application) {
     companion object {
         private const val ROUTE_TOKENS_PREFS = "route_tokens"
         private const val LAST_PUBLIC_ROUTE_KEY = "last_public_route"
         private const val CONVERSATION_STATE_PREFS = "conversation_state"
-        private const val CONTACT_REQUEST_PREFIX = "[NullChat:contact-request]"
-        private const val CONTACT_ACCEPT_PREFIX = "[NullChat:contact-accept]"
+        private const val CONTACT_REQUEST_PREFIX = "[Null0xChat:contact-request]"
+        private const val CONTACT_ACCEPT_PREFIX = "[Null0xChat:contact-accept]"
         private const val CONTACT_ACCEPT_NOTICE_PREFIX = "accepted_notice"
     }
 
@@ -84,11 +88,32 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val updatedAt: Long
     )
 
+    enum class EphemeralMediaType(val label: String) {
+        PHOTO("@Foto"),
+        VIDEO("@Vídeo"),
+        AUDIO("@Áudio")
+    }
+
     data class ContactPreview(
         val username: String,
         val displayName: String,
         val emoji: String,
         val accepted: Boolean
+    )
+
+    enum class LocationSharingMode {
+        UNSET,
+        NONE,
+        ALL,
+        SELECTED,
+        EMERGENCY
+    }
+
+    data class SharedRouteLocation(
+        val latitude: Double,
+        val longitude: Double,
+        val accuracyMeters: Float?,
+        val updatedAt: Long
     )
 
     private val nodeManager = ChatNodeManager
@@ -101,6 +126,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val conversationStatePrefs = application.applicationContext.getSharedPreferences(CONVERSATION_STATE_PREFS, Context.MODE_PRIVATE)
     private val conversationDraftsPrefs = application.applicationContext.getSharedPreferences("conversation_drafts", Context.MODE_PRIVATE)
     private val privacyNoticesKey = "privacy_notices"
+    private val showChatPresenceStatusKey = "show_chat_presence_status"
+    private val showChatLastActivityKey = "show_chat_last_activity"
+    private val locationSharingModeKey = "location_sharing_mode"
+    private val locationSharingRoutesKey = "location_sharing_routes"
+    private val locationEmergencyRoutesKey = "location_emergency_routes"
+    private val locationGridSizeMeters = 500f
+    private val locationUpdateThresholdMeters = 250f
     private val outgoingSendJobs = mutableMapOf<String, Job>()
     private val outgoingSendLock = Any()
 
@@ -304,6 +336,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         private set
     var currentChatSettingsAllowScreenshots by mutableStateOf(false)
         private set
+    var showChatPresenceStatus by mutableStateOf(true)
+        private set
+    var showChatLastActivity by mutableStateOf(true)
+        private set
     private var profileEmoji by mutableStateOf("🙂")
     private var profileBio by mutableStateOf("")
     private var routeNamesVersion by mutableStateOf(0)
@@ -323,6 +359,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     var targetUsername by mutableStateOf("")
         private set
+    var pendingMediaRecorderTarget by mutableStateOf<String?>(null)
+        private set
     var inChat by mutableStateOf(false)
         private set
 
@@ -332,6 +370,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         private set
     var profileBioText by mutableStateOf("")
         private set
+    var locationSharingMode by mutableStateOf(LocationSharingMode.UNSET)
+        private set
+    var locationSharingAllowedRoutes by mutableStateOf<Set<String>>(emptySet())
+        private set
+    var locationEmergencyAllowedRoutes by mutableStateOf<Set<String>>(emptySet())
+        private set
+    private var lastObservedLocation: Location? = null
+    private var lastPublishedLocation: Location? = null
 
     var needsProfileSetup by mutableStateOf(false)
         private set
@@ -351,12 +397,17 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         contactRouteInput = ""
         defaultKeepViewedMessages = profilePrefs.getBoolean("keep_viewed_messages", true)
         defaultAllowScreenshots = profilePrefs.getBoolean("chat_screenshots_enabled", false)
+        showChatPresenceStatus = profilePrefs.getBoolean(showChatPresenceStatusKey, true)
+        showChatLastActivity = profilePrefs.getBoolean(showChatLastActivityKey, true)
         currentKeepViewedMessages = defaultKeepViewedMessages
         currentAllowScreenshots = defaultAllowScreenshots
         profileEmoji = profilePrefs.getString("profile_emoji", "🙂")?.takeIf { it.isNotBlank() } ?: "🙂"
         profileEmojiSymbol = profileEmoji
         profileBio = profilePrefs.getString("profile_bio", "")?.orEmpty() ?: ""
         profileBioText = profileBio
+        locationSharingMode = loadLocationSharingMode()
+        locationSharingAllowedRoutes = loadLocationSharingRoutes()
+        locationEmergencyAllowedRoutes = loadLocationEmergencyRoutes()
         myUsername = lastKnownOwnRoute().ifBlank { myUsername }
         nodeManager.setChatMessageAuthorization { route -> canMessageContact(route) }
         prepareLocalListsSynchronously()
@@ -365,6 +416,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         nodeManager.setProfileEmoji(application.applicationContext, profileEmoji)
         nodeManager.setProfileBio(application.applicationContext, profileBio)
         nodeManager.setProfilePolicy(defaultKeepViewedMessages, defaultAllowScreenshots)
+        nodeManager.setLocationSharingPolicy(
+            shareWithAll = shouldShareWithAll(locationSharingMode),
+            allowedRoutes = policyRoutesFor(locationSharingMode)
+        )
         privacyNotices.addAll(loadPrivacyNotices())
         nodeManager.addListener(listener)
         schedulePendingOutgoingMessages()
@@ -467,6 +522,18 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     fun isKeepViewedMessagesEnabled(): Boolean = defaultKeepViewedMessages
 
     fun isScreenshotsEnabled(): Boolean = defaultAllowScreenshots
+
+    fun updateChatPresenceStatusVisibility(visible: Boolean) {
+        if (showChatPresenceStatus == visible) return
+        showChatPresenceStatus = visible
+        profilePrefs.edit().putBoolean(showChatPresenceStatusKey, visible).apply()
+    }
+
+    fun updateChatLastActivityVisibility(visible: Boolean) {
+        if (showChatLastActivity == visible) return
+        showChatLastActivity = visible
+        profilePrefs.edit().putBoolean(showChatLastActivityKey, visible).apply()
+    }
 
     fun updateScreenshotsPreference(enabled: Boolean) {
         if (defaultAllowScreenshots == enabled) return
@@ -769,21 +836,25 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     fun contactPreviews(): List<ContactPreview> {
         contactsVersion
         routeNamesVersion
-        return (contactRoutesWithPrefix("requested:") + contactRoutesWithPrefix("accepted:"))
+        val contactRoutes = buildList {
+            addAll(chatStore.knownPeers())
+            addAll(contactRoutesWithPrefix("requested:"))
+            addAll(contactRoutesWithPrefix("accepted:"))
+        }
             .map { canonicalConversationKey(it) }
             .filter { it.isNotBlank() }
             .distinct()
             .filter { isContactActive(it) }
             .filterNot { isContactBlocked(it) }
-            .map { route ->
-                ContactPreview(
-                    username = route,
-                    displayName = chatTitleFor(route),
-                    emoji = publicEmojiForRoute(route),
-                    accepted = isContactAccepted(route)
-                )
-            }
-            .sortedWith(compareByDescending<ContactPreview> { it.accepted }.thenBy { it.displayName.lowercase() })
+
+        return contactRoutes.map { route ->
+            ContactPreview(
+                username = route,
+                displayName = chatTitleFor(route),
+                emoji = publicEmojiForRoute(route),
+                accepted = isContactAccepted(route)
+            )
+        }
     }
 
     fun blockedContactPreviews(): List<ContactPreview> {
@@ -831,7 +902,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             )
         }
         return JSONObject()
-            .put("format", "nullchat.contacts.v1")
+            .put("format", "null0xchat.contacts.v1")
             .put("createdAt", System.currentTimeMillis())
             .put("contacts", contacts)
             .toString(2)
@@ -951,11 +1022,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         return token
     }
 
-    fun isValidNullChatQrToken(token: String): Boolean {
+    fun isValidNoChatQrToken(token: String): Boolean {
         val clean = canonicalConversationKey(token)
         if (clean.isBlank()) return false
         return resolveContactRouteQuery(clean).isNotBlank()
     }
+
+    @Deprecated("Use isValidNoChatQrToken")
+    fun isValidNull0xChatQrToken(token: String): Boolean = isValidNoChatQrToken(token)
 
     fun isLocalRoute(username: String): Boolean {
         return isLocalOwnerRoute(username)
@@ -1116,6 +1190,79 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         return conversationPreviewCache
     }
 
+    fun requestMediaRecorderOnOpen(username: String) {
+        val target = canonicalConversationKey(username)
+        if (target.isNotBlank()) {
+            pendingMediaRecorderTarget = target
+        }
+    }
+
+    fun consumeMediaRecorderOnOpen(username: String): Boolean {
+        val target = canonicalConversationKey(username)
+        if (target.isBlank() || pendingMediaRecorderTarget != target) return false
+        pendingMediaRecorderTarget = null
+        return true
+    }
+
+    fun shareLocationWithAllContacts(location: Location? = null) {
+        locationSharingMode = LocationSharingMode.ALL
+        locationSharingAllowedRoutes = emptySet()
+        applyLocationSharing(location = location)
+    }
+
+    fun shareLocationWithSelectedContacts(routes: Set<String>, location: Location? = null) {
+        locationSharingMode = LocationSharingMode.SELECTED
+        locationSharingAllowedRoutes = cleanRouteSet(routes)
+        applyLocationSharing(location = location)
+    }
+
+    fun shareLocationInEmergency(routes: Set<String>, location: Location? = null) {
+        val cleanEmergencyRoutes = cleanRouteSet(routes)
+            .filter { isContactAccepted(it) }
+            .take(3)
+            .toSet()
+        if (cleanEmergencyRoutes.isEmpty()) {
+            locationEmergencyAllowedRoutes = emptySet()
+            if (locationSharingMode == LocationSharingMode.EMERGENCY) {
+                locationSharingMode = LocationSharingMode.NONE
+            }
+            applyLocationSharing(location = location)
+            return
+        }
+        locationSharingMode = LocationSharingMode.EMERGENCY
+        locationEmergencyAllowedRoutes = cleanEmergencyRoutes
+        applyLocationSharing(location = location)
+    }
+
+    fun disableLocationSharing() {
+        locationSharingMode = LocationSharingMode.NONE
+        locationSharingAllowedRoutes = emptySet()
+        locationEmergencyAllowedRoutes = emptySet()
+        lastPublishedLocation = null
+        saveLocationSharing()
+        nodeManager.setLocationSharingPolicy(shareWithAll = false, allowedRoutes = emptySet())
+    }
+
+    fun updateSharedLocation(location: Location) {
+        lastObservedLocation = Location(location)
+        if (!AppVisibility.isVisible || !isLocationSharingActive()) {
+            return
+        }
+        publishSharedLocation(location, force = false)
+    }
+
+    fun sharedLocationForRoute(route: String): SharedRouteLocation? {
+        val profile = nodeManager.publicProfileFor(canonicalConversationKey(route)) ?: return null
+        val latitude = profile.latitude ?: return null
+        val longitude = profile.longitude ?: return null
+        return SharedRouteLocation(
+            latitude = latitude,
+            longitude = longitude,
+            accuracyMeters = profile.accuracyMeters,
+            updatedAt = profile.locationUpdatedAt
+        )
+    }
+
     fun draftFor(username: String): String {
         val target = canonicalConversationKey(username)
         if (target.isBlank()) return ""
@@ -1210,6 +1357,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     fun send(text: String) {
         sendTo(targetUsername, text)
+    }
+
+    fun sendEphemeralMediaTo(username: String, type: EphemeralMediaType) {
+        sendTo(username, type.label)
     }
 
     fun sendTo(username: String, text: String) {
@@ -1692,6 +1843,131 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val clean = canonicalConversationKey(route)
         if (isLocalRoute(clean)) return profileBioText
         return nodeManager.publicProfileFor(clean)?.bio.orEmpty()
+    }
+
+    private fun loadLocationSharingMode(): LocationSharingMode {
+        return when (profilePrefs.getString(locationSharingModeKey, "unset")) {
+            "none" -> LocationSharingMode.NONE
+            "all" -> LocationSharingMode.ALL
+            "selected" -> LocationSharingMode.SELECTED
+            "emergency" -> LocationSharingMode.EMERGENCY
+            else -> LocationSharingMode.UNSET
+        }
+    }
+
+    private fun loadLocationSharingRoutes(): Set<String> {
+        val raw = profilePrefs.getString(locationSharingRoutesKey, "").orEmpty()
+        return raw.split('\n')
+            .map { canonicalConversationKey(it) }
+            .filter { it.isNotBlank() }
+            .toSet()
+    }
+
+    private fun loadLocationEmergencyRoutes(): Set<String> {
+        val raw = profilePrefs.getString(locationEmergencyRoutesKey, "").orEmpty()
+        return raw.split('\n')
+            .map { canonicalConversationKey(it) }
+            .filter { it.isNotBlank() }
+            .toSet()
+    }
+
+    private fun saveLocationSharing() {
+        val modeValue = when (locationSharingMode) {
+            LocationSharingMode.UNSET -> "unset"
+            LocationSharingMode.NONE -> "none"
+            LocationSharingMode.ALL -> "all"
+            LocationSharingMode.SELECTED -> "selected"
+            LocationSharingMode.EMERGENCY -> "emergency"
+        }
+        profilePrefs.edit()
+            .putString(locationSharingModeKey, modeValue)
+            .putString(locationSharingRoutesKey, locationSharingAllowedRoutes.joinToString("\n"))
+            .putString(locationEmergencyRoutesKey, locationEmergencyAllowedRoutes.joinToString("\n"))
+            .apply()
+    }
+
+    private fun applyLocationSharing(location: Location? = null) {
+        lastPublishedLocation = null
+        saveLocationSharing()
+        nodeManager.setLocationSharingPolicy(
+            shareWithAll = shouldShareWithAll(locationSharingMode),
+            allowedRoutes = policyRoutesFor(locationSharingMode)
+        )
+        val immediateLocation = location ?: lastObservedLocation
+        if (immediateLocation != null && isLocationSharingActive()) {
+            publishSharedLocation(immediateLocation, force = true)
+        }
+    }
+
+    private fun publishSharedLocation(location: Location, force: Boolean) {
+        if (!force && locationSharingMode != LocationSharingMode.EMERGENCY) {
+            val previous = lastPublishedLocation
+            if (previous != null && previous.distanceTo(location) < locationUpdateThresholdMeters) {
+                return
+            }
+        }
+        val outgoingLocation = if (locationSharingMode == LocationSharingMode.EMERGENCY) {
+            location
+        } else {
+            location.coarsened(locationGridSizeMeters)
+        }
+        lastPublishedLocation = Location(outgoingLocation)
+        nodeManager.setSharedLocation(
+            latitude = outgoingLocation.latitude,
+            longitude = outgoingLocation.longitude,
+            accuracyMeters = outgoingLocation.accuracy.takeIf {
+                locationSharingMode == LocationSharingMode.EMERGENCY && outgoingLocation.hasAccuracy()
+            },
+            updatedAt = outgoingLocation.time.takeIf { it > 0L } ?: System.currentTimeMillis()
+        )
+    }
+
+    private fun isLocationSharingActive(): Boolean {
+        return when (locationSharingMode) {
+            LocationSharingMode.ALL,
+            LocationSharingMode.SELECTED,
+            LocationSharingMode.EMERGENCY -> true
+            LocationSharingMode.NONE,
+            LocationSharingMode.UNSET -> false
+        }
+    }
+
+    private fun shouldShareWithAll(mode: LocationSharingMode): Boolean {
+        return mode == LocationSharingMode.ALL
+    }
+
+    private fun policyRoutesFor(mode: LocationSharingMode): Set<String> {
+        return when (mode) {
+            LocationSharingMode.SELECTED -> locationSharingAllowedRoutes
+            LocationSharingMode.EMERGENCY -> locationEmergencyAllowedRoutes
+                .filter { isContactAccepted(it) }
+                .take(3)
+                .toSet()
+            else -> emptySet()
+        }
+    }
+
+    private fun cleanRouteSet(routes: Set<String>): Set<String> {
+        return routes
+            .map { canonicalConversationKey(it) }
+            .filter { it.isNotBlank() }
+            .toSet()
+    }
+
+    private fun Location.coarsened(gridMeters: Float): Location {
+        val latScale = 111_320.0
+        val lonScale = (111_320.0 * cos(Math.toRadians(latitude))).coerceAtLeast(1e-6)
+        val latMeters = latitude * latScale
+        val lonMeters = longitude * lonScale
+        val roundedLatMeters = round(latMeters / gridMeters) * gridMeters
+        val roundedLonMeters = round(lonMeters / gridMeters) * gridMeters
+        return Location(this).apply {
+            latitude = roundedLatMeters / latScale
+            longitude = roundedLonMeters / lonScale
+            if (hasAccuracy()) {
+                accuracy = gridMeters
+            }
+        }
     }
 
     private fun conversationLabelFor(route: String): String {

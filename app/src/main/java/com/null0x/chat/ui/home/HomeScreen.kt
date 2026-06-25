@@ -8,6 +8,8 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.LocalOverscrollConfiguration
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
@@ -24,7 +26,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -32,15 +33,14 @@ import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ChatBubble
 import androidx.compose.material.icons.filled.Contacts
 import androidx.compose.material.icons.filled.Done
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.Button
@@ -68,18 +68,22 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
@@ -87,10 +91,13 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.null0x.chat.network.ChatNodeManager
 import com.null0x.chat.network.TorManager
-import com.null0x.chat.ui.common.CursorAwareOutlinedTextField
+import com.null0x.chat.ui.common.SystemBarsColorEffect
 import com.null0x.chat.ui.maskedRouteLabel
 import com.null0x.chat.ui.profile.RouteProfileScreen
+import com.null0x.chat.security.SensitiveClipboard
 import com.null0x.chat.security.AppSecurityManager
+import com.null0x.chat.ui.theme.AppearancePreference
+import com.null0x.chat.ui.theme.themeBackgroundColor
 import com.null0x.chat.ui.theme.ThemePreference
 import com.null0x.chat.viewmodel.ChatViewModel
 import kotlinx.coroutines.delay
@@ -112,6 +119,14 @@ fun HomeScreen(
     val networkAvailable by TorManager.networkAvailableState.collectAsState()
     val knownRoutesRefreshing by ChatNodeManager.knownRoutesRefreshing.collectAsState()
     val themeMode by ThemePreference.themeMode.collectAsState()
+    val appearance by AppearancePreference.appearance.collectAsState()
+    val systemDarkTheme = isSystemInDarkTheme()
+    val homeBackgroundColor = themeBackgroundColor(themeMode, systemDarkTheme)
+    SystemBarsColorEffect(
+        statusBarColor = Color.Transparent,
+        navigationBarColor = homeBackgroundColor,
+        statusBarDarkIcons = homeBackgroundColor.luminance() > 0.5f
+    )
     val publicRoute = vm.currentPublicRoute()
     val serviceReady = serviceStatus is TorManager.Status.Ready
     val serviceStarting = serviceStatus is TorManager.Status.Starting
@@ -138,7 +153,7 @@ fun HomeScreen(
     var selectedChatUsernames by remember { mutableStateOf(setOf<String>()) }
     var pendingProfileChange by remember { mutableStateOf<PendingProfileChange?>(null) }
     var profileAuthError by rememberSaveable { mutableStateOf("") }
-    var headerSearchActive by rememberSaveable { mutableStateOf(false) }
+    var headerSearchActive by remember { mutableStateOf(false) }
     var showRouteQrScanner by rememberSaveable { mutableStateOf(false) }
     val routeCameraPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
@@ -163,6 +178,21 @@ fun HomeScreen(
     val contacts = vm.contactPreviews()
     val pendingContactRequests = vm.pendingContactRequests()
     val blockedContacts = vm.blockedContactPreviews()
+    val distanceLocation = rememberGpsLocation(
+        context = context,
+        enabled = context.hasLocationPermission() && context.isGpsEnabled()
+    )
+    LaunchedEffect(distanceLocation, vm.locationSharingMode) {
+        if (
+            distanceLocation != null &&
+            vm.locationSharingMode != ChatViewModel.LocationSharingMode.UNSET &&
+            vm.locationSharingMode != ChatViewModel.LocationSharingMode.NONE
+        ) {
+            vm.updateSharedLocation(distanceLocation)
+        }
+    }
+    val searchFocusRequester = remember { FocusRequester() }
+    val keyboardController = LocalSoftwareKeyboardController.current
     BackHandler(enabled = showShareRoute) {
         showShareRoute = false
     }
@@ -171,6 +201,18 @@ fun HomeScreen(
     }
     BackHandler(enabled = selectedChatUsernames.isNotEmpty()) {
         selectedChatUsernames = emptySet()
+    }
+    BackHandler(enabled = headerSearchActive) {
+        headerSearchActive = false
+        query = ""
+        searchSummary = null
+        vm.updateContactRouteInput("")
+        keyboardController?.hide()
+    }
+    BackHandler(enabled = tab != HomeTab.Chats && !showShareRoute && selectedContactUsername == null && selectedChatUsernames.isEmpty()) {
+        scope.launch {
+            pagerState.animateScrollToPage(HomeTab.Chats.ordinal)
+        }
     }
     val dockBadges = remember(
         conversations,
@@ -183,6 +225,7 @@ fun HomeScreen(
         mapOf(
             HomeTab.Chats to conversations.sumOf { it.unreadCount },
             HomeTab.Contacts to pendingContactRequests.size + if (vm.routeLookup?.isLocalOwner == false) 1 else 0,
+            HomeTab.Map to 0,
             HomeTab.Profile to profileAttentionCount(vm.profileName, vm.profileEmojiSymbol, vm.profileBioText),
             HomeTab.Settings to 0
         )
@@ -190,6 +233,7 @@ fun HomeScreen(
     val visibleConversations = searchSummary?.conversations ?: conversations
     var showRefreshingTitle by remember { mutableStateOf(false) }
     var showStartingTitle by remember { mutableStateOf(false) }
+    var mapTitle by rememberSaveable { mutableStateOf("Mapa") }
 
     LaunchedEffect(networkAvailable, serviceReady, knownRoutesRefreshing) {
         showRefreshingTitle = false
@@ -227,234 +271,277 @@ fun HomeScreen(
         }
     }
 
+    LaunchedEffect(headerSearchActive, query, tab) {
+        if (!headerSearchActive) {
+            searchSummary = null
+            query = ""
+            vm.updateContactRouteInput("")
+            return@LaunchedEffect
+        }
+        if (tab != HomeTab.Chats) {
+            searchSummary = null
+            return@LaunchedEffect
+        }
+        delay(220)
+        searchSummary = if (query.isBlank()) {
+            null
+        } else {
+            vm.searchExactMessages(query)
+        }
+    }
+
+    LaunchedEffect(headerSearchActive) {
+        if (headerSearchActive) {
+            delay(120)
+            searchFocusRequester.requestFocus()
+            keyboardController?.show()
+        } else {
+            keyboardController?.hide()
+        }
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
         Scaffold(
             modifier = Modifier.fillMaxSize(),
             topBar = {
-                val headerTitle = when (tab) {
-                    HomeTab.Chats, HomeTab.Contacts -> when {
-                        !networkAvailable -> "Aguardando rede..."
-                        showStartingTitle -> "Iniciando..."
-                        showRefreshingTitle -> "Atualizando..."
-                        else -> tab.title
-                    }
-                    else -> tab.title
-                }
-                val searchEnabled = tab == HomeTab.Chats || tab == HomeTab.Contacts
-                val headerSearchValue = when (tab) {
-                    HomeTab.Chats -> query
-                    HomeTab.Contacts -> vm.contactRouteInput
-                    else -> ""
-                }
-                val headerSearchPlaceholder = when (tab) {
-                    HomeTab.Chats -> "Buscar mensagens"
-                    HomeTab.Contacts -> "Rota ou token"
-                    else -> "Pesquisar"
-                }
-                fun submitHeaderSearch() {
-                    when (tab) {
-                        HomeTab.Chats -> {
-                            scope.launch {
-                                searchSummary = if (query.trim().isBlank()) {
-                                    null
-                                } else {
-                                    vm.searchExactMessages(query.trim())
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    color = MaterialTheme.colorScheme.background,
+                    tonalElevation = 0.dp,
+                    shadowElevation = 0.dp
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(HomeHeaderHeight)
+                            .padding(horizontal = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = when (tab) {
+                                HomeTab.Chats, HomeTab.Contacts -> when {
+                                    !networkAvailable -> "Aguardando rede..."
+                                    showStartingTitle -> "Iniciando..."
+                                    showRefreshingTitle -> "Atualizando..."
+                                    else -> tab.title
                                 }
+                                HomeTab.Map -> mapTitle.ifBlank { tab.title }
+                                else -> tab.title
+                            },
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onBackground,
+                            textAlign = if (tab == HomeTab.Map) TextAlign.Center else TextAlign.Start,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = if (tab == HomeTab.Map) {
+                                Modifier.fillMaxWidth()
+                            } else {
+                                Modifier.padding(start = 16.dp)
                             }
-                        }
-                        HomeTab.Contacts -> vm.addContactRouteFromInput()
-                        else -> Unit
+                        )
                     }
                 }
-                AppHeader(
-                    title = if (tab == HomeTab.Chats && selectedChatUsernames.isNotEmpty()) {
-                        "${selectedChatUsernames.size} selecionados"
-                    } else {
-                        headerTitle
-                    },
-                    selectedContactUsername = selectedContactUsername.takeIf { tab == HomeTab.Contacts },
-                    selectedChatsCount = selectedChatUsernames.takeIf { tab == HomeTab.Chats }?.size ?: 0,
-                    searchEnabled = searchEnabled,
-                    searchActive = headerSearchActive && searchEnabled,
-                    searchValue = headerSearchValue,
-                    searchPlaceholder = headerSearchPlaceholder,
-                    onSearchActiveChange = { active ->
-                        headerSearchActive = active
-                        if (!active && tab == HomeTab.Chats) {
-                            searchSummary = null
-                        }
-                    },
-                    onSearchValueChange = { value ->
-                        when (tab) {
-                            HomeTab.Chats -> {
-                                query = value
-                                searchSummary = null
-                            }
-                            HomeTab.Contacts -> vm.updateContactRouteInput(value)
-                            else -> Unit
-                        }
-                    },
-                    onSearchSubmit = { submitHeaderSearch() },
-                    onSearchQrClick = { openRouteQrScanner() },
-                    onDeleteSelectedChats = {
-                        selectedChatUsernames.forEach(vm::removeConversation)
-                        selectedChatUsernames = emptySet()
-                    },
-                    onClearSelectedChats = {
-                        selectedChatUsernames.forEach(vm::clearConversation)
-                        selectedChatUsernames = emptySet()
-                    },
-                    onSelectAllChats = {
-                        selectedChatUsernames = visibleConversations.map { it.username }.toSet()
-                    },
-                    onDeleteSelectedContact = {
-                        selectedContactUsername?.let(vm::removeContact)
-                        selectedContactUsername = null
-                    },
-                    onLockApp = onLockApp
-                )
             },
             bottomBar = {
-                Box(modifier = Modifier.navigationBarsPadding()) {
-                    BottomDock(
-                        selected = tab,
-                        badges = dockBadges,
-                        onSelect = { targetTab ->
-                            scope.launch {
-                                val currentPage = pagerState.currentPage
-                                val targetPage = targetTab.ordinal
-                                if (targetPage == currentPage) return@launch
-                                pagerState.animateScrollToPage(targetPage)
-                            }
+                BottomDock(
+                    selected = tab,
+                    badges = dockBadges,
+                    searchEnabled = tab == HomeTab.Chats || tab == HomeTab.Contacts,
+                    searchActive = headerSearchActive,
+                    searchValue = if (tab == HomeTab.Contacts) vm.contactRouteInput else query,
+                    searchPlaceholder = "Pesquisar",
+                    searchFocusRequester = searchFocusRequester,
+                    onSearchValueChange = { value ->
+                        if (tab == HomeTab.Contacts) {
+                            vm.updateContactRouteInput(value.take(180))
+                        } else {
+                            query = value.take(120)
                         }
-                    )
-                }
+                    },
+                    onSearchSubmit = {
+                        if (tab == HomeTab.Contacts) {
+                            vm.addContactRouteFromInput()
+                        }
+                        keyboardController?.hide()
+                    },
+                    onSearchToggle = {
+                        if (headerSearchActive) {
+                            headerSearchActive = false
+                            query = ""
+                            searchSummary = null
+                            vm.updateContactRouteInput("")
+                            keyboardController?.hide()
+                        } else {
+                            headerSearchActive = true
+                        }
+                    },
+                    selectedContactUsername = selectedContactUsername,
+                    onDeleteSelectedContact = {
+                        selectedContactUsername?.let { username ->
+                            vm.removeContact(username)
+                            selectedContactUsername = null
+                        }
+                    },
+                    onLockApp = onLockApp,
+                    onSelect = { targetTab ->
+                        scope.launch {
+                            val currentPage = pagerState.currentPage
+                            val targetPage = targetTab.ordinal
+                            if (targetPage == currentPage) return@launch
+                            pagerState.animateScrollToPage(targetPage)
+                        }
+                    }
+                )
             }
         ) { innerPadding ->
             HorizontalPager(
                 state = pagerState,
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(innerPadding),
-                beyondViewportPageCount = 1
+                    .padding(innerPadding)
+                    .clipToBounds(),
+                beyondViewportPageCount = 2,
+                userScrollEnabled = pagerState.settledPage != HomeTab.Map.ordinal
             ) {
-                when (HomeTab.entries[it]) {
-                    HomeTab.Chats -> ChatsTabSelectionAware(
-                        conversations = visibleConversations,
-                        searchSummary = searchSummary,
-                        myUsername = vm.myUsername,
-                        profileEmoji = vm.profileEmojiSymbol,
-                        hasSearch = searchSummary != null,
-                        selectedChatUsernames = selectedChatUsernames,
-                        isRouteActive = vm::isPartnerOnline,
-                        onSelect = {
-                            vm.selectTarget(it)
-                            onOpenChat(it)
-                        },
-                        onToggleSelection = { username ->
-                            selectedChatUsernames = if (selectedChatUsernames.contains(username)) {
-                                selectedChatUsernames - username
-                            } else {
-                                selectedChatUsernames + username
-                            }
-                        }
-                    )
-                    HomeTab.Contacts -> ContactsTab(
-                        routeName = vm.contactRouteInput,
-                        onRouteNameChange = vm::updateContactRouteInput,
-                        routeLookup = vm.routeLookup,
-                        routeStatus = vm.routeStatus,
-                        onSearchRouteName = vm::addContactRouteFromInput,
-                        routeSearchInHeader = headerSearchActive && tab == HomeTab.Contacts,
-                        showQrScanner = showRouteQrScanner,
-                        onShowQrScannerChange = { showRouteQrScanner = it },
-                        contacts = contacts,
-                        pendingRequests = pendingContactRequests,
-                        isValidQrCode = vm::isValidNullChatQrToken,
-                        isContactRequested = vm::isContactRequested,
-                        isContactAccepted = vm::isContactAccepted,
-                        isContactActive = vm::isContactActive,
-                        isRouteActive = vm::isPartnerOnline,
-                        onAddContact = vm::addContact,
-                        onCancelContact = vm::cancelContactRequest,
-                        onRemoveContact = vm::removeContact,
-                        onAcceptContact = vm::acceptContactRequest,
-                        shouldShowAcceptedNotice = vm::shouldShowAcceptedNotice,
-                        onAcceptedNoticeShown = vm::markAcceptedNoticeShown,
-                        onOpenProfile = { username ->
-                            selectedContactUsername = null
-                            routeProfileTarget = username
-                            showRouteProfile = true
-                        },
-                        onSelect = {
-                            if (selectedContactUsername == it) {
-                                selectedContactUsername = null
-                            } else if (selectedContactUsername != null) {
-                                selectedContactUsername = it
-                            } else {
-                                if (vm.isContactAccepted(it) && vm.isContactActive(it)) {
-                                    vm.selectTarget(it)
-                                    onOpenChat(it)
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.background
+                ) {
+                    when (HomeTab.entries[it]) {
+                        HomeTab.Chats -> ChatsTabSelectionAware(
+                            conversations = visibleConversations,
+                            searchSummary = searchSummary,
+                            myUsername = vm.myUsername,
+                            profileEmoji = vm.profileEmojiSymbol,
+                            hasSearch = searchSummary != null,
+                            publicRouteToken = publicRouteToken,
+                            selectedChatUsernames = selectedChatUsernames,
+                            isRouteActive = vm::isPartnerOnline,
+                            onSelect = {
+                                vm.selectTarget(it)
+                                onOpenChat(it)
+                            },
+                            onToggleSelection = { username ->
+                                selectedChatUsernames = if (selectedChatUsernames.contains(username)) {
+                                    selectedChatUsernames - username
                                 } else {
-                                    routeProfileTarget = it
-                                    showRouteProfile = true
+                                    selectedChatUsernames + username
                                 }
                             }
-                        },
-                        selectedContactUsername = selectedContactUsername,
-                        onSelectContactForDeletion = { selectedContactUsername = it }
-                    )
-                    HomeTab.Profile -> ProfileTab(
-                        profileName = vm.profileName,
-                        profileEmoji = vm.profileEmojiSymbol,
-                        publicRoute = publicRoute,
-                        publicRouteToken = publicRouteToken,
-                        routeLabel = routeLabel,
-                        profileBio = vm.profileBioText,
-                        onProfileBioSave = { bio ->
-                            profileAuthError = ""
-                            pendingProfileChange = PendingProfileChange.Bio(bio)
-                        },
-                        onEditProfile = { showProfileDialog = true },
-                        onShareRoute = { showShareRoute = true }
-                    )
-                HomeTab.Settings -> SettingsTab(
-                    publicRoute = publicRoute,
-                    publicRouteToken = publicRouteToken,
-                    bottomPadding = 176.dp,
-                    themeMode = themeMode,
-                    onThemeModeChange = { ThemePreference.setThemeMode(context, it) },
-                    keepViewedMessages = vm.isKeepViewedMessagesEnabled(),
-                    onKeepViewedMessagesChange = vm::updateKeepViewedMessagesPreference,
-                    screenshotsEnabled = vm.isScreenshotsEnabled(),
-                    onScreenshotsEnabledChange = vm::updateScreenshotsPreference,
-                    blockedContacts = blockedContacts,
-                    onUnblockContact = vm::unblockContact,
-                    onContactsBackupRequested = vm::contactsBackupJson,
-                    onLockApp = onLockApp,
-                )
-                }
-            }
-        }
-        Box(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
-                .padding(horizontal = 0.dp, vertical = 8.dp)
-                .navigationBarsPadding()
-        ) {
-            BottomDock(
-                selected = tab,
-                badges = dockBadges,
-                onSelect = { targetTab ->
-                    scope.launch {
-                        val currentPage = pagerState.currentPage
-                        val targetPage = targetTab.ordinal
-                        if (targetPage == currentPage) return@launch
-                        pagerState.animateScrollToPage(targetPage)
+                        )
+                        HomeTab.Contacts -> ContactsTab(
+                            onRouteNameChange = vm::updateContactRouteInput,
+                            routeLookup = vm.routeLookup,
+                            routeStatus = vm.routeStatus,
+                            onSearchRouteName = vm::addContactRouteFromInput,
+                            showQrScanner = showRouteQrScanner,
+                            onShowQrScannerChange = { showRouteQrScanner = it },
+                            contacts = contacts,
+                            pendingRequests = pendingContactRequests,
+                            isValidQrCode = vm::isValidNoChatQrToken,
+                            isContactRequested = vm::isContactRequested,
+                            isContactAccepted = vm::isContactAccepted,
+                            isContactActive = vm::isContactActive,
+                            isRouteActive = vm::isPartnerOnline,
+                            onAddContact = vm::addContact,
+                            onCancelContact = vm::cancelContactRequest,
+                            onRemoveContact = vm::removeContact,
+                            onAcceptContact = vm::acceptContactRequest,
+                            shouldShowAcceptedNotice = vm::shouldShowAcceptedNotice,
+                            onAcceptedNoticeShown = vm::markAcceptedNoticeShown,
+                            onOpenProfile = { username ->
+                                selectedContactUsername = null
+                                routeProfileTarget = username
+                                showRouteProfile = true
+                            },
+                            onSelect = {
+                                if (selectedContactUsername == it) {
+                                    selectedContactUsername = null
+                                } else if (selectedContactUsername != null) {
+                                    selectedContactUsername = it
+                                } else {
+                                    vm.selectTarget(it)
+                                    onOpenChat(it)
+                                }
+                            },
+                            selectedContactUsername = selectedContactUsername,
+                            onSelectContactForDeletion = { selectedContactUsername = it }
+                        )
+                        HomeTab.Map -> MapTab(
+                            active = tab == HomeTab.Map,
+                            preheat = pagerState.currentPage == HomeTab.Map.ordinal ||
+                                pagerState.targetPage == HomeTab.Map.ordinal ||
+                                pagerState.settledPage == HomeTab.Map.ordinal,
+                            myName = vm.profileName.ifBlank { "Você" },
+                            myEmoji = vm.profileEmojiSymbol,
+                            useDarkMapColors = themeMode == com.null0x.chat.ui.theme.ThemeMode.DARK ||
+                                (themeMode == com.null0x.chat.ui.theme.ThemeMode.SYSTEM && systemDarkTheme),
+                            contacts = contacts,
+                            conversations = conversations,
+                            isRouteActive = vm::isPartnerOnline,
+                            locationSharingMode = vm.locationSharingMode,
+                            locationSharingAllowedRoutes = vm.locationSharingAllowedRoutes,
+                            sharedLocationForRoute = vm::sharedLocationForRoute,
+                            onShareLocationWithAll = vm::shareLocationWithAllContacts,
+                            onShareLocationWithSelected = vm::shareLocationWithSelectedContacts,
+                            onDisableLocationSharing = vm::disableLocationSharing,
+                            onLocationReady = vm::updateSharedLocation,
+                            onMapTitleChange = { mapTitle = it.ifBlank { "Mapa" } },
+                            onOpenChat = {
+                                vm.selectTarget(it)
+                                onOpenChat(it)
+                            },
+                            onRecordMedia = {
+                                vm.requestMediaRecorderOnOpen(it)
+                                vm.selectTarget(it)
+                                onOpenChat(it)
+                            }
+                        )
+                        HomeTab.Profile -> ProfileTab(
+                            profileName = vm.profileName,
+                            profileEmoji = vm.profileEmojiSymbol,
+                            publicRoute = publicRoute,
+                            publicRouteToken = publicRouteToken,
+                            routeLabel = routeLabel,
+                            profileBio = vm.profileBioText,
+                            onProfileBioSave = { bio ->
+                                profileAuthError = ""
+                                pendingProfileChange = PendingProfileChange.Bio(bio)
+                            },
+                            onEditProfile = { showProfileDialog = true },
+                            onShareRoute = { showShareRoute = true }
+                        )
+                        HomeTab.Settings -> SettingsTab(
+                            publicRoute = publicRoute,
+                            publicRouteToken = publicRouteToken,
+                            bottomPadding = 24.dp,
+                            themeMode = themeMode,
+                            onThemeModeChange = { ThemePreference.setThemeMode(context, it) },
+                            keepViewedMessages = vm.isKeepViewedMessagesEnabled(),
+                            onKeepViewedMessagesChange = vm::updateKeepViewedMessagesPreference,
+                            screenshotsEnabled = vm.isScreenshotsEnabled(),
+                            onScreenshotsEnabledChange = vm::updateScreenshotsPreference,
+                            showChatPresenceStatus = vm.showChatPresenceStatus,
+                            onShowChatPresenceStatusChange = vm::updateChatPresenceStatusVisibility,
+                            showChatLastActivity = vm.showChatLastActivity,
+                            onShowChatLastActivityChange = vm::updateChatLastActivityVisibility,
+                            contacts = contacts,
+                            locationSharingMode = vm.locationSharingMode,
+                            locationSharingAllowedRoutes = vm.locationSharingAllowedRoutes,
+                            locationEmergencyAllowedRoutes = vm.locationEmergencyAllowedRoutes,
+                            onShareLocationWithAll = { vm.shareLocationWithAllContacts(distanceLocation) },
+                            onShareLocationWithSelected = { vm.shareLocationWithSelectedContacts(it, distanceLocation) },
+                            onShareLocationInEmergency = { vm.shareLocationInEmergency(it) },
+                            onDisableLocationSharing = vm::disableLocationSharing,
+                            blockedContacts = blockedContacts,
+                            onUnblockContact = vm::unblockContact,
+                            onContactsBackupRequested = vm::contactsBackupJson,
+                            onLockApp = onLockApp,
+                        )
                     }
                 }
-            )
+            }
         }
     }
 
@@ -502,7 +589,30 @@ fun HomeScreen(
             profile = profile,
             onBack = { showRouteProfile = false },
             onLockApp = onLockApp,
-            onSaveLocalName = { route, name -> vm.setLocalNameForRoute(route, name) }
+            onSaveLocalName = { route, name -> vm.setLocalNameForRoute(route, name) },
+            contactBlocked = vm.isContactBlocked(target),
+            onSendMessage = {
+                vm.selectTarget(target)
+                showRouteProfile = false
+                onOpenChat(target)
+            },
+            onRecordMedia = {
+                vm.requestMediaRecorderOnOpen(target)
+                vm.selectTarget(target)
+                showRouteProfile = false
+                onOpenChat(target)
+            },
+            onRemoveContact = {
+                vm.removeContact(target)
+                showRouteProfile = false
+            },
+            onBlockContact = {
+                vm.blockContact(target)
+                showRouteProfile = false
+            },
+            onUnblockContact = {
+                vm.unblockContact(target)
+            }
         )
     }
 
@@ -511,6 +621,7 @@ fun HomeScreen(
             title = "Confirmar edição pública",
             message = "Digite a senha alfanumérica para publicar alterações no perfil.",
             error = profileAuthError,
+            baseThemeMode = themeMode,
             onDismiss = {
                 pendingProfileChange = null
                 profileAuthError = ""
@@ -543,14 +654,15 @@ private fun ChatsTabSelectionAware(
     myUsername: String,
     profileEmoji: String,
     hasSearch: Boolean,
+    publicRouteToken: String,
     selectedChatUsernames: Set<String>,
     isRouteActive: (String) -> Boolean,
     onSelect: (String) -> Unit,
     onToggleSelection: (String) -> Unit
 ) {
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-        val summaryHeight = if (searchSummary != null) 42.dp else 0.dp
-        val listHeight = (maxHeight - summaryHeight).coerceAtLeast(260.dp)
+    val summaryHeight = if (searchSummary != null) 42.dp else 0.dp
+    val listHeight = (maxHeight - summaryHeight).coerceAtLeast(260.dp)
         Column(modifier = Modifier.fillMaxSize()) {
             SearchSummaryRow(searchSummary)
             ConversationsPanelSelection(
@@ -561,6 +673,7 @@ private fun ChatsTabSelectionAware(
                 myUsername = myUsername,
                 profileEmoji = profileEmoji,
                 hasSearch = hasSearch,
+                publicRouteToken = publicRouteToken,
                 selectedChatUsernames = selectedChatUsernames,
                 isRouteActive = isRouteActive,
                 onSelect = onSelect,
@@ -590,6 +703,7 @@ private fun ConversationsPanelSelection(
     myUsername: String,
     profileEmoji: String,
     hasSearch: Boolean,
+    publicRouteToken: String,
     selectedChatUsernames: Set<String>,
     isRouteActive: (String) -> Boolean,
     onSelect: (String) -> Unit,
@@ -597,31 +711,38 @@ private fun ConversationsPanelSelection(
 ) {
     if (conversations.isEmpty()) {
         Box(modifier = modifier.fillMaxWidth()) {
-            EmptyState(myUsername = myUsername, profileEmoji = profileEmoji, hasSearch = hasSearch)
+            EmptyState(
+                myUsername = myUsername,
+                profileEmoji = profileEmoji,
+                hasSearch = hasSearch,
+                publicRouteToken = publicRouteToken
+            )
         }
         return
     }
 
-    LazyColumn(
-        modifier = modifier.fillMaxWidth(),
-        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-        verticalArrangement = Arrangement.spacedBy(2.dp)
-    ) {
-        itemsIndexed(conversations, key = { _, item -> item.username }) { _, item ->
-            val selected = selectedChatUsernames.contains(item.username)
-            ConversationRowSelectable(
-                item = item,
-                selected = selected,
-                active = isRouteActive(item.username),
-                onClick = {
-                    if (selectedChatUsernames.isNotEmpty()) {
-                        onToggleSelection(item.username)
-                    } else {
-                        onSelect(item.username)
-                    }
-                },
-                onLongClick = { onToggleSelection(item.username) }
-            )
+    CompositionLocalProvider(LocalOverscrollConfiguration provides null) {
+        LazyColumn(
+            modifier = modifier.fillMaxWidth(),
+            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            itemsIndexed(conversations, key = { _, item -> item.username }) { _, item ->
+                val selected = selectedChatUsernames.contains(item.username)
+                ConversationRowSelectable(
+                    item = item,
+                    selected = selected,
+                    active = isRouteActive(item.username),
+                    onClick = {
+                        if (selectedChatUsernames.isNotEmpty()) {
+                            onToggleSelection(item.username)
+                        } else {
+                            onSelect(item.username)
+                        }
+                    },
+                    onLongClick = { onToggleSelection(item.username) }
+                )
+            }
         }
     }
 }
@@ -650,17 +771,21 @@ private fun ConversationRowSelectable(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    modifier = Modifier.weight(1f),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     InitialAvatar(text = item.displayName, emoji = item.emoji, active = active)
                     Spacer(Modifier.width(11.dp))
-                    Column(modifier = Modifier.widthIn(max = 220.dp)) {
+                    Column(modifier = Modifier.weight(1f)) {
                         Text(
                             text = item.displayName,
                             style = MaterialTheme.typography.bodyLarge,
                             fontWeight = FontWeight.SemiBold,
-                            maxLines = 2,
-                            softWrap = true,
-                            overflow = TextOverflow.Clip
+                            maxLines = 1,
+                            softWrap = false,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.fillMaxWidth()
                         )
                         Text(
                             text = snapLine(item),
@@ -687,12 +812,10 @@ private fun ConversationRowSelectable(
 
 @Composable
 private fun ContactsTab(
-    routeName: String,
     onRouteNameChange: (String) -> Unit,
     routeLookup: ChatViewModel.RouteLookup?,
     routeStatus: String,
     onSearchRouteName: () -> Unit,
-    routeSearchInHeader: Boolean,
     showQrScanner: Boolean,
     onShowQrScannerChange: (Boolean) -> Unit,
     contacts: List<ChatViewModel.ContactPreview>,
@@ -716,18 +839,15 @@ private fun ContactsTab(
     val acceptedNoticeShown = remember { mutableStateMapOf<String, Boolean>() }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp),
+        contentPadding = PaddingValues(start = 12.dp, top = 4.dp, end = 12.dp, bottom = 12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         item {
-            SectionTitle("Adicionar contato")
             RouteSearchPanel(
-                routeName = routeName,
                 onRouteNameChange = onRouteNameChange,
                 routeLookup = routeLookup,
                 routeStatus = routeStatus,
                 onSearchRouteName = onSearchRouteName,
-                searchInHeader = routeSearchInHeader,
                 showQrScanner = showQrScanner,
                 onShowQrScannerChange = onShowQrScannerChange,
                 isValidQrCode = isValidQrCode,
@@ -760,7 +880,6 @@ private fun ContactsTab(
                 }
             }
         }
-        item { SectionTitle("Contatos") }
         if (contacts.isEmpty()) {
             item {
                 ContactsEmptyState()
@@ -785,6 +904,7 @@ private fun ContactsTab(
                         emoji = item.emoji,
                         active = item.accepted && isRouteActive(item.username),
                         onClick = { onSelect(item.username) },
+                        onAvatarClick = { onOpenProfile(item.username) },
                         statusLabel = when {
                             showAcceptedNotice -> "Aceito"
                             item.accepted -> null
@@ -851,7 +971,7 @@ private fun ProfileTab(
                             Column(modifier = Modifier.fillMaxWidth()) {
                                 Text(
                                     text = profileName.ifBlank { publicRouteToken.ifBlank { "Token da rota" } },
-                                    style = MaterialTheme.typography.headlineSmall,
+                                    style = MaterialTheme.typography.titleMedium,
                                     fontWeight = FontWeight.Bold,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
@@ -892,7 +1012,12 @@ private fun ProfileTab(
                             onClick = onShareRoute,
                             modifier = Modifier.weight(1f)
                         ) {
-                            Text("Compartilhar")
+                            Text(
+                                text = "Compartilhar",
+                                maxLines = 1,
+                                softWrap = false,
+                                overflow = TextOverflow.Ellipsis
+                            )
                         }
                         TextButton(
                             enabled = bioDraft != profileBio,
@@ -979,7 +1104,13 @@ private fun snapLine(item: ChatViewModel.ConversationPreview): String {
 }
 
 @Composable
-private fun EmptyState(myUsername: String, profileEmoji: String, hasSearch: Boolean) {
+private fun EmptyState(
+    myUsername: String,
+    profileEmoji: String,
+    hasSearch: Boolean,
+    publicRouteToken: String
+) {
+    val context = LocalContext.current
     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Surface(
             modifier = Modifier.padding(24.dp),
@@ -1025,6 +1156,17 @@ private fun EmptyState(myUsername: String, profileEmoji: String, hasSearch: Bool
                     softWrap = true,
                     overflow = TextOverflow.Clip
                 )
+                if (!hasSearch && publicRouteToken.isNotBlank()) {
+                    Spacer(Modifier.height(12.dp))
+                    Button(
+                        onClick = {
+                            SensitiveClipboard.copy(context, "Token de rota", publicRouteToken)
+                            Toast.makeText(context, "Token copiado por 60 segundos", Toast.LENGTH_SHORT).show()
+                        }
+                    ) {
+                        Text("Copiar token")
+                    }
+                }
             }
         }
     }
@@ -1032,12 +1174,10 @@ private fun EmptyState(myUsername: String, profileEmoji: String, hasSearch: Bool
 
 @Composable
 private fun RouteSearchPanel(
-    routeName: String,
     onRouteNameChange: (String) -> Unit,
     routeLookup: ChatViewModel.RouteLookup?,
     routeStatus: String,
     onSearchRouteName: () -> Unit,
-    searchInHeader: Boolean,
     showQrScanner: Boolean,
     onShowQrScannerChange: (Boolean) -> Unit,
     isValidQrCode: (String) -> Boolean,
@@ -1203,6 +1343,7 @@ private fun ContactRow(
     username: String,
     emoji: String,
     onClick: () -> Unit,
+    onAvatarClick: (() -> Unit)? = null,
     onLongClick: (() -> Unit)? = null,
     statusLabel: String? = null,
     trailingActionLabel: String? = null,
@@ -1229,7 +1370,15 @@ private fun ContactRow(
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                InitialAvatar(text = name, emoji = emoji, active = active)
+                Box(
+                    modifier = if (onAvatarClick != null) {
+                        Modifier.clickable(onClick = onAvatarClick)
+                    } else {
+                        Modifier
+                    }
+                ) {
+                    InitialAvatar(text = name, emoji = emoji, active = active)
+                }
                 Column(
                     modifier = Modifier
                         .weight(1f, fill = true),
@@ -1241,7 +1390,8 @@ private fun ContactRow(
                             fontWeight = FontWeight.SemiBold,
                             maxLines = 1,
                             softWrap = false,
-                            overflow = TextOverflow.Ellipsis
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.fillMaxWidth()
                         )
                     }
                     if (!statusLabel.isNullOrBlank()) {

@@ -16,7 +16,7 @@ object SimpleCipher {
     private val random = SecureRandom()
     private val key = SecretKeySpec(
         MessageDigest.getInstance("SHA-256")
-            .digest("NullChat private transport message key v2".toByteArray(Charsets.UTF_8)),
+            .digest("Null0xChat private transport message key v2".toByteArray(Charsets.UTF_8)),
         "AES"
     )
 

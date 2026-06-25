@@ -1,4 +1,4 @@
-NullChat — Melhorias e Correções Pendentes
+NoChat — Melhorias e Correções Pendentes
 
 Este arquivo serve para anotar ideias, melhorias, correções e ajustes futuros do aplicativo.
 

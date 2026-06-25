@@ -12,13 +12,14 @@ import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import com.null0x.chat.AppBranding
 import com.null0x.chat.MainActivity
 import com.null0x.chat.R
 
 class AppNetworkService : Service() {
 
     companion object {
-        private const val NOTIFICATION_CHANNEL_ID = "nullchat_network_live_v2"
+        private val NOTIFICATION_CHANNEL_ID = AppBranding.internalId("network_live_v2")
         private const val NOTIFICATION_ID = 4207
         private const val RELAUNCH_REQUEST_CODE = 5202
         @Volatile
@@ -84,8 +85,8 @@ class AppNetworkService : Service() {
     }
 
     private fun buildNotification() = NotificationCompat.Builder(applicationContext, ensureChannel())
-        .setSmallIcon(R.drawable.ic_stat_nullchat)
-        .setContentTitle("NullChat")
+        .setSmallIcon(R.drawable.ic_stat_nochat)
+        .setContentTitle(AppBranding.APP_NAME)
         .setContentText("Conexão em segundo plano")
         .setOngoing(true)
         .setOnlyAlertOnce(true)
@@ -107,7 +108,7 @@ class AppNetworkService : Service() {
         val manager = getSystemService(NotificationManager::class.java)
         val channel = NotificationChannel(
             NOTIFICATION_CHANNEL_ID,
-            "Conexão NullChat",
+            "Conexão ${AppBranding.APP_NAME}",
             NotificationManager.IMPORTANCE_MIN
         ).apply {
             description = "Mantém a conexão em tempo real em segundo plano"
@@ -123,10 +124,6 @@ class AppNetworkService : Service() {
             return
         }
         val appContext = context.applicationContext
-        if (!BackgroundRelaunchPreference.isEnabled(appContext)) {
-            AppRestartReceiver.clearPendingRelaunch(appContext)
-            return
-        }
         val alarmManager = appContext.getSystemService(AlarmManager::class.java) ?: return
         if (!AppRestartReceiver.markPendingRelaunch(appContext)) return
         val intent = Intent(appContext, AppRestartReceiver::class.java).apply {

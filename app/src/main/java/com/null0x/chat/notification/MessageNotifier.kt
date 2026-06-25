@@ -14,8 +14,11 @@ import android.net.Uri
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
+import org.json.JSONObject
+import com.null0x.chat.AppBranding
 import com.null0x.chat.MainActivity
 import com.null0x.chat.R
+import com.null0x.chat.security.AppSecurityManager
 import java.util.UUID
 
 class MessageNotifier(private val context: Context) {
@@ -24,7 +27,9 @@ class MessageNotifier(private val context: Context) {
         private const val ACTION_OPEN_CHAT = "com.null0x.chat.action.OPEN_CHAT"
         private const val EXTRA_OPEN_CHAT_TOKEN = "extra_open_chat_token"
         private const val OPEN_CHAT_PREFS = "notification_open_chat"
+        private const val PENDING_PREFS = "notification_pending_messages"
         private const val OPEN_CHAT_TOKEN_PREFIX = "token:"
+        private const val PENDING_PREFIX = "pending:"
         const val KEY_TEXT_REPLY = "key_text_reply"
 
         fun consumeOpenChatUsername(context: Context, intent: Intent?): String? {
@@ -40,21 +45,54 @@ class MessageNotifier(private val context: Context) {
         }
     }
 
-    private val channelId = "chat_messages_v3"
+    private val channelId = AppBranding.internalId("messages_v3")
 
     init {
         createChannel()
     }
 
     fun showMessage(fromUsername: String, fromName: String, text: String) {
-        if (!canPostNotifications()) return
-
         val notificationId = fromUsername.hashCode()
         val token = UUID.randomUUID().toString()
-        context.getSharedPreferences(OPEN_CHAT_PREFS, Context.MODE_PRIVATE)
-            .edit()
-            .putString("$OPEN_CHAT_TOKEN_PREFIX$token", fromUsername)
-            .apply()
+        registerOpenChatToken(token, fromUsername)
+        storePendingMessage(fromUsername, fromName, text)
+
+        if (!canPostNotifications()) return
+
+        postNotification(fromUsername, fromName, text, token)
+    }
+
+    fun cancelMessage(fromUsername: String) {
+        val notificationId = fromUsername.hashCode()
+        NotificationManagerCompat.from(context).cancel(notificationId)
+        clearPendingMessage(fromUsername)
+    }
+
+    fun clearAll() {
+        NotificationManagerCompat.from(context).cancelAll()
+    }
+
+    fun restorePendingNotifications() {
+        if (!canPostNotifications()) return
+        val prefs = context.applicationContext.getSharedPreferences(PENDING_PREFS, Context.MODE_PRIVATE)
+        prefs.all.values.forEach { raw ->
+            val rawJson = raw as? String ?: return@forEach
+            val json = runCatching { JSONObject(rawJson) }.getOrNull() ?: return@forEach
+            val fromUsername = json.optString("fromUsername").trim()
+            if (fromUsername.isBlank()) return@forEach
+            val token = UUID.randomUUID().toString()
+            registerOpenChatToken(token, fromUsername)
+            postNotification(
+                fromUsername = fromUsername,
+                fromName = json.optString("fromName").trim(),
+                text = json.optString("text").trim(),
+                token = token
+            )
+        }
+    }
+
+    private fun postNotification(fromUsername: String, fromName: String, text: String, token: String) {
+        val notificationId = fromUsername.hashCode()
 
         val intent = Intent(context, MainActivity::class.java).apply {
             action = ACTION_OPEN_CHAT
@@ -68,8 +106,8 @@ class MessageNotifier(private val context: Context) {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         val publicNotification = NotificationCompat.Builder(context, channelId)
-            .setSmallIcon(R.drawable.ic_stat_nullchat)
-            .setContentTitle("NullChat")
+            .setSmallIcon(R.drawable.ic_stat_nochat)
+            .setContentTitle(AppBranding.APP_NAME)
             .setContentText("Nova mensagem privada")
             .setLocalOnly(true)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
@@ -77,9 +115,9 @@ class MessageNotifier(private val context: Context) {
             .build()
 
         val notification = NotificationCompat.Builder(context, channelId)
-            .setSmallIcon(R.drawable.ic_stat_nullchat)
+            .setSmallIcon(R.drawable.ic_stat_nochat)
             .setLargeIcon(createLargeIcon())
-            .setContentTitle(fromName.ifBlank { "NullChat" })
+            .setContentTitle(fromName.ifBlank { AppBranding.APP_NAME })
             .setContentText(text.trim().ifBlank { "Nova mensagem" }.take(120))
             .setContentIntent(pendingIntent)
             .setAutoCancel(true)
@@ -103,8 +141,29 @@ class MessageNotifier(private val context: Context) {
         }
     }
 
-    fun cancelMessage(fromUsername: String) {
-        NotificationManagerCompat.from(context).cancel(fromUsername.hashCode())
+    private fun storePendingMessage(fromUsername: String, fromName: String, text: String) {
+        val prefs = context.applicationContext.getSharedPreferences(PENDING_PREFS, Context.MODE_PRIVATE)
+        val json = JSONObject()
+            .put("fromUsername", fromUsername)
+            .put("fromName", fromName)
+            .put("text", text)
+        prefs.edit()
+            .putString("$PENDING_PREFIX${fromUsername.hashCode()}", json.toString())
+            .apply()
+    }
+
+    private fun registerOpenChatToken(token: String, fromUsername: String) {
+        context.getSharedPreferences(OPEN_CHAT_PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putString("$OPEN_CHAT_TOKEN_PREFIX$token", fromUsername)
+            .apply()
+    }
+
+    private fun clearPendingMessage(fromUsername: String) {
+        context.applicationContext.getSharedPreferences(PENDING_PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .remove("$PENDING_PREFIX${fromUsername.hashCode()}")
+            .apply()
     }
 
     private fun createChannel() {
@@ -112,7 +171,7 @@ class MessageNotifier(private val context: Context) {
 
         val channel = NotificationChannel(
             channelId,
-            "Mensagens NullChat",
+            "Mensagens ${AppBranding.APP_NAME}",
             NotificationManager.IMPORTANCE_HIGH
         ).apply {
             description = "Notificacoes privadas de novas mensagens"
@@ -131,6 +190,7 @@ class MessageNotifier(private val context: Context) {
     }
 
     private fun canPostNotifications(): Boolean {
+        if (!AppSecurityManager.isUnlocked()) return false
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return true
         val permissionGranted = ContextCompat.checkSelfPermission(
             context,

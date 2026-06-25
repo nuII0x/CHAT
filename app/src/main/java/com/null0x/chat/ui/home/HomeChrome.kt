@@ -10,6 +10,7 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -24,6 +25,7 @@ import androidx.compose.material.icons.filled.VpnKey
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -32,6 +34,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.font.FontWeight
@@ -40,10 +43,19 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import kotlinx.coroutines.delay
+import androidx.compose.foundation.isSystemInDarkTheme
+import com.null0x.chat.ui.theme.ThemePreference
+import com.null0x.chat.ui.theme.dockSelectedBackgroundColor
+import com.null0x.chat.ui.theme.dockSelectedIconTint
+import com.null0x.chat.ui.theme.readableContentColor
+import com.null0x.chat.ui.theme.themeBackgroundColor
 
 @Composable
 internal fun AppHeader(
     title: String,
+    selectedTab: HomeTab,
+    badges: Map<HomeTab, Int>,
+    onSelectTab: (HomeTab) -> Unit,
     selectedContactUsername: String?,
     selectedChatsCount: Int = 0,
     searchEnabled: Boolean = false,
@@ -61,17 +73,17 @@ internal fun AppHeader(
     onLockApp: () -> Unit
 ) {
     val showChatActions = selectedChatsCount > 0
-    val trailingPadding = when {
-        showChatActions -> 200.dp
-        selectedContactUsername != null -> 104.dp
-        else -> 52.dp
-    }
+    val systemDarkTheme = isSystemInDarkTheme()
+    val baseThemeMode = ThemePreference.themeMode.collectAsState().value
+    val headerColor = Color.Transparent
+    val headerContentColor = readableContentColor(themeBackgroundColor(baseThemeMode, systemDarkTheme))
+    val iconContentColor = headerContentColor
     var chatMenuExpanded = remember { mutableStateOf(false) }
     var contactMenuExpanded = remember { mutableStateOf(false) }
     val searchFocusRequester = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
-    val searchContainerColor = Color.Black
-    val searchTextColor = Color.White
+    val searchContainerColor = themeBackgroundColor(baseThemeMode, systemDarkTheme)
+    val searchTextColor = headerContentColor
     val searchPlaceholderColor = searchTextColor.copy(alpha = 0.62f)
     val searchIconColor = searchTextColor.copy(alpha = 0.86f)
 
@@ -84,11 +96,10 @@ internal fun AppHeader(
     }
 
     Surface(
-        modifier = Modifier
-            .fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(0.dp),
-        color = Color.Black,
-        contentColor = Color.White,
+        color = headerColor,
+        contentColor = headerContentColor,
         tonalElevation = 0.dp,
         shadowElevation = 0.dp
     ) {
@@ -96,7 +107,7 @@ internal fun AppHeader(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(HomeHeaderHeight)
-                .padding(horizontal = 14.dp)
+                .padding(horizontal = 10.dp)
         ) {
             AnimatedVisibility(
                 visible = searchActive,
@@ -193,33 +204,71 @@ internal fun AppHeader(
                         targetOffsetX = { -it / 8 },
                         animationSpec = tween(120)
                     )
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(end = trailingPadding),
-                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Column(
-                        modifier = Modifier
-                            .widthIn(max = 240.dp)
-                            .fillMaxHeight(),
-                        verticalArrangement = Arrangement.Center
-                    ) {
-                        Text(
-                            text = title,
-                            color = Color.White,
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.SemiBold,
-                            maxLines = 1
-                        )
-                    }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
                     if (searchEnabled && !showChatActions && selectedContactUsername == null) {
                         IconButton(onClick = { onSearchActiveChange(true) }) {
                             Icon(
                                 imageVector = Icons.Filled.Search,
                                 contentDescription = "Pesquisar",
-                                tint = Color.White
+                                tint = iconContentColor
+                            )
+                        }
+                    }
+                    Text(
+                        text = title,
+                        color = headerContentColor,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+            AnimatedVisibility(
+                visible = !searchActive,
+                modifier = Modifier.align(Alignment.CenterEnd)
+            ) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    HomeTab.entries.forEach { tab ->
+                        val isSelected = selectedTab == tab
+                        val badgeCount = badges[tab] ?: 0
+                        val interactionSource = remember { MutableInteractionSource() }
+                        Box(
+                            modifier = Modifier
+                                .size(32.dp)
+                                .background(
+                                    color = if (isSelected) dockSelectedBackgroundColor(baseThemeMode, systemDarkTheme) else Color.Transparent,
+                                    shape = CircleShape
+                                )
+                                .clickable(
+                                    interactionSource = interactionSource,
+                                    indication = null,
+                                    onClick = { onSelectTab(tab) }
+                                ),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = if (isSelected) tab.selectedIcon else tab.unselectedIcon,
+                                contentDescription = tab.title,
+                                modifier = Modifier.size(17.dp),
+                                tint = if (isSelected) {
+                                    dockSelectedIconTint(baseThemeMode, systemDarkTheme)
+                                } else {
+                                    iconContentColor.copy(alpha = 0.78f)
+                                }
+                            )
+                            AttentionBadge(
+                                count = badgeCount,
+                                modifier = Modifier
+                                    .align(Alignment.TopEnd)
+                                    .offset(x = 3.dp, y = (-3).dp)
                             )
                         }
                     }
@@ -239,7 +288,7 @@ internal fun AppHeader(
                     ) {
                         Text(
                             text = "Fechar",
-                            color = Color.White,
+                            color = headerContentColor,
                             maxLines = 1,
                             softWrap = false
                         )
@@ -248,19 +297,28 @@ internal fun AppHeader(
                         Icon(
                             imageVector = Icons.Filled.VpnKey,
                             contentDescription = "Trancar app",
-                            tint = Color.White
+                            tint = iconContentColor
                         )
                     }
                 }
             } else {
-                IconButton(
-                    onClick = onLockApp,
-                    modifier = Modifier.align(Alignment.CenterEnd)
-                ) {
+                if (searchEnabled) {
+                    IconButton(
+                        onClick = { onSearchActiveChange(true) },
+                        modifier = Modifier.align(Alignment.CenterStart)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Search,
+                            contentDescription = "Pesquisar",
+                            tint = iconContentColor
+                        )
+                    }
+                }
+                IconButton(onClick = onLockApp) {
                     Icon(
                         imageVector = Icons.Filled.VpnKey,
                         contentDescription = "Trancar app",
-                        tint = Color.White
+                        tint = iconContentColor
                     )
                 }
             }
@@ -274,7 +332,7 @@ internal fun AppHeader(
                     Icon(
                         imageVector = Icons.Filled.Delete,
                         contentDescription = "Excluir chats selecionados",
-                        tint = Color.White
+                        tint = iconContentColor
                     )
                 }
                 IconButton(
@@ -284,7 +342,7 @@ internal fun AppHeader(
                     Icon(
                         imageVector = Icons.Filled.MoreVert,
                         contentDescription = "Mais ações",
-                        tint = Color.White
+                        tint = iconContentColor
                     )
                 }
                 DropdownMenu(
@@ -314,7 +372,7 @@ internal fun AppHeader(
                     Icon(
                         imageVector = Icons.Filled.MoreVert,
                         contentDescription = "Mais ações",
-                        tint = Color.White
+                        tint = iconContentColor
                     )
                 }
                 DropdownMenu(
@@ -421,71 +479,201 @@ internal fun HomeActionButton(
 internal fun BottomDock(
     selected: HomeTab,
     badges: Map<HomeTab, Int>,
+    searchEnabled: Boolean = false,
+    searchActive: Boolean = false,
+    searchValue: String = "",
+    searchPlaceholder: String = "Pesquisar",
+    searchFocusRequester: FocusRequester? = null,
+    onSearchValueChange: (String) -> Unit = {},
+    onSearchSubmit: () -> Unit = {},
+    onSearchToggle: () -> Unit = {},
+    selectedContactUsername: String? = null,
+    onDeleteSelectedContact: () -> Unit = {},
+    onLockApp: () -> Unit,
     onSelect: (HomeTab) -> Unit
 ) {
-    val idleIconTint = Color.White.copy(alpha = 0.76f)
-    val selectedAccent = Color.White
+    val systemDarkTheme = isSystemInDarkTheme()
+    val baseThemeMode = ThemePreference.themeMode.collectAsState().value
+    val dockColor = themeBackgroundColor(baseThemeMode, systemDarkTheme)
+    val dockContentColor = readableContentColor(dockColor)
+    val idleIconTint = dockContentColor.copy(alpha = 0.78f)
+    val selectedIconTint = dockSelectedIconTint(baseThemeMode, systemDarkTheme)
+    val selectedBackground = dockSelectedBackgroundColor(baseThemeMode, systemDarkTheme)
+    val accumulatedDockDragX = remember { mutableStateOf(0f) }
     Surface(
         modifier = Modifier
-            .fillMaxWidth(),
+            .fillMaxWidth()
+            .pointerInput(selected) {
+                detectHorizontalDragGestures(
+                    onHorizontalDrag = { _, dragAmount ->
+                        accumulatedDockDragX.value += dragAmount
+                    },
+                    onDragEnd = {
+                        val threshold = 48f
+                        val currentIndex = selected.ordinal
+                        when {
+                            accumulatedDockDragX.value > threshold -> {
+                                HomeTab.entries.getOrNull(currentIndex - 1)?.let(onSelect)
+                            }
+                            accumulatedDockDragX.value < -threshold -> {
+                                HomeTab.entries.getOrNull(currentIndex + 1)?.let(onSelect)
+                            }
+                        }
+                        accumulatedDockDragX.value = 0f
+                    },
+                    onDragCancel = {
+                        accumulatedDockDragX.value = 0f
+                    }
+                )
+            },
         shape = RoundedCornerShape(0.dp),
-        color = Color.Black,
-        contentColor = Color.White,
+        color = dockColor,
+        contentColor = dockContentColor,
         tonalElevation = 0.dp,
         shadowElevation = 0.dp
     ) {
-        Box(
-            modifier = Modifier.fillMaxWidth()
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .imePadding()
+                .navigationBarsPadding()
+                .padding(horizontal = 10.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Row(
+            Box(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 0.dp, vertical = 6.dp),
-                horizontalArrangement = Arrangement.SpaceEvenly
+                    .weight(1f)
+                    .height(56.dp)
             ) {
-                HomeTab.entries.forEach { tab ->
-                    val isSelected = selected == tab
-                    val interactionSource = remember { MutableInteractionSource() }
-                    val badgeCount = badges[tab] ?: 0
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(52.dp)
-                            .clickable(
-                                interactionSource = interactionSource,
-                                indication = null,
-                                onClick = { onSelect(tab) }
-                            ),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(36.dp)
-                                .background(
-                                    color = if (isSelected) {
-                                        Color.White.copy(alpha = 0.18f)
+                if (searchEnabled && searchActive) {
+                    val fieldModifier = Modifier
+                        .fillMaxWidth()
+                        .height(56.dp)
+                        .then(searchFocusRequester?.let { Modifier.focusRequester(it) } ?: Modifier)
+                    TextField(
+                        value = searchValue,
+                        onValueChange = onSearchValueChange,
+                        modifier = fieldModifier,
+                        singleLine = true,
+                        textStyle = MaterialTheme.typography.bodyLarge.copy(color = dockContentColor),
+                        placeholder = {
+                            Text(
+                                text = searchPlaceholder,
+                                color = dockContentColor.copy(alpha = 0.62f),
+                                maxLines = 1,
+                                softWrap = false,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.Filled.Search,
+                                contentDescription = null
+                            )
+                        },
+                        trailingIcon = {
+                            IconButton(
+                                onClick = {
+                                    if (searchValue.isBlank()) {
+                                        onSearchToggle()
                                     } else {
-                                        Color.Transparent
-                                    },
-                                    shape = CircleShape
-                                ),
-                            contentAlignment = Alignment.Center
+                                        onSearchValueChange("")
+                                    }
+                                }
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.Close,
+                                    contentDescription = if (searchValue.isBlank()) "Fechar pesquisa" else "Limpar pesquisa"
+                                )
+                            }
+                        },
+                        shape = RoundedCornerShape(14.dp),
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                        keyboardActions = KeyboardActions(onSearch = { onSearchSubmit() }),
+                        colors = TextFieldDefaults.colors(
+                            focusedContainerColor = Color.Transparent,
+                            unfocusedContainerColor = Color.Transparent,
+                            focusedTextColor = dockContentColor,
+                            unfocusedTextColor = dockContentColor,
+                            cursorColor = dockContentColor,
+                            focusedIndicatorColor = Color.Transparent,
+                            unfocusedIndicatorColor = Color.Transparent,
+                            focusedLeadingIconColor = idleIconTint,
+                            unfocusedLeadingIconColor = idleIconTint,
+                            focusedTrailingIconColor = idleIconTint,
+                            unfocusedTrailingIconColor = idleIconTint,
+                            focusedPlaceholderColor = dockContentColor.copy(alpha = 0.62f),
+                            unfocusedPlaceholderColor = dockContentColor.copy(alpha = 0.62f)
+                        )
+                    )
+                } else {
+                    if (searchEnabled) {
+                        IconButton(
+                            onClick = onSearchToggle,
+                            modifier = Modifier.align(Alignment.CenterStart)
                         ) {
                             Icon(
-                                imageVector = if (isSelected) tab.selectedIcon else tab.unselectedIcon,
-                                contentDescription = tab.title,
-                                modifier = Modifier.size(22.dp),
-                                tint = if (isSelected) selectedAccent else idleIconTint
+                                imageVector = Icons.Filled.Search,
+                                contentDescription = "Pesquisar",
+                                tint = idleIconTint
                             )
                         }
-                        AttentionBadge(
-                            count = badgeCount,
-                            modifier = Modifier
-                                .align(Alignment.TopEnd)
-                                .padding(top = 2.dp, end = 8.dp)
-                        )
+                    }
+                    Row(
+                        modifier = Modifier.align(Alignment.Center),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        HomeTab.entries.forEach { tab ->
+                            val isSelected = selected == tab
+                            val interactionSource = remember { MutableInteractionSource() }
+                            val badgeCount = badges[tab] ?: 0
+                            Box(
+                                modifier = Modifier
+                                    .size(32.dp)
+                                    .background(
+                                        color = if (isSelected) selectedBackground else Color.Transparent,
+                                        shape = CircleShape
+                                    )
+                                    .clickable(
+                                        interactionSource = interactionSource,
+                                        indication = null,
+                                        onClick = { onSelect(tab) }
+                                    ),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = if (isSelected) tab.selectedIcon else tab.unselectedIcon,
+                                    contentDescription = tab.title,
+                                    modifier = Modifier.size(17.dp),
+                                    tint = if (isSelected) selectedIconTint else idleIconTint
+                                )
+                                AttentionBadge(
+                                    count = badgeCount,
+                                    modifier = Modifier.align(Alignment.TopEnd).offset(x = 3.dp, y = (-3).dp)
+                                )
+                            }
+                        }
                     }
                 }
+            }
+
+            if (!searchActive && selectedContactUsername != null) {
+                IconButton(onClick = onDeleteSelectedContact) {
+                    Icon(
+                        imageVector = Icons.Filled.Delete,
+                        contentDescription = "Remover contato selecionado",
+                        tint = idleIconTint
+                    )
+                }
+            }
+            IconButton(onClick = onLockApp) {
+                Icon(
+                    imageVector = Icons.Filled.VpnKey,
+                    contentDescription = "Trancar app",
+                    tint = idleIconTint
+                )
             }
         }
     }
@@ -501,7 +689,7 @@ internal fun AttentionBadge(
     Surface(
         modifier = modifier,
         shape = CircleShape,
-        color = Color(0xFF2ECC71),
+        color = MaterialTheme.colorScheme.primary,
         tonalElevation = 0.dp
     ) {
         Box(
@@ -513,7 +701,7 @@ internal fun AttentionBadge(
         ) {
             Text(
                 text = label,
-                color = Color.White,
+                color = MaterialTheme.colorScheme.onPrimary,
                 style = MaterialTheme.typography.labelSmall,
                 fontWeight = FontWeight.Bold,
                 maxLines = 1

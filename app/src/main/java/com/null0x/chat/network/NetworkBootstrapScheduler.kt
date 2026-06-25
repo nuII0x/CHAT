@@ -9,7 +9,7 @@ import androidx.work.WorkManager
 import java.util.concurrent.TimeUnit
 
 object NetworkBootstrapScheduler {
-    private const val BOOTSTRAP_WORK_NAME = "nullchat_background_sync"
+    private const val BOOTSTRAP_WORK_NAME = "null0xchat_background_sync"
 
     fun schedule(context: Context) {
         val appContext = context.applicationContext

@@ -160,6 +160,29 @@ if (requestedReleaseType != null) {
     }
 }
 
+val playBuildFinishedSound = tasks.register("playBuildFinishedSound") {
+    group = "verification"
+    description = "Emite um alerta sonoro curto ao concluir tarefas principais de build."
+    doLast {
+        print("\u0007")
+        System.out.flush()
+    }
+}
+
+tasks.matching {
+    it.name in setOf(
+        "build",
+        "assembleDebug",
+        "assembleRelease",
+        "compileDebugKotlin",
+        "compileReleaseKotlin",
+        "installDebug",
+        "installRelease"
+    )
+}.configureEach {
+    finalizedBy(playBuildFinishedSound)
+}
+
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.core.splashscreen)
@@ -170,6 +193,7 @@ dependencies {
     implementation(libs.androidx.camera.camera2)
     implementation(libs.androidx.camera.lifecycle)
     implementation(libs.androidx.camera.view)
+    implementation("androidx.camera:camera-video:1.4.1")
 
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.compose.ui)

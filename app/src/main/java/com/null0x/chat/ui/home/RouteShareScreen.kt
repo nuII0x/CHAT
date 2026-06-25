@@ -5,18 +5,17 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.VpnKey
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -27,7 +26,7 @@ import com.google.zxing.BarcodeFormat
 import com.google.zxing.qrcode.QRCodeWriter
 import android.widget.Toast
 import com.null0x.chat.security.SensitiveClipboard
-import com.null0x.chat.ui.common.SwipeToCloseContainer
+import com.null0x.chat.ui.common.WindowDispositionScaffold
 
 @Composable
 internal fun RouteShareScreen(
@@ -36,146 +35,109 @@ internal fun RouteShareScreen(
     onLockApp: () -> Unit
 ) {
     val context = LocalContext.current
-    val keyboardController = LocalSoftwareKeyboardController.current
-    DisposableEffect(Unit) {
-        keyboardController?.hide()
-        onDispose { }
-    }
-    SwipeToCloseContainer(onClose = onBack) {
-        Surface(
-            modifier = Modifier.fillMaxSize(),
-            color = MaterialTheme.colorScheme.background
+    val windowColor = MaterialTheme.colorScheme.background
+    val qrForeground = if (windowColor.luminance() > 0.5f) Color.Black else Color.White
+    WindowDispositionScaffold(
+        title = "Compartilhar",
+        subtitle = "Mostra o QR de acesso para outro dispositivo",
+        onBack = onBack,
+        windowColor = windowColor,
+        bottomActions = {
+            IconButton(onClick = onLockApp) {
+                Icon(
+                    imageVector = Icons.Filled.VpnKey,
+                    contentDescription = "Trancar app",
+                    tint = MaterialTheme.colorScheme.onBackground
+                )
+            }
+        }
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(14.dp)
         ) {
-            Column(modifier = Modifier.fillMaxSize()) {
+            Column(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
                 Surface(
-                    shape = RoundedCornerShape(0.dp),
-                    color = TitleBarColor,
-                    tonalElevation = 0.dp,
-                    shadowElevation = 0.dp
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(28.dp),
+                    color = Color.Transparent
                 ) {
-                    Row(
+                    Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(HomeHeaderHeight)
-                            .padding(horizontal = 0.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                            .padding(horizontal = 16.dp, vertical = 18.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        IconButton(onClick = onBack) {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                                contentDescription = "Voltar",
-                                tint = Color.White
-                            )
-                        }
                         Column(
-                            modifier = Modifier.weight(1f),
-                            verticalArrangement = Arrangement.Center
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
                             Text(
                                 text = "Compartilhar",
-                                color = Color.White,
                                 style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                textAlign = TextAlign.Center
+                            )
+                            Text(
+                                text = "Acesso rapido via QR",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center
+                            )
+                        }
+
+                        RouteTokenQr(
+                            token = tokenLabel,
+                            foregroundColor = qrForeground,
+                            displaySize = 240.dp
+                        )
+
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text(
+                                text = tokenLabel,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurface,
                                 fontWeight = FontWeight.SemiBold,
-                                maxLines = 1,
+                                textAlign = TextAlign.Center,
+                                maxLines = 2,
                                 overflow = TextOverflow.Ellipsis
                             )
                             Text(
-                                text = "Mostra o QR de acesso para outro dispositivo",
-                                color = Color.White.copy(alpha = 0.78f),
+                                text = "Token",
                                 style = MaterialTheme.typography.bodySmall,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                        IconButton(onClick = onLockApp) {
-                            Icon(
-                                imageVector = Icons.Filled.VpnKey,
-                                contentDescription = "Trancar app",
-                                tint = Color.White
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center
                             )
                         }
                     }
                 }
+            }
 
-                Box(
+            if (tokenLabel.isNotBlank() && tokenLabel != "Aguardando parceiro...") {
+                Button(
+                    onClick = {
+                        SensitiveClipboard.copy(context, "Token de rota", tokenLabel)
+                        Toast.makeText(context, "Token copiado por 60 segundos", Toast.LENGTH_SHORT).show()
+                    },
                     modifier = Modifier
-                        .fillMaxSize()
-                        .padding(14.dp),
-                    contentAlignment = Alignment.Center
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 8.dp)
                 ) {
-                    Surface(
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(28.dp),
-                        color = Color.Transparent
-                    ) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 18.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(12.dp)
-                        ) {
-                            Column(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.spacedBy(4.dp)
-                            ) {
-                                Text(
-                                    text = "Compartilhar",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.onSurface,
-                                    textAlign = TextAlign.Center
-                                )
-                                Text(
-                                    text = "Acesso rapido via QR",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    textAlign = TextAlign.Center
-                                )
-                            }
-
-                            RouteTokenQr(
-                                token = tokenLabel,
-                                backgroundColor = ShareCardBackground,
-                                foregroundColor = Color.Black,
-                                displaySize = 240.dp
-                            )
-
-                            Column(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                Text(
-                                    text = tokenLabel,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurface,
-                                    fontWeight = FontWeight.SemiBold,
-                                    textAlign = TextAlign.Center,
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                Text(
-                                    text = "Token",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    textAlign = TextAlign.Center
-                                )
-                                Button(
-                                    onClick = {
-                                        if (tokenLabel.isNotBlank() && tokenLabel != "Aguardando parceiro...") {
-                                            SensitiveClipboard.copy(context, "Token de rota", tokenLabel)
-                                            Toast.makeText(context, "Token copiado por 60 segundos", Toast.LENGTH_SHORT).show()
-                                        }
-                                    },
-                                    enabled = tokenLabel.isNotBlank() && tokenLabel != "Aguardando parceiro..."
-                                ) {
-                                    Text("Copiar token")
-                                }
-                            }
-                        }
-                    }
+                    Text("Copiar token")
                 }
             }
         }
@@ -185,19 +147,17 @@ internal fun RouteShareScreen(
 @Composable
 internal fun RouteTokenQr(
     token: String,
-    backgroundColor: Color,
     foregroundColor: Color,
     displaySize: Dp
 ) {
     if (token.isBlank()) return
-    val background = backgroundColor
     val foreground = foregroundColor
-    val bitmap = remember(token, foreground, background) {
+    val bitmap = remember(token, foreground) {
         generateQrBitmap(
             text = token,
             sizePx = 360,
             foregroundArgb = foreground.toArgb(),
-            backgroundArgb = background.toArgb()
+            backgroundArgb = Color.Transparent.toArgb()
         )
     }
     bitmap?.let {
@@ -214,19 +174,14 @@ internal fun generateQrBitmap(
     sizePx: Int,
     foregroundArgb: Int,
     backgroundArgb: Int
-): Bitmap? {
-    return runCatching {
-        val bitMatrix = QRCodeWriter().encode(text, BarcodeFormat.QR_CODE, sizePx, sizePx)
-        Bitmap.createBitmap(sizePx, sizePx, Bitmap.Config.ARGB_8888).apply {
-            for (x in 0 until sizePx) {
-                for (y in 0 until sizePx) {
-                    setPixel(
-                        x,
-                        y,
-                        if (bitMatrix[x, y]) foregroundArgb else backgroundArgb
-                    )
-                }
+): Bitmap? = runCatching {
+    val bitMatrix = QRCodeWriter().encode(text, BarcodeFormat.QR_CODE, sizePx, sizePx)
+
+    Bitmap.createBitmap(sizePx, sizePx, Bitmap.Config.ARGB_8888).apply {
+        for (x in 0 until sizePx) {
+            for (y in 0 until sizePx) {
+                setPixel(x, y, if (bitMatrix[x, y]) foregroundArgb else backgroundArgb)
             }
         }
-    }.getOrNull()
-}
+    }
+}.getOrNull()

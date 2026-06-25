@@ -12,13 +12,10 @@ import androidx.camera.view.PreviewView
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -32,14 +29,14 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.google.mlkit.vision.barcode.BarcodeScanner
@@ -53,6 +50,7 @@ import com.google.zxing.DecodeHintType
 import com.google.zxing.RGBLuminanceSource
 import com.google.zxing.common.HybridBinarizer
 import com.google.zxing.qrcode.QRCodeReader
+import com.null0x.chat.ui.common.WindowDispositionScaffold
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -71,75 +69,52 @@ fun QrCodeScannerDialog(
         kotlinx.coroutines.delay(1_600)
         warningText = ""
     }
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+    WindowDispositionScaffold(
+        title = "Ler QR",
+        subtitle = "Aponte para o código da rota",
+        onBack = onDismiss,
+        windowColor = MaterialTheme.colorScheme.background
     ) {
         Box(
             modifier = Modifier
-                .fillMaxSize()
-                .clickable(
-                    indication = null,
-                    interactionSource = remember { MutableInteractionSource() }
-                ) {
-                    onDismiss()
-                },
+                .fillMaxWidth()
+                .weight(1f)
+                .padding(14.dp),
             contentAlignment = Alignment.Center
         ) {
-            Column(
-                modifier = Modifier.padding(horizontal = 18.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth(0.88f)
+                    .aspectRatio(1f)
+                    .clip(RoundedCornerShape(22.dp))
+                    .background(Color.Transparent)
+                    .clickable(
+                        indication = null,
+                        interactionSource = remember { MutableInteractionSource() }
+                    ) { },
+                contentAlignment = Alignment.Center
             ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth(0.70f)
-                        .aspectRatio(1f)
-                        .heightIn(max = 190.dp)
-                        .background(Color.Black)
-                        .clipToBounds()
-                        .clickable(
-                            indication = null,
-                            interactionSource = remember { MutableInteractionSource() }
-                        ) { }
-                ) {
-                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        QrCameraPreview(onQrCodeRead = { code ->
-                            if (isValidQrCode(code)) {
-                                mainExecutor.execute { onQrCodeScanned(code) }
-                                true
-                            } else {
-                                mainExecutor.execute { warningText = "QR sem token NullChat" }
-                                false
-                            }
-                        })
+                QrCameraPreview(onQrCodeRead = { code ->
+                    if (isValidQrCode(code)) {
+                        mainExecutor.execute { onQrCodeScanned(code) }
+                        true
+                    } else {
+                        mainExecutor.execute { warningText = "QR sem token NoChat" }
+                        false
                     }
-                }
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 12.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .background(Color.Black)
-                            .padding(horizontal = 12.dp, vertical = 8.dp)
-                            .clickable(
-                                indication = null,
-                                interactionSource = remember { MutableInteractionSource() }
-                            ) { },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = warningText.ifBlank { "Leia o QR do token de perfil do NullChat" },
-                            textAlign = TextAlign.Center,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = Color.White
-                        )
-                    }
-                }
+                })
             }
+        }
+        if (warningText.isNotBlank()) {
+            Text(
+                text = warningText,
+                textAlign = TextAlign.Center,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onBackground,
+                modifier = Modifier
+                    .align(Alignment.CenterHorizontally)
+                    .padding(bottom = 18.dp)
+            )
         }
     }
 }

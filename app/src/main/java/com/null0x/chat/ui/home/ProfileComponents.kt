@@ -82,7 +82,7 @@ internal fun InitialAvatar(
                     },
                     color = textColor,
                     fontWeight = FontWeight.Bold,
-                    style = if (large) MaterialTheme.typography.headlineMedium else MaterialTheme.typography.bodyLarge
+                    style = if (large) MaterialTheme.typography.titleMedium else MaterialTheme.typography.bodyLarge
                 )
             }
         }

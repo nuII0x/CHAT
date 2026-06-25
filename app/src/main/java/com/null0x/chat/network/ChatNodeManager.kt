@@ -6,6 +6,7 @@ import android.util.Log
 import com.null0x.chat.AppVisibility
 import com.null0x.chat.model.DeliveryState
 import com.null0x.chat.model.Message
+import com.null0x.chat.AppBranding
 import com.null0x.chat.notification.MessageNotifier
 import com.null0x.chat.security.AppSecurityManager
 import com.null0x.chat.security.identity.AckManager
@@ -55,6 +56,10 @@ object ChatNodeManager {
         val publicKeyHash: String,
         val keepViewedMessages: Boolean,
         val allowScreenshots: Boolean,
+        val latitude: Double?,
+        val longitude: Double?,
+        val accuracyMeters: Float?,
+        val locationUpdatedAt: Long,
         val updatedAt: Long
     )
 
@@ -69,7 +74,7 @@ object ChatNodeManager {
     private const val CHAT_PROFILE_PREFIX = "CHAT_PROFILE|"
     private const val CHAT_PRESENCE_PREFIX = "CHAT_PRESENCE|"
     private const val CHAT_PRESENCE_IDLE = "idle"
-    private const val CONTACT_CONTROL_PREFIX = "[NullChat:contact-"
+    private const val CONTACT_CONTROL_PREFIX = "[Null0xChat:contact-"
     private const val ROUTE_PROFILES_PREFS = "route_public_profiles"
     private const val LAST_PUBLIC_ROUTE_KEY = "last_public_route"
     private val ONION_HOST_REGEX = Regex("^[a-z2-7]{56}\\.onion$")
@@ -125,6 +130,8 @@ object ChatNodeManager {
     private var lastTransportRecoveryAtMs: Long = 0L
     @Volatile
     private var appContext: Context? = null
+    @Volatile
+    private var appRequestsPaused: Boolean = false
 
     @Volatile
     private var publicRoute: String = ""
@@ -152,11 +159,18 @@ object ChatNodeManager {
     @Volatile
     var profileAllowScreenshots: Boolean = false
         private set
+    private var shareLocationWithAll: Boolean = false
+    private var locationShareAllowedRoutes: Set<String> = emptySet()
+    private var profileLatitude: Double? = null
+    private var profileLongitude: Double? = null
+    private var profileLocationAccuracyMeters: Float? = null
+    private var profileLocationUpdatedAt: Long = 0L
 
     fun ensureBackgroundNetwork(context: Context, startSyncLoop: Boolean = true): Boolean {
         val appContext = context.applicationContext
         AppSecurityManager.initialize(appContext)
         if (
+            AppSecurityManager.currentState() == AppSecurityManager.GateState.Locked ||
             AppSecurityManager.currentState() == AppSecurityManager.GateState.SetupRequired ||
             AppSecurityManager.currentState() == AppSecurityManager.GateState.PrivateAccessRequired
         ) {
@@ -170,8 +184,15 @@ object ChatNodeManager {
         chatMessageAuthorization = gate
     }
 
+    fun setAppRequestsPaused(paused: Boolean) {
+        appRequestsPaused = paused
+    }
+
     fun start(context: Context, autoStartTor: Boolean = false, startSyncLoop: Boolean = true) {
         val appContext = context.applicationContext
+        if (!AppSecurityManager.isUnlocked()) {
+            return
+        }
         val shouldEnsureTor = autoStartTor
         synchronized(startLock) {
             if (started) {
@@ -398,7 +419,11 @@ object ChatNodeManager {
                     if (torReady) {
                         retryPendingMessagesOnce()
                         refreshKnownRouteProfiles()
-                    } else if (autoStartTor && (status is TorManager.Status.Idle || status is TorManager.Status.Error)) {
+                    } else if (
+                        autoStartTor &&
+                        AppSecurityManager.isUnlocked() &&
+                        (status is TorManager.Status.Idle || status is TorManager.Status.Error)
+                    ) {
                         startTor(appContext)
                     }
                 }
@@ -474,6 +499,24 @@ object ChatNodeManager {
         profileKeepViewedMessages = keepViewedMessages
         profileAllowScreenshots = allowScreenshots
         publishLocalProfile()
+    }
+
+    fun setLocationSharingPolicy(shareWithAll: Boolean, allowedRoutes: Set<String>) {
+        shareLocationWithAll = shareWithAll
+        locationShareAllowedRoutes = allowedRoutes
+            .mapNotNull { normalizeRoute(it) }
+            .toSet()
+        publishLocalProfile()
+    }
+
+    fun setSharedLocation(latitude: Double, longitude: Double, accuracyMeters: Float?, updatedAt: Long) {
+        profileLatitude = latitude
+        profileLongitude = longitude
+        profileLocationAccuracyMeters = accuracyMeters
+        profileLocationUpdatedAt = updatedAt
+        if (shareLocationWithAll || locationShareAllowedRoutes.isNotEmpty()) {
+            publishLocalProfile()
+        }
     }
 
     fun startTor(context: Context) {
@@ -615,6 +658,9 @@ object ChatNodeManager {
     }
 
     suspend fun sendMessage(toUsername: String, text: String, messageId: String? = null): Result<Unit> {
+        if (appRequestsPaused) {
+            return Result.failure(IllegalStateException("App bloqueado"))
+        }
         val peer = normalizeRoute(toUsername) ?: toUsername.trim()
         val id = messageId ?: java.util.UUID.randomUUID().toString()
         if (peer.isBlank()) {
@@ -781,6 +827,10 @@ object ChatNodeManager {
                 publicKeyHash = RouteIdentityRegistry.identityManager().getPublicKeyHash(),
                 keepViewedMessages = profileKeepViewedMessages,
                 allowScreenshots = profileAllowScreenshots,
+                latitude = if (shareLocationWithAll || locationShareAllowedRoutes.isNotEmpty()) profileLatitude else null,
+                longitude = if (shareLocationWithAll || locationShareAllowedRoutes.isNotEmpty()) profileLongitude else null,
+                accuracyMeters = if (shareLocationWithAll || locationShareAllowedRoutes.isNotEmpty()) profileLocationAccuracyMeters else null,
+                locationUpdatedAt = if (shareLocationWithAll || locationShareAllowedRoutes.isNotEmpty()) profileLocationUpdatedAt else 0L,
                 updatedAt = System.currentTimeMillis()
             )
         }
@@ -803,6 +853,10 @@ object ChatNodeManager {
                 publicKeyHash = json.optString("publicKeyHash").trim(),
                 keepViewedMessages = json.optBoolean("keepViewedMessages", true),
                 allowScreenshots = json.optBoolean("allowScreenshots", true),
+                latitude = json.optionalDouble("latitude"),
+                longitude = json.optionalDouble("longitude"),
+                accuracyMeters = json.optionalDouble("accuracyMeters")?.toFloat(),
+                locationUpdatedAt = json.optLong("locationUpdatedAt", 0L),
                 updatedAt = json.optLong("updatedAt", 0L)
             )
         }.getOrNull()
@@ -810,6 +864,7 @@ object ChatNodeManager {
 
     fun requestPublicProfile(route: String) {
         val peer = normalizeRoute(route) ?: return
+        if (appRequestsPaused) return
         scope.launch {
             markKnownRoutesRefreshing()
             sendTransportText(peer, "$CHAT_PROFILE_REQUEST_PREFIX${java.util.UUID.randomUUID()}")
@@ -818,6 +873,7 @@ object ChatNodeManager {
 
     private fun refreshKnownRouteProfiles() {
         if (knownRoutesRefreshJob?.isActive == true) return
+        if (appRequestsPaused) return
         knownRoutesRefreshJob = scope.launch {
             val peers = knownPeers()
                 .mapNotNull { normalizeRoute(it) }
@@ -851,6 +907,7 @@ object ChatNodeManager {
     fun sendChatPresence(route: String, state: String) {
         val peer = normalizeRoute(route) ?: return
         if (state !in setOf("open", "closed", "typing", "idle")) return
+        if (appRequestsPaused) return
         scope.launch {
             sendTransportText(peer, "$CHAT_PRESENCE_PREFIX$state")
         }
@@ -902,6 +959,7 @@ object ChatNodeManager {
         presenceHeartbeatJob = scope.launch {
             while (isActive) {
                 delay(25_000)
+                if (appRequestsPaused) continue
                 if (publicRoute.isBlank() || !node.isServerReady()) continue
                 knownPeers().forEach { peer ->
                     sendTransportText(peer, "$CHAT_PRESENCE_PREFIX$CHAT_PRESENCE_IDLE")
@@ -915,6 +973,10 @@ object ChatNodeManager {
         val context = appContext ?: return
         fastRelayPullJob = scope.launch {
             while (isActive) {
+                if (appRequestsPaused) {
+                    delay(1_000)
+                    continue
+                }
                 val route = currentPublicRoute()
                 if (route.isNotBlank()) {
                     FastRelayTransport.pull(context, route)
@@ -929,6 +991,7 @@ object ChatNodeManager {
     }
 
     private suspend fun retryPendingMessagesOnce() {
+        if (appRequestsPaused) return
         val store = chatStore ?: return
         val pending = store.pendingOutgoing(limit = 25)
         if (pending.isEmpty()) return
@@ -967,6 +1030,11 @@ object ChatNodeManager {
             return Result.failure(IllegalArgumentException("Rota onion inválida"))
         }
         migratePeerIfNeeded(peer, cleanPeer)
+        if (appRequestsPaused) {
+            store?.updateDeliveryStatus(cleanPeer, messageId, DeliveryState.Pending)
+            listeners.forEach { it.onOutgoingDeliveryStateChanged(cleanPeer, messageId, DeliveryState.Pending) }
+            return Result.failure(IllegalStateException("App bloqueado"))
+        }
 
         if (!node.isServerReady()) {
             store?.updateDeliveryStatus(cleanPeer, messageId, DeliveryState.Pending)
@@ -995,11 +1063,14 @@ object ChatNodeManager {
         if (now - lastTransportRecoveryAtMs < 60_000L) return
         lastTransportRecoveryAtMs = now
         val reason = error?.message.orEmpty()
-        Log.w("NullChatTransport", "Falha ao enviar via Tor; tentando recuperar transporte: $reason")
+        Log.w("${AppBranding.APP_NAME}Transport", "Falha ao enviar via Tor; tentando recuperar transporte: $reason")
         TorManager.recoverAfterTransportFailure(context, reason)
     }
 
     private suspend fun sendTransportText(peer: String, text: String): Result<Unit> {
+        if (appRequestsPaused) {
+            return Result.failure(IllegalStateException("App bloqueado"))
+        }
         val cleanPeer = normalizeRoute(peer)
             ?: return Result.failure(IllegalArgumentException("Rota onion inválida"))
         val context = appContext
@@ -1056,6 +1127,10 @@ object ChatNodeManager {
                 publicKeyHash = json.optString("publicKeyHash").trim(),
                 keepViewedMessages = json.optBoolean("keepViewedMessages", true),
                 allowScreenshots = json.optBoolean("allowScreenshots", true),
+                latitude = json.optionalDouble("latitude"),
+                longitude = json.optionalDouble("longitude"),
+                accuracyMeters = json.optionalDouble("accuracyMeters")?.toFloat(),
+                locationUpdatedAt = json.optLong("locationUpdatedAt", 0L),
                 updatedAt = json.optLong("updatedAt", System.currentTimeMillis())
             )
         }.getOrNull() ?: return
@@ -1072,6 +1147,10 @@ object ChatNodeManager {
             .put("keepViewedMessages", profile.keepViewedMessages)
             .put("allowScreenshots", profile.allowScreenshots)
             .put("updatedAt", profile.updatedAt)
+        profile.latitude?.let { json.put("latitude", it) }
+        profile.longitude?.let { json.put("longitude", it) }
+        profile.accuracyMeters?.let { json.put("accuracyMeters", it) }
+        if (profile.locationUpdatedAt > 0L) json.put("locationUpdatedAt", profile.locationUpdatedAt)
         routeProfilesPrefs?.edit()
             ?.putString(routeStorageKey(route), json.toString())
             ?.remove(route)
@@ -1092,6 +1171,7 @@ object ChatNodeManager {
         if (publicRoute.isBlank() || !node.isServerReady()) {
             return Result.failure(IllegalStateException("Perfil local ainda nao esta pronto"))
         }
+        val includeLocation = shareLocationWithAll || locationShareAllowedRoutes.contains(canonicalPeer(peer))
         val json = JSONObject()
             .put("route", publicRoute)
             .put("displayName", profileName)
@@ -1103,6 +1183,12 @@ object ChatNodeManager {
             .put("keepViewedMessages", profileKeepViewedMessages)
             .put("allowScreenshots", profileAllowScreenshots)
             .put("updatedAt", System.currentTimeMillis())
+        if (includeLocation && profileLatitude != null && profileLongitude != null) {
+            json.put("latitude", profileLatitude)
+                .put("longitude", profileLongitude)
+                .put("locationUpdatedAt", profileLocationUpdatedAt)
+            profileLocationAccuracyMeters?.let { json.put("accuracyMeters", it) }
+        }
         val encoded = Base64.encodeToString(json.toString().toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
         return sendTransportText(peer, "$CHAT_PROFILE_PREFIX$encoded")
     }
@@ -1166,6 +1252,11 @@ object ChatNodeManager {
             end--
         }
         return ""
+    }
+
+    private fun JSONObject.optionalDouble(name: String): Double? {
+        if (!has(name) || isNull(name)) return null
+        return optDouble(name).takeIf { !it.isNaN() }
     }
 
     private data class ParsedIncomingMessage(

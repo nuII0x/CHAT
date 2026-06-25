@@ -5,10 +5,10 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
@@ -18,13 +18,18 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.ChatBubble
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.filled.VpnKey
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Scaffold
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -36,7 +41,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
@@ -45,8 +49,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.null0x.chat.ui.common.CursorAwareOutlinedTextField
 import com.null0x.chat.ui.maskedRouteLabel
-import com.null0x.chat.ui.common.SwipeToCloseContainer
 import com.null0x.chat.ui.security.ProtectedWindowCapture
+import com.null0x.chat.ui.common.WindowDispositionScaffold
 import com.null0x.chat.viewmodel.ChatViewModel
 
 @Composable
@@ -54,9 +58,16 @@ fun RouteProfileScreen(
     profile: ChatViewModel.PublicProfile,
     onBack: () -> Unit,
     onLockApp: () -> Unit,
-    onSaveLocalName: (String, String) -> Unit
+    onSaveLocalName: (String, String) -> Unit,
+    contactBlocked: Boolean = false,
+    onSendMessage: (() -> Unit)? = null,
+    onRecordMedia: (() -> Unit)? = null,
+    onRemoveContact: (() -> Unit)? = null,
+    onBlockContact: (() -> Unit)? = null,
+    onUnblockContact: (() -> Unit)? = null
 ) {
     var localName by rememberSaveable(profile.route) { mutableStateOf(profile.localName) }
+    var showBlockConfirmation by rememberSaveable { mutableStateOf(false) }
     ProtectedWindowCapture(enabled = true)
 
     LaunchedEffect(profile.route, profile.localName) {
@@ -65,160 +76,288 @@ fun RouteProfileScreen(
         }
     }
 
-    SwipeToCloseContainer(onClose = onBack) {
-        Scaffold(
-            modifier = Modifier.fillMaxSize(),
-            topBar = {
-                Surface(
-                    color = Color.Black,
-                    tonalElevation = 1.dp,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 6.dp, vertical = 6.dp)
-                    ) {
-                        IconButton(onClick = onBack) {
-                            Icon(
-                                Icons.AutoMirrored.Filled.ArrowBack,
-                                contentDescription = "Voltar",
-                                tint = Color.White
-                            )
+    WindowDispositionScaffold(
+        title = "Perfil da rota",
+        subtitle = maskedRouteLabel(profile.route),
+        onBack = onBack,
+        windowColor = MaterialTheme.colorScheme.background,
+        bottomActions = {
+            if (onRemoveContact != null || onBlockContact != null || onUnblockContact != null) {
+                ProfileDangerActions(
+                    contactBlocked = contactBlocked,
+                    onRemoveContact = onRemoveContact,
+                    onBlockClick = {
+                        if (contactBlocked) {
+                            onUnblockContact?.invoke()
+                        } else {
+                            showBlockConfirmation = true
                         }
-                        Text(
-                            text = "Perfil da rota",
-                            modifier = Modifier.align(Alignment.Center),
-                            style = MaterialTheme.typography.titleMedium,
-                            color = Color.White,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                        IconButton(
-                            onClick = onLockApp,
-                            modifier = Modifier.align(Alignment.CenterEnd)
-                        ) {
-                            Icon(
-                                Icons.Filled.VpnKey,
-                                contentDescription = "Trancar app",
-                                tint = Color.White
+                    },
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(start = 6.dp, end = 8.dp)
+                )
+            }
+            IconButton(onClick = onLockApp) {
+                Icon(
+                    Icons.Filled.VpnKey,
+                    contentDescription = "Trancar app",
+                    tint = MaterialTheme.colorScheme.onBackground
+                )
+            }
+        }
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 14.dp, vertical = 14.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(22.dp),
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 0.dp
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        ProfileAvatar(text = profile.displayName, emoji = profile.emoji)
+                        Column(modifier = Modifier.widthIn(max = 260.dp)) {
+                            Text(
+                                text = profile.displayName.ifBlank { "Rota" },
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 2,
+                                overflow = TextOverflow.Clip
+                            )
+                            Text(
+                                text = profile.source,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
                     }
-                }
-            }
-        ) { innerPadding ->
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(innerPadding)
-                    .padding(horizontal = 14.dp, vertical = 14.dp)
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Surface(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(22.dp),
-                    color = Color.Transparent,
-                    tonalElevation = 0.dp
-                ) {
-                    Column(
-                        modifier = Modifier.padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(12.dp)
-                        ) {
-                            ProfileAvatar(text = profile.displayName, emoji = profile.emoji)
-                            Column(modifier = Modifier.widthIn(max = 260.dp)) {
-                                Text(
-                                    text = profile.displayName.ifBlank { "Rota" },
-                                    style = MaterialTheme.typography.titleLarge,
-                                    fontWeight = FontWeight.SemiBold,
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Clip
-                                )
-                                Text(
-                                    text = profile.source,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                        }
 
+                    ProfileInfoBlock(
+                        title = "Token da rota",
+                        content = maskedRouteLabel(profile.route)
+                    )
+                    if (onSendMessage != null || onRecordMedia != null) {
+                        RouteProfileQuickActions(
+                            onRecordMedia = onRecordMedia,
+                            onSendMessage = onSendMessage
+                        )
+                    }
+                    Text(
+                        text = "Captura protegida enquanto este perfil estiver aberto.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    if (profile.bio.isNotBlank()) {
                         ProfileInfoBlock(
-                            title = "Token da rota",
-                            content = maskedRouteLabel(profile.route)
+                            title = "Bio",
+                            content = profile.bio,
+                            emphasizeContent = true
                         )
-                        Text(
-                            text = "Captura protegida enquanto este perfil estiver aberto.",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                    }
 
-                        if (profile.bio.isNotBlank()) {
-                            ProfileInfoBlock(
-                                title = "Bio",
-                                content = profile.bio,
-                                emphasizeContent = true
-                            )
-                        }
+                    CursorAwareOutlinedTextField(
+                        value = localName,
+                        onValueChange = { localName = it.take(MAX_LOCAL_NAME_CHARS) },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        label = { Text("Nome local") },
+                        supportingText = {
+                            Text("${localName.length}/$MAX_LOCAL_NAME_CHARS · salvo só neste aparelho")
+                        },
+                        keyboardOptions = KeyboardOptions(
+                            capitalization = KeyboardCapitalization.Words,
+                            autoCorrectEnabled = false,
+                            imeAction = ImeAction.Done
+                        ),
+                        shape = RoundedCornerShape(14.dp)
+                    )
 
-                        CursorAwareOutlinedTextField(
-                            value = localName,
-                            onValueChange = { localName = it.take(MAX_LOCAL_NAME_CHARS) },
-                            modifier = Modifier.fillMaxWidth(),
-                            singleLine = true,
-                            label = { Text("Nome local") },
-                            supportingText = {
-                                Text("${localName.length}/$MAX_LOCAL_NAME_CHARS · salvo só neste aparelho")
-                            },
-                            keyboardOptions = KeyboardOptions(
-                                capitalization = KeyboardCapitalization.Words,
-                                autoCorrectEnabled = false,
-                                imeAction = ImeAction.Done
-                            ),
-                            shape = RoundedCornerShape(14.dp)
-                        )
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.End
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        TextButton(
+                            onClick = {
+                                localName = ""
+                                onSaveLocalName(profile.route, "")
+                            }
                         ) {
-                            TextButton(
-                                onClick = {
-                                    localName = ""
-                                    onSaveLocalName(profile.route, "")
-                                }
-                            ) {
-                                Text("Remover nome")
+                            Text("Remover nome")
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        Button(
+                            onClick = {
+                                onSaveLocalName(profile.route, localName.trim())
                             }
-                            Spacer(Modifier.width(8.dp))
-                            Button(
-                                onClick = {
-                                    onSaveLocalName(profile.route, localName.trim())
-                                }
-                            ) {
-                                Text("Salvar")
-                            }
+                        ) {
+                            Text("Salvar")
                         }
                     }
                 }
             }
         }
     }
+
+    ProfileBlockContactConfirmationDialog(
+        visible = showBlockConfirmation,
+        onConfirmBlock = {
+            showBlockConfirmation = false
+            onBlockContact?.invoke()
+        },
+        onDismiss = {
+            showBlockConfirmation = false
+        }
+    )
 }
 
 private const val MAX_LOCAL_NAME_CHARS = 64
+
+@Composable
+private fun RouteProfileQuickActions(
+    onRecordMedia: (() -> Unit)?,
+    onSendMessage: (() -> Unit)?
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        if (onRecordMedia != null) {
+            OutlinedButton(
+                onClick = onRecordMedia,
+                modifier = Modifier.weight(1f),
+                shape = RoundedCornerShape(14.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Videocam,
+                    contentDescription = null
+                )
+                Spacer(Modifier.width(8.dp))
+                Text("Gravar mídia", maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        }
+        if (onSendMessage != null) {
+            Button(
+                onClick = onSendMessage,
+                modifier = Modifier.weight(1f),
+                shape = RoundedCornerShape(14.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.ChatBubble,
+                    contentDescription = null
+                )
+                Spacer(Modifier.width(8.dp))
+                Text("Enviar mensagem", maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProfileDangerActions(
+    contactBlocked: Boolean,
+    onRemoveContact: (() -> Unit)?,
+    onBlockClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        if (onRemoveContact != null) {
+            OutlinedButton(
+                onClick = onRemoveContact,
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Delete,
+                    contentDescription = null
+                )
+                Spacer(Modifier.width(8.dp))
+                Text("Remover contato")
+            }
+        }
+        Button(
+            onClick = onBlockClick,
+            shape = RoundedCornerShape(14.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = if (contactBlocked) {
+                    MaterialTheme.colorScheme.surfaceVariant
+                } else {
+                    MaterialTheme.colorScheme.error
+                },
+                contentColor = if (contactBlocked) {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                } else {
+                    MaterialTheme.colorScheme.onError
+                }
+            )
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Lock,
+                contentDescription = null
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(if (contactBlocked) "Desbloquear contato" else "Bloquear contato")
+        }
+    }
+}
+
+@Composable
+private fun ProfileBlockContactConfirmationDialog(
+    visible: Boolean,
+    onConfirmBlock: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    if (!visible) return
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text("Tem certeza que deseja bloquear esta pessoa?")
+        },
+        text = {
+            Text(
+                "Você não receberá mais nada deste contato e o endereço sumirá do aplicativo. " +
+                    "Mesmo que desbloqueie, terá que procurar pelo token novamente."
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirmBlock) {
+                Text("Sim, bloquear")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Não")
+            }
+        }
+    )
+}
 
 @Composable
 private fun ProfileAvatar(text: String, emoji: String) {
     val avatarSize = 72.dp
     Surface(
         shape = CircleShape,
-        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
+        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
         modifier = Modifier
             .width(avatarSize)
             .height(avatarSize)
@@ -232,7 +371,7 @@ private fun ProfileAvatar(text: String, emoji: String) {
                 },
                 color = MaterialTheme.colorScheme.primary,
                 fontWeight = FontWeight.Bold,
-                style = MaterialTheme.typography.headlineMedium
+                style = MaterialTheme.typography.titleMedium
             )
         }
     }
@@ -258,6 +397,7 @@ private fun ProfileInfoBlock(
                 } else {
                     MaterialTheme.typography.bodySmall
                 },
+                color = MaterialTheme.colorScheme.onSurface,
                 maxLines = Int.MAX_VALUE,
                 overflow = TextOverflow.Clip
             )

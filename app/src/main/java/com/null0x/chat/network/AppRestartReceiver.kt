@@ -9,9 +9,6 @@ class AppRestartReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent?) {
         if (intent?.action != ACTION_RELAUNCH_APP) return
         val appContext = context.applicationContext
-        if (BackgroundConnectionModePreference.currentMode(appContext) != BackgroundConnectionMode.REAL_TIME) {
-            return
-        }
         if (!consumePendingRelaunch(appContext)) return
         ChatNodeManager.ensureBackgroundNetwork(appContext)
         val launchIntent = Intent(appContext, MainActivity::class.java).apply {

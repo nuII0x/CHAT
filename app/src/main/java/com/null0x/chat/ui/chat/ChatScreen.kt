@@ -1,8 +1,13 @@
 package com.null0x.chat.ui.chat
 
+import android.Manifest
 import android.content.Context
 import android.content.ContextWrapper
 import android.app.Activity
+import android.content.pm.PackageManager
+import android.util.Base64
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -25,6 +30,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -37,9 +43,10 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.outlined.Send
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Done
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Settings
@@ -52,6 +59,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -60,6 +68,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -73,11 +82,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.font.FontWeight
@@ -85,6 +96,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.text.KeyboardActions
@@ -95,12 +107,19 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.zIndex
+import androidx.core.content.ContextCompat
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -110,7 +129,8 @@ import com.null0x.chat.model.DeliveryState
 import com.null0x.chat.model.Message
 import com.null0x.chat.network.TorManager
 import com.null0x.chat.security.SensitiveClipboard
-import com.null0x.chat.ui.common.SwipeToCloseContainer
+import com.null0x.chat.ui.common.SystemBarsColorEffect
+import com.null0x.chat.ui.common.WindowDispositionScaffold
 import com.null0x.chat.ui.maskedRouteLabel
 import com.null0x.chat.ui.profile.RouteProfileScreen
 import com.null0x.chat.ui.security.ProtectedWindowCapture
@@ -119,25 +139,89 @@ import android.widget.Toast
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-
+import com.null0x.chat.ui.theme.AppearancePreference
 import com.null0x.chat.ui.theme.ThemeMode
+import com.null0x.chat.ui.theme.readableContentColor
+import com.null0x.chat.ui.theme.themeDialogColor
+import com.null0x.chat.ui.theme.themeBackgroundColor
+import com.null0x.chat.ui.theme.themeConversationBubbleColor
+import com.null0x.chat.ui.theme.themeConversationPeerBubbleColor
 
 private val ChatHeaderHeight = 86.dp
-private val TitleBarColor = Color.Black
+private val ChatDockButtonOffset = 40.dp
+private val ChatDockBottomLift = 10.dp
+private val ChatDockActionReserve = 160.dp
+private val ChatDockMediaOpenEndOffset = (-112).dp
+private val MessageBarThickness = 4.dp
+private val MessageBodyInset = 4.dp
+private const val ChatSettingsRoute = "chat_settings"
+private const val BlockDecisionHelpRoute = "block_decision_help"
+private const val ChatMessagePrefix = "CHAT_MSG|"
 
 @Composable
 fun ChatScreen(vm: ChatViewModel, themeMode: ThemeMode, onBack: () -> Unit, onLockApp: () -> Unit) {
     var input by rememberSaveable(vm.targetUsername) { mutableStateOf(vm.draftFor(vm.targetUsername)) }
+    var showTextInput by rememberSaveable(vm.targetUsername) { mutableStateOf(input.isNotBlank()) }
     var profileRoute by rememberSaveable { mutableStateOf("") }
     var showProfile by rememberSaveable { mutableStateOf(false) }
     var showChatSettings by rememberSaveable { mutableStateOf(false) }
+    var chatSettingsRoute by rememberSaveable { mutableStateOf(ChatSettingsRoute) }
     var selectedMessage by remember { mutableStateOf<Message?>(null) }
     var selectableMessageIds by remember { mutableStateOf(emptySet<String>()) }
+    var showEphemeralCamera by rememberSaveable { mutableStateOf(false) }
+    var isAudioRecording by remember { mutableStateOf(false) }
     val context = LocalContext.current
-    val serviceStatus by TorManager.status.collectAsState()
-    val networkAvailable by TorManager.networkAvailableState.collectAsState()
+    val appearance by AppearancePreference.appearance.collectAsState()
+    val systemDarkTheme = androidx.compose.foundation.isSystemInDarkTheme()
+    val cameraSystemBarColor = Color.Black
+    val chatNavigationBarColor = when {
+        showEphemeralCamera -> cameraSystemBarColor
+        else -> MaterialTheme.colorScheme.background
+    }
+    SystemBarsColorEffect(
+        statusBarColor = Color.Transparent,
+        navigationBarColor = chatNavigationBarColor,
+        statusBarDarkIcons = !showEphemeralCamera && MaterialTheme.colorScheme.background.luminance() > 0.5f
+    )
     val keyboardController = LocalSoftwareKeyboardController.current
     val composerFocusRequester = remember { FocusRequester() }
+    val mediaPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { result ->
+        val cameraGranted = result[Manifest.permission.CAMERA] == true ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+        if (cameraGranted) {
+            showEphemeralCamera = true
+        } else {
+            Toast.makeText(context, "Permita a câmera", Toast.LENGTH_SHORT).show()
+        }
+    }
+    val audioPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (!granted) {
+            Toast.makeText(context, "Permita o microfone", Toast.LENGTH_SHORT).show()
+        }
+    }
+    DisposableEffect(Unit) {
+        onDispose {
+            deleteEphemeralMedia(context)
+        }
+    }
+    fun openEphemeralMediaRecorder() {
+        val cameraGranted = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.CAMERA
+        ) == PackageManager.PERMISSION_GRANTED
+        if (cameraGranted) {
+            keyboardController?.hide()
+            showEphemeralCamera = true
+        } else {
+            mediaPermissionLauncher.launch(
+                arrayOf(Manifest.permission.CAMERA)
+            )
+        }
+    }
     val peers = remember(vm.startedConversations.toList(), vm.targetUsername) {
         val ordered = vm.startedConversations.map { it.trim() }.filter { it.isNotBlank() }.toMutableList()
         val current = vm.targetUsername.trim()
@@ -153,12 +237,21 @@ fun ChatScreen(vm: ChatViewModel, themeMode: ThemeMode, onBack: () -> Unit, onLo
     )
 
     BackHandler(enabled = showChatSettings) {
-        showChatSettings = false
+        if (chatSettingsRoute == BlockDecisionHelpRoute) {
+            chatSettingsRoute = ChatSettingsRoute
+        } else {
+            showChatSettings = false
+        }
     }
     BackHandler(enabled = showProfile && !showChatSettings) {
         showProfile = false
     }
-    BackHandler(enabled = !showProfile && !showChatSettings) {
+    BackHandler(enabled = !showProfile && !showChatSettings && showTextInput) {
+        showTextInput = false
+        keyboardController?.hide()
+    }
+    BackHandler(enabled = !showProfile && !showChatSettings && !showTextInput) {
+        keyboardController?.hide()
         onBack()
     }
     ProtectedWindowCapture(enabled = !vm.isCurrentChatScreenshotsEnabled())
@@ -184,32 +277,40 @@ fun ChatScreen(vm: ChatViewModel, themeMode: ThemeMode, onBack: () -> Unit, onLo
     }
 
     val headerUser = peers.getOrNull(pagerState.currentPage)?.trim().orEmpty().ifBlank { vm.targetUsername }
-    val chatTitle = vm.chatTitleFor(headerUser)
-    val sourceTitle = "Chats"
-    val serviceStarting = serviceStatus is TorManager.Status.Starting
-    var showStartingTitle by remember { mutableStateOf(false) }
-    val chatRouteLabel = chatRoutePresenceLabel(
-        networkAvailable = networkAvailable,
-        serviceStarting = showStartingTitle,
-        partnerConnected = vm.isPartnerOnline(headerUser)
-    )
+    val chatTitle = vm.chatTitleFor(headerUser).ifBlank { maskedRouteLabel(headerUser) }
+    val headerConversation = remember(headerUser, vm.conversationPreviews()) {
+        vm.conversationPreviews().firstOrNull { it.username == headerUser }
+    }
+    val headerUserAvailable = vm.showChatPresenceStatus && vm.isPartnerOnline(headerUser)
+    val chatPresenceLabel = if (headerUserAvailable) {
+        "disponível"
+    } else {
+        ""
+    }
+    val chatLastActivityLabel = if (!headerUserAvailable && vm.showChatLastActivity && (headerConversation?.lastTimestamp ?: 0L) > 0L) {
+        "Última atividade: ${chatActivityElapsedLabel(headerConversation?.lastTimestamp ?: 0L)}"
+    } else {
+        ""
+    }
+    val chatHeaderSubtitle = listOfNotNull(
+        chatPresenceLabel.takeIf { it.isNotBlank() },
+        chatLastActivityLabel.takeIf { it.isNotBlank() }
+    ).joinToString(" • ")
     val unreadHintCount = vm.unreadEntryCountFor(headerUser)
     val currentChatLoaded = vm.isCurrentChatLoaded()
     val currentMessages = vm.messagesFor(vm.targetUsername)
 
     LaunchedEffect(headerUser) {
-        input = vm.draftFor(headerUser)
+        val draft = vm.draftFor(headerUser)
+        input = draft
+        showTextInput = draft.isNotBlank() || unreadHintCount > 0
+        if (vm.consumeMediaRecorderOnOpen(headerUser)) {
+            openEphemeralMediaRecorder()
+        }
     }
 
     LaunchedEffect(context) {
         TorManager.ensureNetworkMonitoring(context)
-    }
-
-    LaunchedEffect(serviceStarting, networkAvailable) {
-        showStartingTitle = networkAvailable && serviceStarting
-        if (!showStartingTitle) return@LaunchedEffect
-        delay(10_000)
-        showStartingTitle = networkAvailable && serviceStarting
     }
 
     DisposableEffect(Unit) {
@@ -223,9 +324,16 @@ fun ChatScreen(vm: ChatViewModel, themeMode: ThemeMode, onBack: () -> Unit, onLo
         }
     }
 
-    LaunchedEffect(headerUser) {
-        composerFocusRequester.requestFocus()
-        keyboardController?.hide()
+    LaunchedEffect(showChatSettings) {
+        if (showChatSettings) {
+            keyboardController?.hide()
+        }
+    }
+
+    LaunchedEffect(showEphemeralCamera) {
+        if (showEphemeralCamera) {
+            keyboardController?.hide()
+        }
     }
 
     LaunchedEffect(headerUser, input) {
@@ -265,7 +373,6 @@ fun ChatScreen(vm: ChatViewModel, themeMode: ThemeMode, onBack: () -> Unit, onLo
         val offsetX = remember(screenWidthPx) { Animatable(screenWidthPx) }
         var dragX by remember { mutableFloatStateOf(0f) }
         var keyboardHiddenDuringDrag by remember { mutableStateOf(false) }
-        val openingProgress = ((screenWidthPx - offsetX.value) / screenWidthPx).coerceIn(0f, 1f)
 
         LaunchedEffect(screenWidthPx) {
             offsetX.animateTo(
@@ -279,6 +386,7 @@ fun ChatScreen(vm: ChatViewModel, themeMode: ThemeMode, onBack: () -> Unit, onLo
                 .fillMaxSize()
                 .offset { IntOffset(offsetX.value.toInt(), 0) }
                 .draggable(
+                    enabled = !showEphemeralCamera && !isAudioRecording,
                     orientation = Orientation.Horizontal,
                     state = rememberDraggableState { delta ->
                         if (!keyboardHiddenDuringDrag) {
@@ -322,15 +430,8 @@ fun ChatScreen(vm: ChatViewModel, themeMode: ThemeMode, onBack: () -> Unit, onLo
                     Column {
                         ChatHeader(
                             title = chatTitle,
-                            subtitle = chatRouteLabel,
-                            sourceTitle = sourceTitle,
-                            sourceSubtitle = chatRouteLabel,
-                            sourceEmoji = vm.profileEmojiSymbol,
-                            targetEmoji = vm.emojiForRoute(headerUser),
-                            openingProgress = openingProgress,
-                            networkAvailable = networkAvailable,
+                            subtitle = chatHeaderSubtitle,
                             onBack = onBack,
-                            onClear = { vm.clearConversation(headerUser) },
                             onOpenProfile = {
                                 profileRoute = headerUser
                                 showProfile = true
@@ -338,11 +439,6 @@ fun ChatScreen(vm: ChatViewModel, themeMode: ThemeMode, onBack: () -> Unit, onLo
                             onCopyRoute = {
                                 SensitiveClipboard.copy(context, "Rota contato", maskedRouteLabel(headerUser))
                                 Toast.makeText(context, "Token sensível copiado por 60 segundos", Toast.LENGTH_SHORT).show()
-                            },
-                            onLockApp = onLockApp,
-                            onOpenSettings = {
-                                keyboardController?.hide()
-                                showChatSettings = true
                             }
                         )
                         if (unreadHintCount > 0) {
@@ -378,50 +474,124 @@ fun ChatScreen(vm: ChatViewModel, themeMode: ThemeMode, onBack: () -> Unit, onLo
                             selectableMessageIds = selectableMessageIds,
                             onMessageClick = { selectedMessage = it },
                             themeMode = themeMode,
+                            appearance = appearance,
                             modifier = Modifier.fillMaxSize(),
-                            bottomContentPadding = 154.dp
+                            bottomContentPadding = 170.dp,
+                            composerExpanded = showTextInput
                         )
-                        val marker = vm.emojiForRoute(headerUser)
-                            .ifBlank { compactOnionRoute(vm.chatTitleFor(headerUser)).take(1).ifBlank { "?" }.uppercase() }
-                        if (user == headerUser && marker.isNotBlank() && vm.isPartnerChatOpen(headerUser)) {
-                            PartnerMarkerBadge(
-                                marker = marker,
-                                typing = vm.isPartnerTyping(headerUser),
-                                modifier = Modifier
-                                    .align(Alignment.BottomStart)
-                                    .padding(start = 18.dp, bottom = 86.dp)
-                            )
-                        }
                     }
                 }
             }
 
             Box(
                 modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .fillMaxWidth()
+                    .fillMaxSize()
+                    .navigationBarsPadding()
                     .imePadding()
             ) {
-                    MessageComposer(
-                        input = input,
-                        focusRequester = composerFocusRequester,
-                        themeMode = themeMode,
-                        onInputChange = {
-                            input = it
-                            vm.updateDraft(headerUser, it)
-                        },
-                        onSend = {
-                            val text = input.trim()
+                val marker = vm.emojiForRoute(headerUser)
+                    .ifBlank { compactOnionRoute(vm.chatTitleFor(headerUser)).take(1).ifBlank { "?" }.uppercase() }
+                if (marker.isNotBlank() && vm.isPartnerChatOpen(headerUser)) {
+                    PartnerMarkerBadge(
+                        marker = marker,
+                        typing = vm.isPartnerTyping(headerUser),
+                        modifier = Modifier
+                            .align(Alignment.BottomStart)
+                            .padding(
+                                start = 18.dp,
+                                bottom = if (showTextInput) 78.dp else 4.dp
+                            )
+                    )
+                }
+
+                MessageComposer(
+                    input = input,
+                    showTextInput = showTextInput,
+                    focusRequester = composerFocusRequester,
+                    appearance = appearance,
+                    trailingActionSpace = if (showTextInput) ChatDockActionReserve else 0.dp,
+                    onInputChange = {
+                        input = it
+                        vm.updateDraft(headerUser, it)
+                    },
+                    onShowTextInputChange = { showTextInput = it },
+                    onSend = {
+                        val text = input.trim()
                         if (text.isNotBlank()) {
                             vm.updateLocalTyping(headerUser, false)
                             vm.sendTo(headerUser, text)
                             input = ""
                             vm.clearDraft(headerUser)
                         }
+                    },
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .offset(y = -ChatDockBottomLift),
+                    buttonOffsetX = -ChatDockButtonOffset,
+                    showButtonWhenOpen = !showTextInput
+                )
+
+                FloatingMediaButtonOverlay(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(bottom = ChatDockBottomLift),
+                    buttonAlignment = if (showTextInput) Alignment.BottomEnd else Alignment.BottomCenter,
+                    buttonOffsetX = if (showTextInput) ChatDockMediaOpenEndOffset else ChatDockButtonOffset,
+                    isAudioRecording = isAudioRecording,
+                    onAudioRecordingStateChange = { isAudioRecording = it },
+                    onMediaClick = {
+                        openEphemeralMediaRecorder()
+                    },
+                    onAudioHoldStart = {
+                        ContextCompat.checkSelfPermission(
+                            context,
+                            Manifest.permission.RECORD_AUDIO
+                        ) == PackageManager.PERMISSION_GRANTED
+                    },
+                    onAudioRecorded = {
+                        vm.sendEphemeralMediaTo(headerUser, ChatViewModel.EphemeralMediaType.AUDIO)
+                    },
+                    onAudioPermissionNeeded = {
+                        audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                    }
+                )
+
+                ChatBottomActions(
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(end = 8.dp, bottom = ChatDockBottomLift),
+                    themeMode = themeMode,
+                    onLockApp = onLockApp,
+                    onClear = { vm.clearConversation(headerUser) },
+                    onOpenSettings = {
+                        keyboardController?.hide()
+                        chatSettingsRoute = ChatSettingsRoute
+                        showChatSettings = true
                     }
                 )
             }
         }
+    }
+
+    if (showEphemeralCamera) {
+        BackHandler {
+            showEphemeralCamera = false
+        }
+        EphemeralCameraOverlay(
+            onDismiss = { showEphemeralCamera = false },
+            onLockApp = onLockApp,
+            onReviewSend = { isVideo ->
+                vm.sendEphemeralMediaTo(
+                    headerUser,
+                    if (isVideo) {
+                        ChatViewModel.EphemeralMediaType.VIDEO
+                    } else {
+                        ChatViewModel.EphemeralMediaType.PHOTO
+                    }
+                )
+                showEphemeralCamera = false
+            }
+        )
     }
 
     AnimatedVisibility(
@@ -440,7 +610,27 @@ fun ChatScreen(vm: ChatViewModel, themeMode: ThemeMode, onBack: () -> Unit, onLo
             profile = profile,
             onBack = { showProfile = false },
             onLockApp = onLockApp,
-            onSaveLocalName = { route, name -> vm.setLocalNameForRoute(route, name) }
+            onSaveLocalName = { route, name -> vm.setLocalNameForRoute(route, name) },
+            contactBlocked = vm.isContactBlocked(profileTarget),
+            onSendMessage = {
+                showProfile = false
+            },
+            onRecordMedia = {
+                showProfile = false
+                openEphemeralMediaRecorder()
+            },
+            onRemoveContact = {
+                vm.removeContact(profileTarget)
+                showProfile = false
+            },
+            onBlockContact = {
+                vm.blockContact(profileTarget)
+                showProfile = false
+                onBack()
+            },
+            onUnblockContact = {
+                vm.unblockContact(profileTarget)
+            }
         )
     }
 
@@ -456,23 +646,40 @@ fun ChatScreen(vm: ChatViewModel, themeMode: ThemeMode, onBack: () -> Unit, onLo
             contactBlocked = vm.isContactBlocked(vm.targetUsername),
             onKeepViewedMessagesChange = vm::updateCurrentChatKeepViewedMessagesPreference,
             onScreenshotsEnabledChange = vm::updateCurrentChatScreenshotsPreference,
-            onToggleContactBlock = {
-                if (vm.isContactBlocked(vm.targetUsername)) {
-                    vm.unblockContact(vm.targetUsername)
-                } else {
-                    vm.blockContact(vm.targetUsername)
-                    onBack()
-                }
+            onBlockContact = {
+                vm.blockContact(vm.targetUsername)
+                onBack()
+            },
+            onUnblockContact = {
+                vm.unblockContact(vm.targetUsername)
+            },
+            onRemoveContact = {
+                vm.removeContact(vm.targetUsername)
+                showChatSettings = false
+            },
+            onOpenBlockDecisionHelp = {
+                chatSettingsRoute = BlockDecisionHelpRoute
             },
             onLockApp = onLockApp,
             onBack = { showChatSettings = false }
         )
+        AnimatedVisibility(
+            visible = chatSettingsRoute == BlockDecisionHelpRoute,
+            enter = slideInHorizontally(initialOffsetX = { fullWidth -> fullWidth }) + fadeIn(),
+            exit = slideOutHorizontally(targetOffsetX = { fullWidth -> fullWidth }) + fadeOut()
+        ) {
+            BlockDecisionHelpScreen(
+                onBack = { chatSettingsRoute = ChatSettingsRoute },
+                onLockApp = onLockApp
+            )
+        }
     }
 
     selectedMessage?.let { message ->
         MessageDetailDialog(
             message = message,
             selectionEnabled = selectableMessageIds.contains(message.id),
+            baseThemeMode = themeMode,
             onToggleSelection = {
                 selectableMessageIds = if (selectableMessageIds.contains(message.id)) {
                     selectableMessageIds - message.id
@@ -502,71 +709,34 @@ private tailrec fun Context.findActivity(): Activity? {
 private fun ChatHeader(
     title: String,
     subtitle: String,
-    sourceTitle: String,
-    sourceSubtitle: String,
-    sourceEmoji: String,
-    targetEmoji: String,
-    openingProgress: Float,
-    networkAvailable: Boolean,
     onBack: () -> Unit,
-    onClear: () -> Unit,
     onOpenProfile: () -> Unit,
-    onCopyRoute: () -> Unit,
-    onLockApp: () -> Unit,
-    onOpenSettings: () -> Unit
+    onCopyRoute: () -> Unit
 ) {
-    var showMenu by rememberSaveable { mutableStateOf(false) }
-    val sourceAlpha = (1f - openingProgress).coerceIn(0f, 1f)
-    val targetAlpha = openingProgress.coerceIn(0f, 1f)
+    val titleBarContentColor = readableContentColor(MaterialTheme.colorScheme.background)
+    val iconTint = titleBarContentColor
     Surface(
         shape = RoundedCornerShape(0.dp),
-        color = TitleBarColor,
+        color = Color.Transparent,
         tonalElevation = 0.dp,
         shadowElevation = 0.dp
     ) {
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(ChatHeaderHeight)
-                .padding(horizontal = 0.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(ChatHeaderHeight)
+                    .padding(start = 8.dp, end = 8.dp, top = 8.dp, bottom = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
             IconButton(
-                onClick = onBack,
-                modifier = Modifier.alpha(targetAlpha)
+                onClick = onBack
             ) {
                 Icon(
                     imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                     contentDescription = "Voltar",
-                    tint = Color.White
+                    tint = iconTint
                 )
             }
-            Surface(
-                shape = CircleShape,
-                color = Color.White.copy(alpha = 0.18f),
-                modifier = Modifier
-                    .size(38.dp)
-                    .combinedClickable(
-                        onClick = onOpenProfile,
-                        onLongClick = onCopyRoute
-                    )
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Text(
-                        modifier = Modifier.alpha(sourceAlpha),
-                        text = sourceEmoji.ifBlank { sourceTitle.trim().take(1).ifBlank { "P" }.uppercase() },
-                        color = Color.White,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        modifier = Modifier.alpha(targetAlpha),
-                        text = targetEmoji.ifBlank { title.trim().take(1).ifBlank { "P" }.uppercase() },
-                        color = Color.White,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-            }
-            Spacer(Modifier.width(10.dp))
             Column(
                 modifier = Modifier
                     .weight(1f)
@@ -577,94 +747,86 @@ private fun ChatHeader(
                     ),
                 verticalArrangement = Arrangement.Center
             ) {
-                Box(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    text = title,
+                    color = titleBarContentColor,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                if (subtitle.isNotBlank()) {
                     Text(
-                        modifier = Modifier.alpha(sourceAlpha),
-                        text = sourceTitle,
-                        color = Color.White,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Clip
-                    )
-                    Text(
-                        modifier = Modifier.alpha(targetAlpha),
-                        text = title,
-                        color = Color.White,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Clip
-                    )
-                }
-                Box(modifier = Modifier.fillMaxWidth()) {
-                    Text(
-                        modifier = Modifier.alpha(sourceAlpha),
-                        text = sourceSubtitle,
-                        color = Color.White.copy(alpha = 0.78f),
-                        style = MaterialTheme.typography.bodySmall,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Text(
-                        modifier = Modifier.alpha(targetAlpha),
                         text = subtitle,
-                        color = Color.White.copy(alpha = 0.78f),
+                        color = titleBarContentColor.copy(alpha = 0.68f),
                         style = MaterialTheme.typography.bodySmall,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
                 }
             }
-            Box {
-                IconButton(
-                    onClick = { showMenu = true },
-                    modifier = Modifier.alpha(targetAlpha)
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.MoreVert,
-                        contentDescription = "Menu",
-                        tint = Color.White
-                    )
-                }
-                DropdownMenu(
-                    expanded = showMenu,
-                    onDismissRequest = { showMenu = false }
-                ) {
-                    DropdownMenuItem(
-                        text = { Text("Limpar conversa") },
-                        onClick = {
-                            showMenu = false
-                            onClear()
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Configuração") },
-                        leadingIcon = {
-                            Icon(
-                                imageVector = Icons.Filled.Settings,
-                                contentDescription = null
-                            )
-                        },
-                        onClick = {
-                            showMenu = false
-                            onOpenSettings()
-                        }
-                    )
-                }
+        }
+    }
+}
+
+@Composable
+private fun ChatBottomActions(
+    themeMode: ThemeMode,
+    onLockApp: () -> Unit,
+    onClear: () -> Unit,
+    onOpenSettings: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var showMenu by rememberSaveable { mutableStateOf(false) }
+    val systemDarkTheme = androidx.compose.foundation.isSystemInDarkTheme()
+    val actionContentColor = readableContentColor(themeBackgroundColor(themeMode, systemDarkTheme))
+
+    Row(
+        modifier = modifier.zIndex(1f),
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box {
+            IconButton(onClick = { showMenu = true }) {
+                Icon(
+                    imageVector = Icons.Filled.MoreVert,
+                    contentDescription = "Menu",
+                    tint = actionContentColor
+                )
             }
-            Box {
-                IconButton(
-                    onClick = onLockApp,
-                    modifier = Modifier.alpha(targetAlpha)
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.VpnKey,
-                        contentDescription = "Trancar app",
-                        tint = Color.White
-                    )
-                }
+            DropdownMenu(
+                expanded = showMenu,
+                onDismissRequest = { showMenu = false }
+            ) {
+                DropdownMenuItem(
+                    text = { Text("Limpar conversa") },
+                    onClick = {
+                        showMenu = false
+                        onClear()
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text("Configuração") },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Filled.Settings,
+                            contentDescription = null
+                        )
+                    },
+                    onClick = {
+                        showMenu = false
+                        onOpenSettings()
+                    }
+                )
             }
+        }
+        IconButton(onClick = onLockApp) {
+            Icon(
+                imageVector = Icons.Filled.VpnKey,
+                contentDescription = "Trancar app",
+                tint = actionContentColor
+            )
         }
     }
 }
@@ -677,129 +839,249 @@ private fun ChatSettingsScreen(
     contactBlocked: Boolean,
     onKeepViewedMessagesChange: (Boolean) -> Unit,
     onScreenshotsEnabledChange: (Boolean) -> Unit,
-    onToggleContactBlock: () -> Unit,
+    onBlockContact: () -> Unit,
+    onUnblockContact: () -> Unit,
+    onRemoveContact: () -> Unit,
+    onOpenBlockDecisionHelp: () -> Unit,
     onLockApp: () -> Unit,
     onBack: () -> Unit
 ) {
-    SwipeToCloseContainer(onClose = onBack) {
-        val keyboardController = LocalSoftwareKeyboardController.current
-        DisposableEffect(Unit) {
-            keyboardController?.hide()
-            onDispose { }
+    var showBlockConfirmation by rememberSaveable { mutableStateOf(false) }
+    val keyboardController = LocalSoftwareKeyboardController.current
+    DisposableEffect(Unit) {
+        keyboardController?.hide()
+        onDispose { }
+    }
+    WindowDispositionScaffold(
+        title = "Configuração do chat",
+        subtitle = chatTitle,
+        onBack = onBack,
+        windowColor = MaterialTheme.colorScheme.background,
+        bottomActions = {
+            IconButton(onClick = onLockApp) {
+                Icon(
+                    imageVector = Icons.Filled.VpnKey,
+                    contentDescription = "Trancar app",
+                    tint = MaterialTheme.colorScheme.onBackground
+                )
+            }
         }
-        Surface(
-            modifier = Modifier.fillMaxSize(),
-            color = MaterialTheme.colorScheme.background
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 16.dp, vertical = 18.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            Column(modifier = Modifier.fillMaxSize()) {
-                Surface(
-                    shape = RoundedCornerShape(0.dp),
-                    color = TitleBarColor,
-                    tonalElevation = 0.dp,
-                    shadowElevation = 0.dp
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                Text(
+                    text = "Privacidade desta conversa",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                ChatSettingsChoiceRow(
+                    title = "Limpar histórico ao sair?",
+                    subtitle = if (keepViewedMessages) "Mantém mensagens ao fechar" else "Apaga mensagens lidas ao sair",
+                    checked = !keepViewedMessages,
+                    onCheckedChange = { onKeepViewedMessagesChange(!it) }
+                )
+                ChatSettingsRow(
+                    title = "Print da tela",
+                    subtitle = if (screenshotsEnabled) "Permitido neste chat" else "Bloqueado neste chat",
+                    checked = screenshotsEnabled,
+                    onCheckedChange = onScreenshotsEnabledChange
+                )
+            }
+            Spacer(Modifier.weight(1f))
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 4.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedButton(
+                    onClick = onRemoveContact,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp)
                 ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(ChatHeaderHeight)
-                            .padding(horizontal = 0.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        IconButton(onClick = onBack) {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                                contentDescription = "Voltar",
-                                tint = Color.White
-                            )
-                        }
-                        Column(
-                            modifier = Modifier.weight(1f),
-                            verticalArrangement = Arrangement.Center
-                        ) {
-                            Text(
-                                text = "Configuração do chat",
-                                color = Color.White,
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.SemiBold,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            Text(
-                                text = chatTitle,
-                                color = Color.White.copy(alpha = 0.78f),
-                                style = MaterialTheme.typography.bodySmall,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                        IconButton(onClick = onLockApp) {
-                            Icon(
-                                imageVector = Icons.Filled.VpnKey,
-                                contentDescription = "Trancar app",
-                                tint = Color.White
-                            )
-                        }
-                    }
+                    Icon(
+                        imageVector = Icons.Filled.Delete,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text("Remover contato")
                 }
+                Button(
+                    onClick = {
+                        if (contactBlocked) {
+                            onUnblockContact()
+                        } else {
+                            showBlockConfirmation = true
+                        }
+                    },
+                    shape = RoundedCornerShape(14.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (contactBlocked) {
+                            MaterialTheme.colorScheme.surfaceVariant
+                        } else {
+                            MaterialTheme.colorScheme.error
+                        },
+                        contentColor = if (contactBlocked) {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        } else {
+                            MaterialTheme.colorScheme.onError
+                        }
+                    )
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Lock,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (contactBlocked) "Desbloquear contato" else "Bloquear contato")
+                }
+            }
+        }
+    }
 
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(horizontal = 16.dp, vertical = 18.dp),
-                    verticalArrangement = Arrangement.spacedBy(14.dp)
-                ) {
-                    Column(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalArrangement = Arrangement.spacedBy(14.dp)
-                    ) {
-                        Text(
-                            text = "Privacidade desta conversa",
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        ChatSettingsChoiceRow(
-                            title = "Limpar histórico ao sair?",
-                            subtitle = if (keepViewedMessages) "Mantém mensagens ao fechar" else "Apaga mensagens lidas ao sair",
-                            checked = !keepViewedMessages,
-                            onCheckedChange = { onKeepViewedMessagesChange(!it) }
-                        )
-                        ChatSettingsRow(
-                            title = "Print da tela",
-                            subtitle = if (screenshotsEnabled) "Permitido neste chat" else "Bloqueado neste chat",
-                            checked = screenshotsEnabled,
-                            onCheckedChange = onScreenshotsEnabledChange
-                        )
-                    }
-                    Spacer(Modifier.weight(1f))
-                    Button(
-                        onClick = onToggleContactBlock,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(bottom = 4.dp),
-                        shape = RoundedCornerShape(14.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = if (contactBlocked) {
-                                MaterialTheme.colorScheme.surfaceVariant
-                            } else {
-                                MaterialTheme.colorScheme.error
-                            },
-                            contentColor = if (contactBlocked) {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            } else {
-                                MaterialTheme.colorScheme.onError
-                            }
-                        )
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.Lock,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Text(if (contactBlocked) "Desbloquear contato" else "Bloquear contato")
-                    }
+    BlockContactConfirmationDialog(
+        visible = showBlockConfirmation,
+        onConfirmBlock = {
+            showBlockConfirmation = false
+            onBlockContact()
+        },
+        onDismiss = {
+            showBlockConfirmation = false
+        },
+        onMaybe = {
+            showBlockConfirmation = false
+            onOpenBlockDecisionHelp()
+        }
+    )
+}
+
+@Composable
+private fun BlockContactConfirmationDialog(
+    visible: Boolean,
+    onConfirmBlock: () -> Unit,
+    onDismiss: () -> Unit,
+    onMaybe: () -> Unit
+) {
+    if (!visible) return
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text("Tem certeza que deseja bloquear esta pessoa?")
+        },
+        text = {
+            Text(
+                "Você não receberá mais nada deste contato e o endereço sumirá do aplicativo. " +
+                    "Mesmo que desbloqueie, terá que procurar pelo token novamente."
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirmBlock) {
+                Text("Sim, bloquear")
+            }
+        },
+        dismissButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                TextButton(onClick = onMaybe) {
+                    Text("Talvez")
                 }
+                TextButton(onClick = onDismiss) {
+                    Text("Não")
+                }
+            }
+        }
+    )
+}
+
+@Composable
+private fun BlockDecisionHelpScreen(
+    onBack: () -> Unit,
+    onLockApp: () -> Unit
+) {
+    WindowDispositionScaffold(
+        title = "Quando vale a pena bloquear alguém?",
+        onBack = onBack,
+        windowColor = MaterialTheme.colorScheme.background,
+        bottomActions = {
+            IconButton(onClick = onLockApp) {
+                Icon(
+                    imageVector = Icons.Filled.VpnKey,
+                    contentDescription = "Trancar app",
+                    tint = MaterialTheme.colorScheme.onBackground
+                )
+            }
+        }
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 24.dp, vertical = 18.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            BlockDecisionBulletList(
+                items = listOf(
+                    "Quando a pessoa está assediando você.",
+                    "Quando existem ameaças ou ofensas recorrentes.",
+                    "Quando o contato está prejudicando seu bem-estar.",
+                    "Quando você não deseja mais manter contato."
+                )
+            )
+            Text(
+                text = "Talvez seja melhor esperar um pouco se:",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onBackground
+            )
+            BlockDecisionBulletList(
+                items = listOf(
+                    "Você está irritado neste momento.",
+                    "Acabou de ocorrer uma discussão.",
+                    "A decisão pode gerar consequências profissionais ou familiares.",
+                    "Você acredita que pode se arrepender depois."
+                )
+            )
+            Spacer(Modifier.weight(1f))
+            Text(
+                text = "Bloquear é uma ferramenta para proteger sua experiência. A decisão é sua.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+@Composable
+private fun BlockDecisionBulletList(items: List<String>) {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        items.forEach { item ->
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.Top
+            ) {
+                Text(
+                    text = "•",
+                    color = MaterialTheme.colorScheme.onBackground,
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    text = item,
+                    modifier = Modifier.weight(1f),
+                    color = MaterialTheme.colorScheme.onBackground,
+                    style = MaterialTheme.typography.bodyMedium
+                )
             }
         }
     }
@@ -950,14 +1232,137 @@ private fun MessageList(
     selectableMessageIds: Set<String>,
     onMessageClick: (Message) -> Unit,
     themeMode: ThemeMode,
+    appearance: com.null0x.chat.ui.theme.AppearanceSettings,
     modifier: Modifier = Modifier,
-    bottomContentPadding: androidx.compose.ui.unit.Dp = 10.dp
+    bottomContentPadding: androidx.compose.ui.unit.Dp = 10.dp,
+    composerExpanded: Boolean = false
 ) {
+    val timelineItems = remember(messages, privacyNotices) {
+        buildList {
+            messages.forEach { add(TimelineItem.MessageItem(it)) }
+            privacyNotices
+                .sortedBy { it.timestamp }
+                .forEach { add(TimelineItem.PrivacyNoticeItem(it)) }
+        }
+    }
+    val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+    var previousTimelineSize by remember(conversationKey) { mutableStateOf(0) }
+    var previousMessageSize by remember(conversationKey) { mutableStateOf(0) }
+    var hiddenNewMessages by remember(conversationKey) { mutableStateOf(0) }
+    var enteringMessageIds by remember(conversationKey) { mutableStateOf(emptySet<String>()) }
+    var messageAnimationsReady by remember(conversationKey) { mutableStateOf(false) }
+    val lastVisibleIndex by remember {
+        derivedStateOf { listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1 }
+    }
+    val isAtBottom by remember(conversationKey, timelineItems.size) {
+        derivedStateOf {
+            timelineItems.isNotEmpty() && lastVisibleIndex >= timelineItems.lastIndex
+        }
+    }
+    val isFullyVisible by remember(conversationKey, timelineItems.size) {
+        derivedStateOf {
+            timelineItems.isNotEmpty() &&
+                listState.layoutInfo.totalItemsCount > 0 &&
+                listState.layoutInfo.visibleItemsInfo.size >= timelineItems.size &&
+                lastVisibleIndex >= timelineItems.lastIndex
+        }
+    }
+    val immediateEnteringMessageIds = run {
+        val messageDelta = (messages.size - previousMessageSize).coerceAtLeast(0)
+        if (messageAnimationsReady && messageDelta > 0) {
+            messages.takeLast(messageDelta).mapTo(mutableSetOf()) { it.id }
+        } else {
+            emptySet()
+        }
+    }
+    LaunchedEffect(conversationKey, loaded) {
+        if (!loaded) {
+            previousTimelineSize = 0
+            previousMessageSize = 0
+            hiddenNewMessages = 0
+            enteringMessageIds = emptySet()
+            messageAnimationsReady = false
+        }
+    }
+    LaunchedEffect(conversationKey, loaded, timelineItems.size, messages.size, unreadHintCount) {
+        if (!loaded) return@LaunchedEffect
+        if (!messageAnimationsReady) {
+            messageAnimationsReady = true
+            previousTimelineSize = timelineItems.size
+            previousMessageSize = messages.size
+            if (timelineItems.isNotEmpty()) {
+                val initialIndex = if (unreadHintCount > 0) {
+                    (timelineItems.size - unreadHintCount).coerceIn(0, timelineItems.lastIndex)
+                } else {
+                    timelineItems.lastIndex
+                }
+                listState.scrollToItem(initialIndex)
+            }
+            return@LaunchedEffect
+        }
+        if (timelineItems.isEmpty()) return@LaunchedEffect
+        val lastVisibleIndex = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
+        val timelineSizeBeforeUpdate = previousTimelineSize
+        val messageSizeBeforeUpdate = previousMessageSize
+        val wasAtBottom = timelineSizeBeforeUpdate == 0 ||
+            lastVisibleIndex >= (timelineSizeBeforeUpdate - 1).coerceAtLeast(0)
+        val messageDelta = (messages.size - messageSizeBeforeUpdate).coerceAtLeast(0)
+        val incomingDelta = if (messageDelta > 0) {
+            messages.takeLast(messageDelta).count { !it.isMine }
+        } else {
+            0
+        }
+        if (messageDelta > 0) {
+            enteringMessageIds += messages.takeLast(messageDelta).map { it.id }
+        }
+        val targetIndex = when {
+            unreadHintCount > 0 -> (timelineItems.size - unreadHintCount).coerceIn(0, timelineItems.lastIndex)
+            timelineSizeBeforeUpdate == 0 -> timelineItems.lastIndex
+            timelineItems.size > timelineSizeBeforeUpdate && wasAtBottom -> timelineItems.lastIndex
+            else -> timelineItems.lastIndex
+        }
+        previousTimelineSize = timelineItems.size
+        previousMessageSize = messages.size
+        when {
+            timelineSizeBeforeUpdate == 0 -> listState.scrollToItem(targetIndex)
+            timelineItems.size > timelineSizeBeforeUpdate && wasAtBottom -> {
+                hiddenNewMessages = 0
+                listState.animateScrollToItem(targetIndex)
+            }
+            timelineItems.size > timelineSizeBeforeUpdate && messageDelta > incomingDelta -> {
+                hiddenNewMessages = 0
+                listState.animateScrollToItem(timelineItems.lastIndex)
+            }
+            timelineItems.size > timelineSizeBeforeUpdate && incomingDelta > 0 -> {
+                hiddenNewMessages += incomingDelta
+            }
+        }
+    }
+
+    LaunchedEffect(isAtBottom) {
+        if (isAtBottom) {
+            hiddenNewMessages = 0
+        }
+    }
+
+    LaunchedEffect(composerExpanded, isFullyVisible, timelineItems.size) {
+        if (composerExpanded && isFullyVisible && timelineItems.isNotEmpty()) {
+            listState.animateScrollToItem(timelineItems.lastIndex)
+        }
+    }
+
+    val effectiveBottomPadding = if (composerExpanded && isFullyVisible) {
+        bottomContentPadding + 64.dp
+    } else {
+        bottomContentPadding
+    }
+
     if (messages.isEmpty() && privacyNotices.isEmpty()) {
         Box(
             modifier = modifier
                 .fillMaxSize()
-                .padding(bottom = bottomContentPadding),
+                .padding(bottom = effectiveBottomPadding),
             contentAlignment = Alignment.Center
         ) {
             Surface(
@@ -976,70 +1381,6 @@ private fun MessageList(
         return
     }
 
-    val timelineItems = remember(messages, privacyNotices) {
-        buildList {
-            messages.forEach { add(TimelineItem.MessageItem(it)) }
-            privacyNotices
-                .sortedBy { it.timestamp }
-                .forEach { add(TimelineItem.PrivacyNoticeItem(it)) }
-        }
-    }
-    val listState = rememberLazyListState()
-    val scope = rememberCoroutineScope()
-    var previousTimelineSize by remember(conversationKey) { mutableStateOf(0) }
-    var previousMessageSize by remember(conversationKey) { mutableStateOf(0) }
-    var hiddenNewMessages by remember(conversationKey) { mutableStateOf(0) }
-    LaunchedEffect(conversationKey, loaded) {
-        if (!loaded) {
-            previousTimelineSize = 0
-            previousMessageSize = 0
-            hiddenNewMessages = 0
-        }
-    }
-    LaunchedEffect(conversationKey, loaded, timelineItems.size, messages.size, unreadHintCount) {
-        if (!loaded || timelineItems.isEmpty()) return@LaunchedEffect
-        val lastVisibleIndex = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
-        val wasAtBottom = previousTimelineSize == 0 ||
-            lastVisibleIndex >= (previousTimelineSize - 1).coerceAtLeast(0)
-        val messageDelta = (messages.size - previousMessageSize).coerceAtLeast(0)
-        val incomingDelta = if (messageDelta > 0) {
-            messages.takeLast(messageDelta).count { !it.isMine }
-        } else {
-            0
-        }
-        val targetIndex = when {
-            unreadHintCount > 0 -> (timelineItems.size - unreadHintCount).coerceIn(0, timelineItems.lastIndex)
-            previousTimelineSize == 0 -> timelineItems.lastIndex
-            timelineItems.size > previousTimelineSize && wasAtBottom -> timelineItems.lastIndex
-            else -> timelineItems.lastIndex
-        }
-        when {
-            previousTimelineSize == 0 -> listState.scrollToItem(targetIndex)
-            timelineItems.size > previousTimelineSize && wasAtBottom -> {
-                hiddenNewMessages = 0
-                listState.animateScrollToItem(targetIndex)
-            }
-            timelineItems.size > previousTimelineSize && messageDelta > incomingDelta -> {
-                hiddenNewMessages = 0
-                listState.animateScrollToItem(timelineItems.lastIndex)
-            }
-            timelineItems.size > previousTimelineSize && incomingDelta > 0 -> {
-                hiddenNewMessages += incomingDelta
-            }
-        }
-        previousTimelineSize = timelineItems.size
-        previousMessageSize = messages.size
-    }
-
-    LaunchedEffect(listState, timelineItems.size) {
-        snapshotFlow {
-            val lastVisibleIndex = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
-            lastVisibleIndex >= timelineItems.lastIndex
-        }.collect { isAtBottom ->
-            if (isAtBottom) hiddenNewMessages = 0
-        }
-    }
-
     Box(modifier = modifier.fillMaxSize()) {
         LazyColumn(
             state = listState,
@@ -1047,7 +1388,7 @@ private fun MessageList(
                 .fillMaxWidth()
                 .padding(horizontal = 10.dp),
             reverseLayout = false,
-            contentPadding = PaddingValues(top = 10.dp, bottom = bottomContentPadding)
+            contentPadding = PaddingValues(top = 10.dp, bottom = effectiveBottomPadding)
         ) {
             itemsIndexed(
                 items = timelineItems,
@@ -1055,10 +1396,15 @@ private fun MessageList(
             ) { _, item ->
                 when (item) {
                     is TimelineItem.MessageItem -> {
-                        MessageBubble(
+                        ChatMessageBubble(
                             msg = item.message,
                             allowTextSelection = selectableMessageIds.contains(item.message.id),
-                            themeMode = themeMode,
+                            appearance = appearance,
+                            animateIn = enteringMessageIds.contains(item.message.id) ||
+                                immediateEnteringMessageIds.contains(item.message.id),
+                            onEntranceAnimationFinished = {
+                                enteringMessageIds -= item.message.id
+                            },
                             onClick = { onMessageClick(item.message) }
                         )
                     }
@@ -1186,42 +1532,75 @@ private fun UnreadHintBar(count: Int, onDismiss: () -> Unit) {
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun MessageBubble(
+internal fun ChatMessageBubble(
     msg: Message,
     allowTextSelection: Boolean,
-    themeMode: ThemeMode,
+    appearance: com.null0x.chat.ui.theme.AppearanceSettings,
+    animateIn: Boolean = false,
+    onEntranceAnimationFinished: () -> Unit = {},
     onClick: () -> Unit
 ) {
-    val darkTheme = MaterialTheme.colorScheme.background.luminance() < 0.5f
-    val mineBubbleColor = when (themeMode) {
-        ThemeMode.BLUE -> Color(0xFF2D74FF)
-        ThemeMode.PINK -> Color(0xFFFF4FA0)
-        ThemeMode.DARK, ThemeMode.LIGHT, ThemeMode.SYSTEM -> MaterialTheme.colorScheme.primary
+    val density = LocalDensity.current
+    val systemDarkTheme = androidx.compose.foundation.isSystemInDarkTheme()
+    val mineBubbleColor = themeConversationBubbleColor(appearance.conversations, systemDarkTheme)
+    val peerBubbleColor = themeConversationPeerBubbleColor(appearance.conversations, systemDarkTheme)
+    val messageTextColor = readableContentColor(MaterialTheme.colorScheme.background)
+    val sideBarColor = if (msg.isMine) mineBubbleColor else peerBubbleColor
+    val deliveryTint = messageTextColor.copy(alpha = 0.62f)
+    val entranceProgress = remember(msg.id) { Animatable(if (animateIn) 0f else 1f) }
+    val sourceOffsetX = with(density) { if (msg.isMine) 0.dp.toPx() else (-56).dp.toPx() }
+    val sourceOffsetY = with(density) { if (msg.isMine) 154.dp.toPx() else 46.dp.toPx() }
+    val progress = entranceProgress.value
+
+    LaunchedEffect(msg.id, animateIn) {
+        if (animateIn) {
+            entranceProgress.snapTo(0f)
+            entranceProgress.animateTo(
+                targetValue = 1f,
+                animationSpec = tween(durationMillis = 460, easing = FastOutSlowInEasing)
+            )
+            onEntranceAnimationFinished()
+        } else {
+            entranceProgress.snapTo(1f)
+        }
     }
-    val peerBarColor = if (darkTheme) {
-        Color(0xFF8B8B8B)
-    } else {
-        Color(0xFF6E6E6E)
-    }
-    val sideBarColor = if (msg.isMine) mineBubbleColor else peerBarColor
-    val messageTextColor = if (darkTheme) Color.White else Color.Black
-    val deliveryTint = messageTextColor.copy(alpha = 0.56f)
+
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .graphicsLayer {
+                alpha = 0.16f + (0.84f * progress)
+                translationX = sourceOffsetX * (1f - progress)
+                translationY = sourceOffsetY * (1f - progress)
+                val scale = 0.74f + (0.26f * progress)
+                scaleX = scale
+                scaleY = scale
+                transformOrigin = if (msg.isMine) {
+                    TransformOrigin(1f, 1f)
+                } else {
+                    TransformOrigin(0f, 1f)
+                }
+            },
         horizontalArrangement = if (msg.isMine) Arrangement.End else Arrangement.Start
     ) {
         Box(
-            modifier = Modifier
-                .widthIn(max = 312.dp)
-                .clickable(onClick = onClick),
+            modifier = Modifier.widthIn(max = 312.dp),
+            contentAlignment = if (msg.isMine) Alignment.BottomEnd else Alignment.BottomStart
         ) {
-            MessageBubbleBody(
-                msg = msg,
-                allowTextSelection = allowTextSelection,
-                textColor = messageTextColor,
-                metaColor = deliveryTint,
-                sideBarColor = sideBarColor
-            )
+            Surface(
+                modifier = Modifier.clickable(onClick = onClick),
+                color = Color.Transparent,
+                tonalElevation = 0.dp
+            ) {
+                MessageBubbleBody(
+                    msg = msg,
+                    allowTextSelection = allowTextSelection,
+                    textColor = messageTextColor,
+                    metaColor = deliveryTint,
+                    sideBarColor = sideBarColor,
+                    modifier = Modifier.padding(horizontal = MessageBodyInset, vertical = MessageBodyInset)
+                )
+            }
         }
     }
 }
@@ -1232,10 +1611,11 @@ private fun MessageBubbleBody(
     allowTextSelection: Boolean,
     textColor: Color,
     metaColor: Color,
-    sideBarColor: Color
+    sideBarColor: Color,
+    modifier: Modifier = Modifier
 ) {
-    val sideBarWidth = 3.dp
-    val sideBarGap = 8.dp
+    val sideBarWidth = MessageBarThickness
+    val sideBarGap = MessageBodyInset
     Layout(
         content = {
             if (msg.isMine) {
@@ -1258,7 +1638,7 @@ private fun MessageBubbleBody(
                 )
             }
         }
-    ) { measurables, constraints ->
+    , modifier = modifier) { measurables, constraints ->
         val barWidthPx = with(this) { sideBarWidth.roundToPx() }
         val gapPx = with(this) { sideBarGap.roundToPx() }
         val contentIndex = if (msg.isMine) 0 else 1
@@ -1299,8 +1679,8 @@ private fun MessageBubbleBody(
 @Composable
 private fun MessageSideBar(color: Color) {
     Surface(
-        modifier = Modifier.width(3.dp),
-        shape = RoundedCornerShape(999.dp),
+        modifier = Modifier.width(MessageBarThickness),
+        shape = RoundedCornerShape(0.dp),
         color = color,
         tonalElevation = 0.dp
     ) {}
@@ -1444,26 +1824,46 @@ private fun MessageInlineMeta(
 private fun MessageDetailDialog(
     message: Message,
     selectionEnabled: Boolean,
+    baseThemeMode: ThemeMode,
     onToggleSelection: () -> Unit,
     onDelete: () -> Unit,
     onDismiss: () -> Unit
 ) {
+    val systemDarkTheme = androidx.compose.foundation.isSystemInDarkTheme()
+    val dialogColor = themeDialogColor(baseThemeMode, systemDarkTheme)
+    val dialogContentColor = readableContentColor(dialogColor)
+    val textBytes = message.text.toByteArray(Charsets.UTF_8).size
+    val wireBytes = estimateWireBytes(message)
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(if (message.isMine) "Mensagem enviada" else "Mensagem recebida") },
+        title = {
+            Text(
+                text = if (message.isMine) "Mensagem enviada" else "Mensagem recebida",
+                color = dialogContentColor
+            )
+        },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text("Horário: ${formatTimestamp(message.timestamp)}")
-                Text("Status: ${if (message.isMine) "Enviada por você" else "Recebida"}")
+                Text("Horário: ${formatTimestamp(message.timestamp)}", color = dialogContentColor)
+                Text("Status: ${if (message.isMine) "Enviada por você" else "Recebida"}", color = dialogContentColor)
+                Text("Bytes do texto: $textBytes", color = dialogContentColor)
+                Text("Bytes na rede: $wireBytes", color = dialogContentColor)
                 if (message.isMine) {
-                    TextButton(onClick = onToggleSelection) {
+                    TextButton(
+                        onClick = onToggleSelection,
+                        colors = ButtonDefaults.textButtonColors(contentColor = dialogContentColor)
+                    ) {
                         Text(if (selectionEnabled) "Bloquear seleção" else "Liberar seleção")
                     }
                 }
             }
         },
+        containerColor = dialogColor,
         confirmButton = {
-            TextButton(onClick = onDismiss) { Text("Fechar") }
+            TextButton(
+                onClick = onDismiss,
+                colors = ButtonDefaults.textButtonColors(contentColor = dialogContentColor)
+            ) { Text("Fechar") }
         },
         dismissButton = {
             TextButton(
@@ -1488,87 +1888,129 @@ private fun formatMessageTime(timestamp: Long): String {
         .format(java.util.Date(timestamp))
 }
 
+private fun estimateWireBytes(message: Message): Int {
+    val encodedText = Base64.encodeToString(message.text.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+    val wire = "$ChatMessagePrefix${message.id}|${message.timestamp}|$encodedText"
+    return wire.toByteArray(Charsets.UTF_8).size
+}
+
 @Composable
 private fun MessageComposer(
     input: String,
+    showTextInput: Boolean,
     focusRequester: FocusRequester,
-    themeMode: ThemeMode,
+    appearance: com.null0x.chat.ui.theme.AppearanceSettings,
+    trailingActionSpace: Dp,
     onInputChange: (String) -> Unit,
-    onSend: () -> Unit
+    onShowTextInputChange: (Boolean) -> Unit,
+    onSend: () -> Unit,
+    modifier: Modifier = Modifier,
+    buttonOffsetX: Dp = 0.dp,
+    showButtonWhenOpen: Boolean = true
 ) {
-    val isDarkTheme = MaterialTheme.colorScheme.background.luminance() < 0.5f
-    val composerBackground = if (isDarkTheme) Color.Black else Color.White
-    val fieldBackground = if (isDarkTheme) Color.Black else Color.White
-    val fieldTextColor = if (isDarkTheme) Color.White else Color.Black
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val fieldBackground = MaterialTheme.colorScheme.surface
+    val fieldTextColor = MaterialTheme.colorScheme.onSurface
     val fieldPlaceholderColor = fieldTextColor.copy(alpha = 0.58f)
-    val fieldBorder = if (isDarkTheme) {
-        Color.White.copy(alpha = 0.72f)
-    } else {
-        MaterialTheme.colorScheme.outline.copy(alpha = 0.54f)
+    val fieldBorder = readableContentColor(fieldBackground).copy(alpha = 0.54f)
+    val presenceButtonColor = Color(0xFF8A8A8A)
+    val presenceButtonTint = readableContentColor(presenceButtonColor)
+    LaunchedEffect(input) {
+        if (input.isNotBlank()) {
+            onShowTextInputChange(true)
+        }
     }
-    val topBorderColor = if (isDarkTheme) {
-        Color.White.copy(alpha = 0.14f)
-    } else {
-        Color.Black.copy(alpha = 0.10f)
+    LaunchedEffect(showTextInput) {
+        if (showTextInput) {
+            delay(120)
+            var focused = false
+            repeat(4) {
+                if (!focused) {
+                    focused = runCatching { focusRequester.requestFocus() }.isSuccess
+                    if (!focused) {
+                        delay(16)
+                    }
+                }
+            }
+            keyboardController?.show()
+        } else {
+            keyboardController?.hide()
+        }
     }
-    val sendButtonColor = when (themeMode) {
-        ThemeMode.PINK -> MaterialTheme.colorScheme.primary
-        ThemeMode.BLUE -> MaterialTheme.colorScheme.primary
-        else -> if (isDarkTheme) Color.White else MaterialTheme.colorScheme.primary
-    }
-    val sendIconColor = if (sendButtonColor.luminance() > 0.55f) Color.Black else Color.White
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        tonalElevation = 3.dp,
-        shape = RoundedCornerShape(topStart = 0.dp, topEnd = 0.dp),
-        color = composerBackground
+    Box(
+        modifier = modifier.fillMaxWidth(),
+        contentAlignment = Alignment.Center
     ) {
-        Column(
-            modifier = Modifier.fillMaxWidth()
+        AnimatedVisibility(
+            visible = showTextInput,
+            modifier = Modifier
+                .align(Alignment.CenterStart)
+                .padding(horizontal = 12.dp)
+                .padding(bottom = 0.dp),
+            enter = fadeIn(animationSpec = tween(140)) +
+                expandVertically(
+                    expandFrom = Alignment.Bottom,
+                    animationSpec = tween(220)
+                ) +
+                slideInVertically(
+                    initialOffsetY = { it / 4 },
+                    animationSpec = tween(220)
+                ),
+            exit = fadeOut(animationSpec = tween(110)) +
+                shrinkVertically(
+                    shrinkTowards = Alignment.Bottom,
+                    animationSpec = tween(160)
+                ) +
+                slideOutVertically(
+                    targetOffsetY = { it / 4 },
+                    animationSpec = tween(160)
+                )
         ) {
-            HorizontalDivider(
-                thickness = 1.dp,
-                color = topBorderColor
-            )
-            Row(
+            OutlinedTextField(
+                value = input,
+                onValueChange = onInputChange,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.Bottom
+                    .padding(end = trailingActionSpace)
+                    .focusRequester(focusRequester),
+                maxLines = 4,
+                shape = RoundedCornerShape(20.dp),
+                placeholder = { Text("Mensagem") },
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedTextColor = fieldTextColor,
+                    unfocusedTextColor = fieldTextColor,
+                    focusedContainerColor = fieldBackground,
+                    unfocusedContainerColor = fieldBackground,
+                    disabledContainerColor = fieldBackground,
+                    cursorColor = fieldTextColor,
+                    focusedBorderColor = fieldBorder,
+                    unfocusedBorderColor = fieldBorder,
+                    focusedPlaceholderColor = fieldPlaceholderColor,
+                    unfocusedPlaceholderColor = fieldPlaceholderColor
+                ),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                keyboardActions = KeyboardActions(onSend = { onSend() })
+            )
+        }
+        AnimatedVisibility(
+            visible = showButtonWhenOpen && !showTextInput,
+            modifier = Modifier.align(Alignment.Center),
+            enter = fadeIn(animationSpec = tween(120)),
+            exit = fadeOut(animationSpec = tween(90))
+        ) {
+            Surface(
+                shape = CircleShape,
+                color = presenceButtonColor,
+                modifier = Modifier
+                    .offset(x = buttonOffsetX)
+                    .size(54.dp)
             ) {
-                OutlinedTextField(
-                    value = input,
-                    onValueChange = onInputChange,
-                    modifier = Modifier
-                        .weight(1f)
-                        .focusRequester(focusRequester),
-                    maxLines = 4,
-                    shape = RoundedCornerShape(20.dp),
-                    placeholder = { Text("Mensagem") },
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = fieldTextColor,
-                        unfocusedTextColor = fieldTextColor,
-                        focusedContainerColor = fieldBackground,
-                        unfocusedContainerColor = fieldBackground,
-                        disabledContainerColor = fieldBackground,
-                        cursorColor = fieldTextColor,
-                        focusedBorderColor = fieldBorder,
-                        unfocusedBorderColor = fieldBorder,
-                        focusedPlaceholderColor = fieldPlaceholderColor,
-                        unfocusedPlaceholderColor = fieldPlaceholderColor
-                    ),
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                    keyboardActions = KeyboardActions(onSend = { onSend() })
-                )
-                Spacer(Modifier.width(8.dp))
-                Surface(shape = CircleShape, color = sendButtonColor) {
-                    IconButton(onClick = onSend) {
-                        Icon(
-                            Icons.AutoMirrored.Outlined.Send,
-                            contentDescription = "Enviar",
-                            tint = sendIconColor
-                        )
-                    }
+                IconButton(onClick = { onShowTextInputChange(true) }) {
+                    Icon(
+                        imageVector = Icons.Filled.Edit,
+                        contentDescription = "Abrir texto",
+                        tint = presenceButtonTint
+                    )
                 }
             }
         }
@@ -1622,26 +2064,21 @@ private fun compactOnionRoute(value: String): String {
     return "onion:${host.take(12)}...${host.takeLast(10)}:$port"
 }
 
-private fun chatRoutePresenceLabel(
-    networkAvailable: Boolean,
-    serviceStarting: Boolean,
-    partnerConnected: Boolean
-): String {
-    val networkStatus = chatNetworkStatusLabel(
-        networkAvailable = networkAvailable,
-        serviceStarting = serviceStarting
-    )
-    if (networkStatus.isNotBlank()) return networkStatus
-    return if (partnerConnected) "online" else "Aguardando contato..."
-}
-
-private fun chatNetworkStatusLabel(
-    networkAvailable: Boolean,
-    serviceStarting: Boolean
-): String {
+private fun chatActivityElapsedLabel(timestamp: Long): String {
+    val elapsedSeconds = ((System.currentTimeMillis() - timestamp).coerceAtLeast(0L) / 1_000L).coerceAtLeast(1L)
     return when {
-        !networkAvailable -> "Sem conexão"
-        serviceStarting -> "Iniciando..."
-        else -> ""
+        elapsedSeconds < 60L -> "$elapsedSeconds ${if (elapsedSeconds == 1L) "segundo" else "segundos"}"
+        elapsedSeconds < 3_600L -> {
+            val minutes = elapsedSeconds / 60L
+            "$minutes ${if (minutes == 1L) "minuto" else "minutos"}"
+        }
+        elapsedSeconds < 86_400L -> {
+            val hours = elapsedSeconds / 3_600L
+            "$hours ${if (hours == 1L) "hora" else "horas"}"
+        }
+        else -> {
+            val days = elapsedSeconds / 86_400L
+            "$days ${if (days == 1L) "dia" else "dias"}"
+        }
     }
 }
