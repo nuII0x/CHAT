@@ -9,14 +9,19 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import androidx.core.content.ContextCompat
+import com.null0x.chat.security.identity.RouteIdentityRegistry
+import org.bouncycastle.crypto.digests.SHA3Digest
+import org.bouncycastle.crypto.params.Ed25519PrivateKeyParameters
 import org.torproject.jni.TorService
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.File
 import java.io.FileOutputStream
+import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.nio.charset.StandardCharsets
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -57,6 +62,10 @@ object TorManager {
     private const val WAITING_NETWORK_MESSAGE = "Aguardando rede..."
     private const val TOR_IDENTITY_PREFS = "tor_identity"
     private const val HIDDEN_SERVICE_DIR_KEY = "hidden_service_dir"
+    private val ONION_SECRET_HEADER = "== ed25519v1-secret: type0 ==".toByteArray(StandardCharsets.US_ASCII) + byteArrayOf(0, 0, 0)
+    private val ONION_PUBLIC_HEADER = "== ed25519v1-public: type0 ==".toByteArray(StandardCharsets.US_ASCII) + byteArrayOf(0, 0, 0)
+    private val ONION_CHECKSUM_PREFIX = ".onion checksum".toByteArray(StandardCharsets.US_ASCII)
+    private const val ONION_VERSION: Byte = 3
 
     @Volatile
     private var receiverRegistered = false
@@ -182,6 +191,7 @@ object TorManager {
             setWritable(true, true)
             setExecutable(true, true)
         }
+        val identityChanged = ensureDeterministicHiddenServiceIdentity(appContext, hiddenServiceDir)
         val torrc = TorService.getTorrc(appContext)
         torrc.parentFile?.mkdirs()
         val torrcText = listOf(
@@ -192,6 +202,46 @@ object TorManager {
         record(appContext, "torrc atualizado: ${torrc.absolutePath}")
         record(appContext, "servico onion configurado: porta local=$localPort")
         refreshOnionAddress(appContext)
+        if (identityChanged && (_status.value is Status.Ready || _status.value is Status.Starting)) {
+            stop(appContext)
+        }
+    }
+
+    private fun ensureDeterministicHiddenServiceIdentity(context: Context, hiddenServiceDir: File): Boolean {
+        val seed = runCatching {
+            RouteIdentityRegistry.identityManager().getOnionServiceSeed()
+        }.getOrNull() ?: return false
+        return runCatching {
+            val identity = DeterministicOnionIdentity.fromSeed(seed)
+            seed.fill(0)
+            val currentHostname = readOnionHostname(hiddenServiceDir)
+            if (currentHostname == identity.hostname &&
+                File(hiddenServiceDir, "hs_ed25519_secret_key").readBytesOrNull()?.contentEquals(identity.secretKeyFile) == true
+            ) {
+                return@runCatching false
+            }
+            clearDirectoryContents(hiddenServiceDir)
+            hiddenServiceDir.mkdirs()
+            writeHiddenServiceFile(File(hiddenServiceDir, "hs_ed25519_secret_key"), identity.secretKeyFile)
+            writeHiddenServiceFile(File(hiddenServiceDir, "hs_ed25519_public_key"), identity.publicKeyFile)
+            File(hiddenServiceDir, "hostname").writeText(identity.hostname + "\n", StandardCharsets.US_ASCII)
+            record(context, "identidade onion reconstruida pela palavra-passe")
+            true
+        }.getOrElse {
+            seed.fill(0)
+            record(context, "falha ao reconstruir onion pela palavra-passe: ${it.message.orEmpty()}")
+            false
+        }
+    }
+
+    private fun writeHiddenServiceFile(file: File, bytes: ByteArray) {
+        file.parentFile?.mkdirs()
+        file.writeBytes(bytes)
+        file.setReadable(false, false)
+        file.setWritable(false, false)
+        file.setExecutable(false, false)
+        file.setReadable(true, true)
+        file.setWritable(true, true)
     }
 
     fun ensureStarted(context: Context) {
@@ -705,6 +755,10 @@ object TorManager {
         return true
     }
 
+    private fun File.readBytesOrNull(): ByteArray? {
+        return runCatching { readBytes() }.getOrNull()
+    }
+
     private fun nextRestartDelay(requestedDelayMs: Long): Long {
         val baseDelay = requestedDelayMs.coerceAtLeast(MIN_RESTART_DELAY_MS)
         val cappedCount = restartFailureCount.coerceAtMost(6)
@@ -768,6 +822,70 @@ object TorManager {
             TorService.STATUS_STOPPING -> "parando"
             TorService.STATUS_OFF -> "desligado"
             else -> status.ifBlank { "desconhecido" }
+        }
+    }
+
+    private data class DeterministicOnionIdentity(
+        val hostname: String,
+        val secretKeyFile: ByteArray,
+        val publicKeyFile: ByteArray
+    ) {
+        companion object {
+            fun fromSeed(seed: ByteArray): DeterministicOnionIdentity {
+                require(seed.size == 32) { "Seed onion invalido" }
+                val publicKey = Ed25519PrivateKeyParameters(seed, 0).generatePublicKey().encoded
+                val expandedSecret = expandedEd25519Secret(seed)
+                val hostname = onionHostname(publicKey)
+                return DeterministicOnionIdentity(
+                    hostname = hostname,
+                    secretKeyFile = ONION_SECRET_HEADER + expandedSecret,
+                    publicKeyFile = ONION_PUBLIC_HEADER + publicKey
+                )
+            }
+
+            private fun expandedEd25519Secret(seed: ByteArray): ByteArray {
+                val digest = MessageDigest.getInstance("SHA-512").digest(seed)
+                val left = digest.copyOfRange(0, 32)
+                left[0] = (left[0].toInt() and 248).toByte()
+                left[31] = ((left[31].toInt() and 63) or 64).toByte()
+                val right = digest.copyOfRange(32, 64)
+                digest.fill(0)
+                return left + right
+            }
+
+            private fun onionHostname(publicKey: ByteArray): String {
+                val checksum = ByteArray(32)
+                SHA3Digest(256).apply {
+                    update(ONION_CHECKSUM_PREFIX, 0, ONION_CHECKSUM_PREFIX.size)
+                    update(publicKey, 0, publicKey.size)
+                    update(byteArrayOf(ONION_VERSION), 0, 1)
+                    doFinal(checksum, 0)
+                }
+                val payload = publicKey + checksum.copyOfRange(0, 2) + byteArrayOf(ONION_VERSION)
+                checksum.fill(0)
+                return base32NoPadding(payload).lowercase(Locale.ROOT) + ".onion"
+            }
+
+            private fun base32NoPadding(bytes: ByteArray): String {
+                val alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
+                val output = StringBuilder((bytes.size * 8 + 4) / 5)
+                var buffer = 0
+                var bitsLeft = 0
+                for (byte in bytes) {
+                    buffer = (buffer shl 8) or (byte.toInt() and 0xFF)
+                    bitsLeft += 8
+                    while (bitsLeft >= 5) {
+                        val index = (buffer shr (bitsLeft - 5)) and 31
+                        output.append(alphabet[index])
+                        bitsLeft -= 5
+                    }
+                }
+                if (bitsLeft > 0) {
+                    val index = (buffer shl (5 - bitsLeft)) and 31
+                    output.append(alphabet[index])
+                }
+                return output.toString()
+            }
         }
     }
 }

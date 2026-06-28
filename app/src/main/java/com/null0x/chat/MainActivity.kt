@@ -61,6 +61,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import android.view.WindowManager
 import com.null0x.chat.notification.MessageNotifier
+import com.null0x.chat.security.AppDataWiper
 import com.null0x.chat.security.AppSecurityManager
 import com.null0x.chat.security.SensitiveClipboard
 import com.null0x.chat.security.identity.MnemonicLanguage
@@ -207,7 +208,8 @@ class MainActivity : ComponentActivity() {
                         Box(modifier = Modifier.fillMaxSize()) {
                             HomeScreen(
                                 vm,
-                                onLockApp = { AppSecurityManager.lock() }
+                                onLockApp = { AppSecurityManager.lock() },
+                                onSignOut = { AppDataWiper.wipeAndExit(this@MainActivity) }
                             ) { peer -> vm.selectTarget(peer) }
                             if (vm.inChat) {
                                 ChatScreen(

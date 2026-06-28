@@ -74,6 +74,8 @@ import com.null0x.chat.ui.theme.readableContentColor
 import com.null0x.chat.ui.theme.themeBackgroundColor
 import com.null0x.chat.ui.theme.themeDialogColor
 import com.null0x.chat.viewmodel.ChatViewModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import org.json.JSONObject
 
 @Composable
@@ -102,7 +104,8 @@ internal fun SettingsTab(
     blockedContacts: List<ChatViewModel.ContactPreview>,
     onUnblockContact: (String) -> Unit,
     onContactsBackupRequested: () -> String,
-    onLockApp: () -> Unit
+    onLockApp: () -> Unit,
+    onSignOut: () -> Unit
 ) {
     val context = LocalContext.current
     val tokenLabel = publicRouteToken.ifBlank { "Aguardando token..." }
@@ -404,7 +407,8 @@ internal fun SettingsTab(
                 },
                 onExportContactsBackup = {
                     exportContactsBackupLauncher.launch("null0xchat-contatos.json")
-                }
+                },
+                onSignOut = onSignOut
             )
         }
     }
@@ -553,8 +557,12 @@ internal fun AccountActionsScreen(
     onRestoreAccess: () -> Unit,
     onExportOnionBackup: () -> Unit,
     onImportOnionBackup: () -> Unit,
-    onExportContactsBackup: () -> Unit
+    onExportContactsBackup: () -> Unit,
+    onSignOut: () -> Unit
 ) {
+    var confirmSignOut by rememberSaveable { mutableStateOf(false) }
+    var wipingData by rememberSaveable { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
     SettingsWindowScaffold(
         title = "Conta",
         subtitle = "Recebimento, backup e segurança",
@@ -614,6 +622,48 @@ internal fun AccountActionsScreen(
                 onClick = onRotateToken
             )
         }
+        item {
+            SettingsRow(
+                title = "Sair",
+                subtitle = "Apaga os dados locais e permite entrar em outra conta",
+                important = true,
+                onClick = { confirmSignOut = true }
+            )
+        }
+    }
+    if (confirmSignOut) {
+        AlertDialog(
+            onDismissRequest = {
+                if (!wipingData) confirmSignOut = false
+            },
+            title = { Text("Sair desta conta?") },
+            text = {
+                Text(
+                    "Isso apaga os dados locais do app neste aparelho. Depois será preciso criar ou restaurar uma conta."
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = !wipingData,
+                    onClick = {
+                        wipingData = true
+                        scope.launch(Dispatchers.IO) {
+                            onSignOut()
+                        }
+                    }
+                ) {
+                    Text(if (wipingData) "Saindo..." else "Sair")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    enabled = !wipingData,
+                    onClick = { confirmSignOut = false }
+                ) {
+                    Text("Cancelar")
+                }
+            }
+        )
     }
 }
 

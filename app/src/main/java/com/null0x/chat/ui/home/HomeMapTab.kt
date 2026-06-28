@@ -16,7 +16,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -49,6 +49,7 @@ import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -66,9 +67,11 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -82,6 +85,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.null0x.chat.viewmodel.ChatViewModel
+import com.null0x.chat.util.normalizeProfileEmojiInput
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.Locale
@@ -98,15 +102,20 @@ internal fun MapTab(
     preheat: Boolean,
     myName: String,
     myEmoji: String,
+    publicRoute: String,
+    profileMapColor: Color,
     useDarkMapColors: Boolean,
     contacts: List<ChatViewModel.ContactPreview>,
     conversations: List<ChatViewModel.ConversationPreview>,
     isRouteActive: (String) -> Boolean,
+    mapColorForRoute: (String) -> Int,
     locationSharingMode: ChatViewModel.LocationSharingMode,
     locationSharingAllowedRoutes: Set<String>,
     sharedLocationForRoute: (String) -> ChatViewModel.SharedRouteLocation?,
-    onShareLocationWithAll: (Location) -> Unit,
-    onShareLocationWithSelected: (Set<String>, Location) -> Unit,
+    onProfileEmojiChange: (String) -> Unit,
+    onProfileMapColorChange: (Int) -> Unit,
+    onShareLocationWithAll: (Location?) -> Unit,
+    onShareLocationWithSelected: (Set<String>, Location?) -> Unit,
     onDisableLocationSharing: () -> Unit,
     onLocationReady: (Location) -> Unit,
     onMapTitleChange: (String) -> Unit,
@@ -162,7 +171,7 @@ internal fun MapTab(
         enabled = preheat && hasLocationPermission && gpsEnabled
     )
     val genericMapOrigin = remember { genericMapOrigin() }
-    val mapOrigin = currentLocation ?: genericMapOrigin
+    val mapOrigin = genericMapOrigin
     LaunchedEffect(active, currentLocation) {
         if (active && currentLocation != null) {
             onLocationReady(currentLocation)
@@ -199,13 +208,23 @@ internal fun MapTab(
         else -> OrbitMapContent(
             myName = myName.ifBlank { "Você" },
             myEmoji = myEmoji.ifBlank { "🙂" },
+            publicRoute = publicRoute,
+            profileMapColor = profileMapColor,
             useDarkMapColors = useDarkMapColors,
             origin = mapOrigin,
+            currentLocation = currentLocation,
             showLiveLocations = currentLocation != null,
-            contacts = if (currentLocation != null) acceptedContacts else emptyList(),
+            contacts = acceptedContacts,
             conversations = conversations,
             isRouteActive = isRouteActive,
+            mapColorForRoute = mapColorForRoute,
+            locationSharingMode = locationSharingMode,
+            locationSharingAllowedRoutes = locationSharingAllowedRoutes,
             sharedLocationForRoute = sharedLocationForRoute,
+            onProfileEmojiChange = onProfileEmojiChange,
+            onProfileMapColorChange = onProfileMapColorChange,
+            onShareLocationWithSelected = { routes -> onShareLocationWithSelected(routes, currentLocation) },
+            onDisableLocationSharing = onDisableLocationSharing,
             onMapTitleChange = onMapTitleChange,
             onOpenChat = onOpenChat,
             onRecordMedia = onRecordMedia
@@ -373,43 +392,78 @@ private fun LocationSharingDialog(
 private fun OrbitMapContent(
     myName: String,
     myEmoji: String,
+    publicRoute: String,
+    profileMapColor: Color,
     useDarkMapColors: Boolean,
     origin: Location,
+    currentLocation: Location?,
     showLiveLocations: Boolean,
     contacts: List<ChatViewModel.ContactPreview>,
     conversations: List<ChatViewModel.ConversationPreview>,
     isRouteActive: (String) -> Boolean,
+    mapColorForRoute: (String) -> Int,
+    locationSharingMode: ChatViewModel.LocationSharingMode,
+    locationSharingAllowedRoutes: Set<String>,
     sharedLocationForRoute: (String) -> ChatViewModel.SharedRouteLocation?,
+    onProfileEmojiChange: (String) -> Unit,
+    onProfileMapColorChange: (Int) -> Unit,
+    onShareLocationWithSelected: (Set<String>) -> Unit,
+    onDisableLocationSharing: () -> Unit,
     onMapTitleChange: (String) -> Unit,
     onOpenChat: (String) -> Unit,
     onRecordMedia: (String) -> Unit
 ) {
-    val landRings = rememberOfflineLandRings()
+    val landData = rememberOfflineLandData()
     val cityPoints = rememberOfflineCityPoints()
     val countryLabels = rememberOfflineCountryLabels()
     val adminRegions = rememberOfflineAdminRegions()
     val mapPalette = remember(useDarkMapColors) { offlineMapPalette(useDarkMapColors) }
     var selectedUser by remember { mutableStateOf<OrbitUser?>(null) }
-    BackHandler(enabled = selectedUser != null) {
+    var showSelfSheet by remember { mutableStateOf(false) }
+    BackHandler(enabled = selectedUser != null || showSelfSheet) {
         selectedUser = null
+        showSelfSheet = false
     }
-    val mapUsers = buildMapUsers(
+    val contactMapUsers = buildMapUsers(
         origin = origin,
+        distanceOrigin = currentLocation,
+        ownRoute = publicRoute,
         contacts = contacts,
         sharedLocationForRoute = sharedLocationForRoute,
         isRouteActive = isRouteActive,
+        mapColorForRoute = mapColorForRoute,
         conversationForRoute = { route -> conversations.firstOrNull { it.username == route } }
     )
+    val selfRouteKey = publicRoute.normalizedRouteKey()
+    val selfMapUser = remember(publicRoute, myName, myEmoji, profileMapColor, origin, currentLocation, sharedLocationForRoute(publicRoute)) {
+        buildOwnPublicMapUser(
+            origin = origin,
+            distanceOrigin = currentLocation,
+            publicRoute = publicRoute,
+            myName = myName,
+            myEmoji = myEmoji,
+            profileMapColor = profileMapColor,
+            sharedLocation = sharedLocationForRoute(publicRoute)
+        )
+    }
+    val mapUsers = remember(contactMapUsers, selfMapUser, selfRouteKey) {
+        if (contactMapUsers.any { it.isSelf }) {
+            contactMapUsers
+        } else {
+            selfMapUser?.let { contactMapUsers + it } ?: contactMapUsers
+        }
+    }
     val baseMetersPerPixel = 120f
     var zoom by remember { mutableStateOf(1f) }
     var pan by remember { mutableStateOf(Offset.Zero) }
+    var initializedMapView by remember { mutableStateOf(false) }
     fun focusUserOnMap(user: OrbitUser) {
         val focusMetersPerPixel = 10f / 72f
         zoom = baseMetersPerPixel / focusMetersPerPixel
         pan = Offset(
             x = -user.xMeters / focusMetersPerPixel,
             y = user.yMeters / focusMetersPerPixel
-        )
+            )
         selectedUser = user
     }
     Box(
@@ -430,11 +484,14 @@ private fun OrbitMapContent(
             val minZoom = (baseMetersPerPixel / maxMetersPerPixel).coerceAtLeast(0.002f)
             val maxZoom = 8_640f
             LaunchedEffect(minZoom) {
-                if (zoom < minZoom) {
+                if (!initializedMapView) {
+                    zoom = minZoom
+                    initializedMapView = true
+                } else if (zoom < minZoom) {
                     zoom = minZoom
                 }
             }
-            val effectiveZoom = if (!showLiveLocations && zoom == 1f) minZoom else zoom
+            val effectiveZoom = zoom
             val metersPerPixel = (baseMetersPerPixel / effectiveZoom).coerceIn(minMetersPerPixel, maxMetersPerPixel)
             val worldWidthPx = worldCircumferenceMeters / metersPerPixel
             val renderPan = Offset(
@@ -475,11 +532,6 @@ private fun OrbitMapContent(
             LaunchedEffect(dynamicMapTitle) {
                 onMapTitleChange(dynamicMapTitle)
             }
-            LaunchedEffect(renderPan, metersPerPixel, heightPx, origin.latitude) {
-                if (pan != renderPan) {
-                    pan = renderPan
-                }
-            }
             val horizontalCopies = horizontalWorldCopyOffsets(
                 width = widthPx,
                 worldWidthPx = worldWidthPx,
@@ -490,25 +542,16 @@ private fun OrbitMapContent(
             val landColor = mapPalette.land
             val cityColor = mapPalette.cityLabel
             val cityDotColor = mapPalette.cityDot
-            val selfMapUser = remember(myName, myEmoji) {
-                OrbitUser(
-                    username = selfMapUsername,
-                    displayName = myName,
-                    emoji = myEmoji,
-                    distanceMeters = 0f,
-                    xMeters = 0f,
-                    yMeters = 0f,
-                    locationUpdatedAt = 0L,
-                    isActive = true,
-                    lastActivityLabel = "Sua localização"
-                )
+            val locationMapCards = remember(mapUsers) {
+                mapUsers.filter { it.hasLocation && !it.isSelf }
             }
-            val visibleUsers = mapUsers.filter { user ->
+            val locatedMapUsers = mapUsers.filter { it.hasLocation }
+            val visibleUsers = locatedMapUsers.filter { user ->
                 user.screenPoint(center, renderPan, metersPerPixel, worldWidthPx).isInside(widthPx, heightPx, padding = 46f)
             }
-            val positionedUsers = remember(showLiveLocations, selfMapUser, visibleUsers, center, renderPan, metersPerPixel, worldWidthPx, widthPx, heightPx) {
+            val positionedUsers = remember(visibleUsers, center, renderPan, metersPerPixel, worldWidthPx, widthPx, heightPx) {
                 separateNearbyUsers(
-                    users = if (showLiveLocations) listOf(selfMapUser) + visibleUsers else visibleUsers,
+                    users = visibleUsers,
                     center = center,
                     pan = renderPan,
                     metersPerPixel = metersPerPixel,
@@ -521,30 +564,32 @@ private fun OrbitMapContent(
                 buildUserOccupationBoxes(positionedUsers, widthPx, heightPx)
             }
             val latestCenter by rememberUpdatedState(center)
-            val latestPan by rememberUpdatedState(pan)
+            val latestPan by rememberUpdatedState(renderPan)
             val latestMinZoom by rememberUpdatedState(minZoom)
             val latestMaxZoom by rememberUpdatedState(maxZoom)
             val latestMaxMetersPerPixel by rememberUpdatedState(maxMetersPerPixel)
             val latestHeightPx by rememberUpdatedState(heightPx)
-            val latestOrigin by rememberUpdatedState(origin)
             Canvas(
                 modifier = Modifier
                     .fillMaxSize()
                     .pointerInput(Unit) {
-                        detectTransformGestures { centroid, panChange, zoomChange, _ ->
+                        fun zoomAround(point: Offset, panChange: Offset, zoomChange: Float) {
                             val previousZoom = zoom
                             val nextZoom = (zoom * zoomChange).coerceIn(latestMinZoom, latestMaxZoom)
-                            val scaleChange = nextZoom / previousZoom
                             val nextMetersPerPixel = (baseMetersPerPixel / nextZoom)
                                 .coerceIn(minMetersPerPixel, latestMaxMetersPerPixel)
                             val nextWorldWidthPx = worldCircumferenceMeters / nextMetersPerPixel
-                            val zoomAnchor = centroid - latestCenter
-                            val nextPan = zoomAnchor - (zoomAnchor - latestPan) * scaleChange + panChange
+                            val targetPoint = point + panChange
+                            val scaleChange = nextZoom / previousZoom
+                            val nextPan = Offset(
+                                x = targetPoint.x - latestCenter.x - ((point.x - latestCenter.x - latestPan.x) * scaleChange),
+                                y = targetPoint.y - latestCenter.y - ((point.y - latestCenter.y - latestPan.y) * scaleChange)
+                            )
                             zoom = nextZoom
                             pan = Offset(
                                 x = wrapHorizontalMapPan(nextPan.x, nextWorldWidthPx),
                                 y = clampVerticalMapPan(
-                                    origin = latestOrigin,
+                                    origin = origin,
                                     centerY = latestCenter.y,
                                     height = latestHeightPx,
                                     metersPerPixel = nextMetersPerPixel,
@@ -552,12 +597,20 @@ private fun OrbitMapContent(
                                 )
                             )
                         }
+                        detectStableMapTransformGestures(
+                            onGesture = { centroid, panChange, zoomChange ->
+                                zoomAround(centroid, panChange, zoomChange)
+                            },
+                            onDoubleTap = { tapPosition ->
+                                zoomAround(tapPosition, Offset.Zero, 2f)
+                            }
+                        )
                     }
             ) {
                 drawRect(color = mapBackground)
                 horizontalCopies.forEach { copyOffset ->
                     drawOfflineWorldLand(
-                        landRings = landRings,
+                        landRings = landData.landRingsFor(metersPerPixel),
                         origin = origin,
                         center = center,
                         pan = renderPan.copy(x = renderPan.x + copyOffset),
@@ -630,11 +683,16 @@ private fun OrbitMapContent(
             }
 
             positionedUsers.forEach { positionedUser ->
-                if (positionedUser.user.username == selfMapUsername) {
+                if (positionedUser.user.isSelf) {
                     CenterOrbitAvatar(
-                        name = positionedUser.label ?: myName,
-                        emoji = myEmoji,
+                        name = positionedUser.label ?: positionedUser.user.displayName,
+                        emoji = positionedUser.user.emoji.ifBlank { myEmoji },
+                        backgroundColor = Color(positionedUser.user.mapColorArgb),
                         showLabel = positionedUser.label != null,
+                        onClick = {
+                            selectedUser = null
+                            showSelfSheet = true
+                        },
                         modifier = Modifier.offset {
                             IntOffset(
                                 x = (positionedUser.display.x - 38.dp.toPx()).roundToInt(),
@@ -656,28 +714,7 @@ private fun OrbitMapContent(
                     )
                 }
             }
-            MapZoomControls(
-                zoom = zoom,
-                metersPerPixel = metersPerPixel,
-                onZoomIn = { zoom = (zoom * 2f).coerceAtMost(maxZoom) },
-                onZoomOut = { zoom = (zoom / 2f).coerceAtLeast(minZoom) },
-                onCenter = { pan = Offset.Zero },
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(10.dp)
-            )
-            if (showLiveLocations && mapUsers.isEmpty() && selectedUser == null) {
-                Text(
-                    text = "Nenhum usuário ativo por perto agora.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 18.dp)
-                )
-            } else if (showLiveLocations && selectedUser == null) {
+            if (locationMapCards.isNotEmpty() && selectedUser == null) {
                 LazyRow(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
@@ -687,7 +724,7 @@ private fun OrbitMapContent(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     contentPadding = PaddingValues(start = 2.dp, top = 8.dp, end = 2.dp, bottom = 0.dp)
                 ) {
-                    items(mapUsers, key = { it.username }) { user ->
+                    items(locationMapCards, key = { it.username }) { user ->
                         OrbitUserDistanceCard(
                             user = user,
                             onClick = { focusUserOnMap(user) }
@@ -706,6 +743,24 @@ private fun OrbitMapContent(
                         .padding(horizontal = 16.dp, vertical = 10.dp)
                 )
             }
+            if (showSelfSheet) {
+                SelfMapQuickSettingsSheet(
+                    name = myName,
+                    emoji = myEmoji,
+                    profileMapColor = profileMapColor,
+                    contacts = contacts.filter { it.username.normalizedRouteKey() != selfRouteKey },
+                    locationSharingMode = locationSharingMode,
+                    locationSharingAllowedRoutes = locationSharingAllowedRoutes,
+                    onEmojiChange = onProfileEmojiChange,
+                    onColorChange = onProfileMapColorChange,
+                    onSelectionChange = onShareLocationWithSelected,
+                    onDisableLocationSharing = onDisableLocationSharing,
+                    onDismiss = { showSelfSheet = false },
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(horizontal = 12.dp, vertical = 104.dp)
+                )
+            }
         }
     }
 }
@@ -714,24 +769,28 @@ private fun OrbitMapContent(
 private fun CenterOrbitAvatar(
     name: String,
     emoji: String,
+    backgroundColor: Color,
     showLabel: Boolean,
+    onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Column(
-        modifier = modifier.width(76.dp),
+        modifier = modifier
+            .width(76.dp)
+            .clickable(onClick = onClick),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
         Surface(
             shape = CircleShape,
-            color = MaterialTheme.colorScheme.primary,
+            color = backgroundColor,
             modifier = Modifier.size(58.dp)
         ) {
             Box(contentAlignment = Alignment.Center) {
                 Text(
                     text = emoji,
                     style = MaterialTheme.typography.titleLarge,
-                    color = MaterialTheme.colorScheme.onPrimary
+                    color = readableOnColor(backgroundColor)
                 )
             }
         }
@@ -764,14 +823,14 @@ private fun OrbitUserAvatar(
     ) {
         Surface(
             shape = CircleShape,
-            color = MaterialTheme.colorScheme.secondaryContainer,
+            color = Color(user.mapColorArgb),
             modifier = Modifier.size(48.dp)
         ) {
             Box(contentAlignment = Alignment.Center) {
                 Text(
                     text = user.emoji.ifBlank { "🙂" },
                     style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onSecondaryContainer
+                    color = readableOnColor(Color(user.mapColorArgb))
                 )
             }
         }
@@ -790,49 +849,6 @@ private fun OrbitUserAvatar(
                 maxLines = 1
             )
         }
-    }
-}
-
-@Composable
-private fun MapZoomControls(
-    zoom: Float,
-    metersPerPixel: Float,
-    onZoomIn: () -> Unit,
-    onZoomOut: () -> Unit,
-    onCenter: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Surface(
-        modifier = modifier,
-        shape = RoundedCornerShape(18.dp),
-        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
-        tonalElevation = 2.dp
-    ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            IconButton(onClick = onZoomIn) {
-                Text("+", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-            }
-            Text(
-                text = scaleLabel(metersPerPixel),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1
-            )
-            IconButton(onClick = onZoomOut) {
-                Text("-", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-            }
-            IconButton(onClick = onCenter) {
-                Icon(imageVector = Icons.Filled.MyLocation, contentDescription = "Centralizar")
-            }
-        }
-    }
-}
-
-private fun scaleLabel(metersPerPixel: Float): String {
-    val gridMeters = metersPerPixel * 72f
-    return when {
-        gridMeters < 1_000f -> "${gridMeters.roundToInt()} m"
-        else -> String.format(Locale.US, "%.1f km", gridMeters / 1_000f)
     }
 }
 
@@ -857,13 +873,13 @@ private fun OrbitUserDistanceCard(
                     .size(38.dp)
                     .clickable(onClick = onClick),
                 shape = CircleShape,
-                color = MaterialTheme.colorScheme.secondaryContainer
+                color = Color(user.mapColorArgb)
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     Text(
                         text = user.emoji.ifBlank { "🙂" },
                         style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onSecondaryContainer
+                        color = readableOnColor(Color(user.mapColorArgb))
                     )
                 }
             }
@@ -877,7 +893,7 @@ private fun OrbitUserDistanceCard(
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
-                    text = if (user.isActive) "Disponível" else "Indisponível",
+                    text = user.mapStatusLabel(),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
@@ -919,14 +935,14 @@ private fun MapUserBottomCard(
             ) {
                 Surface(
                     shape = CircleShape,
-                    color = MaterialTheme.colorScheme.secondaryContainer,
+                    color = Color(user.mapColorArgb),
                     modifier = Modifier.size(54.dp)
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         Text(
                             text = user.emoji.ifBlank { "🙂" },
                             style = MaterialTheme.typography.titleLarge,
-                            color = MaterialTheme.colorScheme.onSecondaryContainer
+                            color = readableOnColor(Color(user.mapColorArgb))
                         )
                     }
                 }
@@ -939,7 +955,7 @@ private fun MapUserBottomCard(
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        text = if (user.isActive) "Disponível" else "Visto ${formatElapsedTime(user.locationUpdatedAt)}",
+                        text = user.mapStatusLabel(),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
@@ -950,12 +966,14 @@ private fun MapUserBottomCard(
                     Icon(imageVector = Icons.Filled.Close, contentDescription = "Fechar")
                 }
             }
-            Text(
-                text = "Distância ${user.distanceLabel()}",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.primary,
-                fontWeight = FontWeight.Medium
-            )
+            if (user.hasLocation) {
+                Text(
+                    text = "Distância ${user.distanceLabel()}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.Medium
+                )
+            }
             if (!user.isActive) {
                 Text(
                     text = user.lastActivityLabel,
@@ -993,10 +1011,213 @@ private fun MapUserBottomCard(
 }
 
 @Composable
-private fun rememberOfflineLandRings(): List<LandRing> {
+private fun SelfMapQuickSettingsSheet(
+    name: String,
+    emoji: String,
+    profileMapColor: Color,
+    contacts: List<ChatViewModel.ContactPreview>,
+    locationSharingMode: ChatViewModel.LocationSharingMode,
+    locationSharingAllowedRoutes: Set<String>,
+    onEmojiChange: (String) -> Unit,
+    onColorChange: (Int) -> Unit,
+    onSelectionChange: (Set<String>) -> Unit,
+    onDisableLocationSharing: () -> Unit,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var emojiDraft by remember { mutableStateOf(emoji) }
+    var expandedContacts by remember { mutableStateOf(false) }
+    val cleanAllowedRoutes = locationSharingAllowedRoutes.map { it.normalizedRouteKey() }.toSet()
+    val contactRoutes = contacts.map { it.username.normalizedRouteKey() }.filter { it.isNotBlank() }.toSet()
+    val selectedRoutes = when (locationSharingMode) {
+        ChatViewModel.LocationSharingMode.ALL -> contactRoutes
+        ChatViewModel.LocationSharingMode.SELECTED -> cleanAllowedRoutes
+        ChatViewModel.LocationSharingMode.EMERGENCY -> cleanAllowedRoutes
+        ChatViewModel.LocationSharingMode.NONE,
+        ChatViewModel.LocationSharingMode.UNSET -> emptySet()
+    }
+    val visibleContacts = if (expandedContacts) contacts else contacts.take(5)
+    LaunchedEffect(emoji) {
+        emojiDraft = emoji
+    }
+
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp, bottomStart = 22.dp, bottomEnd = 22.dp),
+        color = MaterialTheme.colorScheme.surface,
+        tonalElevation = 6.dp
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 18.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.CenterHorizontally)
+                    .size(width = 42.dp, height = 4.dp),
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f)
+            ) {}
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Surface(
+                    shape = CircleShape,
+                    color = profileMapColor,
+                    modifier = Modifier.size(58.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Text(
+                            text = emoji.ifBlank { "🙂" },
+                            style = MaterialTheme.typography.titleLarge,
+                            color = readableOnColor(profileMapColor)
+                        )
+                    }
+                }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = name,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = "Perfil no mapa",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                IconButton(onClick = onDismiss) {
+                    Icon(imageVector = Icons.Filled.Close, contentDescription = "Fechar")
+                }
+            }
+            OutlinedTextField(
+                value = emojiDraft,
+                onValueChange = { value ->
+                    val clean = normalizeProfileEmojiInput(value).ifBlank { "🙂" }
+                    emojiDraft = clean
+                    onEmojiChange(clean)
+                },
+                singleLine = true,
+                label = { Text("Emoji") },
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp)
+            )
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = "Cor do fundo",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    mapProfileColorOptions.forEach { option ->
+                        val selected = option.toArgb() == profileMapColor.toArgb()
+                        Surface(
+                            modifier = Modifier
+                                .size(if (selected) 38.dp else 34.dp)
+                                .clickable { onColorChange(option.toArgb()) },
+                            shape = CircleShape,
+                            color = option,
+                            border = if (selected) {
+                                androidx.compose.foundation.BorderStroke(2.dp, MaterialTheme.colorScheme.onSurface)
+                            } else {
+                                null
+                            }
+                        ) {}
+                    }
+                }
+            }
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    text = "Compartilhar com",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (contacts.isEmpty()) {
+                    Text(
+                        text = "Nenhum contato aceito.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.height(if (expandedContacts) 238.dp else 184.dp),
+                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        items(visibleContacts, key = { it.username }) { contact ->
+                            val routeKey = contact.username.normalizedRouteKey()
+                            val checked = selectedRoutes.contains(routeKey)
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        val next = if (checked) {
+                                            selectedRoutes - routeKey
+                                        } else {
+                                            selectedRoutes + routeKey
+                                        }
+                                        if (next.isEmpty()) {
+                                            onDisableLocationSharing()
+                                        } else {
+                                            onSelectionChange(next)
+                                        }
+                                    }
+                                    .padding(vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Checkbox(
+                                    checked = checked,
+                                    onCheckedChange = { isChecked ->
+                                        val next = if (isChecked) {
+                                            selectedRoutes + routeKey
+                                        } else {
+                                            selectedRoutes - routeKey
+                                        }
+                                        if (next.isEmpty()) {
+                                            onDisableLocationSharing()
+                                        } else {
+                                            onSelectionChange(next)
+                                        }
+                                    }
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    text = contact.displayName,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                        }
+                        if (!expandedContacts && contacts.size > visibleContacts.size) {
+                            item {
+                                TextButton(
+                                    onClick = { expandedContacts = true },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text("Ver mais")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun rememberOfflineLandData(): OfflineLandData {
     val context = LocalContext.current
     return remember(context) {
-        loadOfflineLandRings(context)
+        OfflineLandData(
+            land50m = loadOfflineLandRings(context, "map/ne_50m_land.min.geojson"),
+            land110m = loadOfflineLandRings(context, "map/ne_110m_land.min.geojson")
+        )
     }
 }
 
@@ -1024,11 +1245,9 @@ private fun rememberOfflineAdminRegions(): List<AdminRegion> {
     }
 }
 
-private fun loadOfflineLandRings(context: Context): List<LandRing> {
+private fun loadOfflineLandRings(context: Context, assetPath: String): List<LandRing> {
     val raw = runCatching {
-        context.assets.open("map/ne_50m_land.min.geojson").bufferedReader().use { it.readText() }
-    }.recoverCatching {
-        context.assets.open("map/ne_110m_land.min.geojson").bufferedReader().use { it.readText() }
+        context.assets.open(assetPath).bufferedReader().use { it.readText() }
     }.getOrNull() ?: return emptyList()
     val features = runCatching { JSONObject(raw).optJSONArray("features") }.getOrNull() ?: return emptyList()
     return buildList {
@@ -1118,6 +1337,19 @@ private fun loadOfflineAdminRegions(context: Context): List<AdminRegion> {
                     rank = region.optInt("rank", 9)
                 )
             )
+        }
+    }
+}
+
+private data class OfflineLandData(
+    val land50m: List<LandRing>,
+    val land110m: List<LandRing>
+) {
+    fun landRingsFor(metersPerPixel: Float): List<LandRing> {
+        return when {
+            metersPerPixel <= 50f -> land50m
+            metersPerPixel <= 110f -> land110m
+            else -> land110m
         }
     }
 }
@@ -1387,8 +1619,8 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawContinentLabels
 
 private fun LandRing.pointsFor(metersPerPixel: Float): List<GeoPoint> {
     return when {
-        metersPerPixel > 6_000f -> overviewPoints
-        metersPerPixel > 900f -> balancedPoints
+        metersPerPixel > 110f -> overviewPoints
+        metersPerPixel > 50f -> balancedPoints
         else -> detailedPoints
     }
 }
@@ -1574,14 +1806,20 @@ private fun titleForMapCenter(
     cityPoints: List<CityPoint>,
     adminRegions: List<AdminRegion>
 ): String {
-    if (metersPerPixel > continentOnlyMetersPerPixel) {
-        return nearestContinentName(center) ?: "Mapa"
+    if (isWholeEarthViewport(viewport, metersPerPixel)) {
+        return "Terra"
     }
-    dominantAdminRegionName(
+    val visibleCities = cityPoints.any { city ->
+        viewport.contains(city.longitude, city.latitude, paddingDegrees = 0.35)
+    }
+    val dominantRegion = dominantAdminRegionName(
         center = center,
         viewport = viewport,
         regions = adminRegions
-    )?.let { return it }
+    )
+    if (metersPerPixel > continentOnlyMetersPerPixel) {
+        return dominantContinentName(viewport, center) ?: nearestContinentName(center) ?: "Terra"
+    }
     if (metersPerPixel <= localCityLabelMetersPerPixel) {
         nearestCityName(center, cityPoints, maxDegrees = 2.8)?.let { return it }
     }
@@ -1592,7 +1830,19 @@ private fun titleForMapCenter(
             maxDegrees = 6.0
         )?.let { return it }
     }
-    return nearestCountryName(center, countryLabels) ?: nearestContinentName(center) ?: "Mapa"
+    if (!visibleCities) {
+        nearestAdminRegionNameFromNearestCity(center, cityPoints, adminRegions)?.let { return it }
+    }
+    dominantRegion?.let { return it }
+    dominantAdminCountryName(
+        center = center,
+        viewport = viewport,
+        regions = adminRegions
+    )?.let { return it }
+    return nearestAdminCountryName(center, adminRegions)
+        ?: nearestCountryName(center, countryLabels)
+        ?: nearestContinentName(center)
+        ?: "Terra"
 }
 
 private fun dominantAdminRegionName(
@@ -1605,15 +1855,81 @@ private fun dominantAdminRegionName(
     var bestRegion: AdminRegion? = null
     var bestCoverage = 0.0
     for (region in regions) {
-        if (!region.contains(center)) continue
         val coverage = region.intersectionArea(viewport) / viewportArea
         val currentBestRank = bestRegion?.rank ?: Int.MAX_VALUE
-        if (coverage >= 0.70 && (coverage > bestCoverage || region.rank < currentBestRank)) {
+        val containsCenterBonus = if (region.contains(center)) 0.06 else 0.0
+        val adjustedCoverage = coverage + containsCenterBonus
+        if (adjustedCoverage >= 0.70 && (adjustedCoverage > bestCoverage || region.rank < currentBestRank)) {
             bestRegion = region
-            bestCoverage = coverage
+            bestCoverage = adjustedCoverage
         }
     }
     return bestRegion?.name
+}
+
+private fun dominantAdminCountryName(
+    center: GeoPoint,
+    viewport: GeoBounds,
+    regions: List<AdminRegion>
+): String? {
+    val viewportArea = viewport.area()
+    if (viewportArea <= 0.0) return null
+    val coverageByCountry = linkedMapOf<String, Double>()
+    regions.forEach { region ->
+        val country = region.country
+        if (country.isBlank()) return@forEach
+        val coverage = region.intersectionArea(viewport) / viewportArea
+        if (coverage > 0.0) {
+            val centerBonus = if (region.contains(center)) 0.18 else 0.0
+            coverageByCountry[country] = (coverageByCountry[country] ?: 0.0) + coverage + centerBonus
+        }
+    }
+    val ranked = coverageByCountry.entries.sortedByDescending { it.value }
+    val best = ranked.firstOrNull() ?: return null
+    val second = ranked.getOrNull(1)?.value ?: 0.0
+    return if (best.value >= 0.24 || best.value >= second * 1.35) best.key else null
+}
+
+private fun nearestAdminCountryName(center: GeoPoint, regions: List<AdminRegion>): String? {
+    val containingRegion = regions
+        .filter { it.contains(center) && it.country.isNotBlank() }
+        .minWithOrNull(compareBy<AdminRegion> { it.rank }.thenBy {
+            approximateGeoDistanceScore(center.longitude, center.latitude, it.longitude, it.latitude)
+        })
+    if (containingRegion != null) return containingRegion.country
+    return regions
+        .filter { it.country.isNotBlank() }
+        .minByOrNull {
+            approximateGeoDistanceScore(center.longitude, center.latitude, it.longitude, it.latitude) *
+                it.rank.coerceAtLeast(1)
+        }
+        ?.country
+}
+
+private fun nearestAdminRegionNameFromNearestCity(
+    center: GeoPoint,
+    cityPoints: List<CityPoint>,
+    regions: List<AdminRegion>
+): String? {
+    val nearestCity = cityPoints.minByOrNull { city ->
+        approximateGeoDistanceScore(center.longitude, center.latitude, city.longitude, city.latitude) *
+            (city.importanceRank + 1)
+    } ?: return null
+    return regions
+        .filter { it.contains(GeoPoint(nearestCity.longitude, nearestCity.latitude)) }
+        .minWithOrNull(compareBy<AdminRegion> { it.rank }.thenBy {
+            approximateGeoDistanceScore(nearestCity.longitude, nearestCity.latitude, it.longitude, it.latitude)
+        })
+        ?.name
+}
+
+private fun dominantContinentName(viewport: GeoBounds, center: GeoPoint): String? {
+    val visibleContinents = continentLabels
+        .filter { viewport.contains(it.longitude, it.latitude, paddingDegrees = 12.0) }
+    if (visibleContinents.isEmpty()) return null
+    return visibleContinents.minByOrNull { continent ->
+        approximateGeoDistanceScore(center.longitude, center.latitude, continent.longitude, continent.latitude)
+    }?.name
 }
 
 private fun nearestContinentName(center: GeoPoint): String? {
@@ -1667,6 +1983,11 @@ private fun approximateGeoDistanceScore(
     val deltaLongitude = wrappedLongitudeDelta(longitudeA, longitudeB) * latitudeFactor
     val deltaLatitude = latitudeB - latitudeA
     return deltaLongitude * deltaLongitude + deltaLatitude * deltaLatitude
+}
+
+private fun isWholeEarthViewport(viewport: GeoBounds, metersPerPixel: Float): Boolean {
+    return metersPerPixel >= 22_000f ||
+        (viewport.longitudeSpan() >= 260.0 && viewport.latitudeSpan() >= 120.0)
 }
 
 private fun normalizeLongitude(longitude: Double): Double {
@@ -1811,7 +2132,7 @@ private fun buildUserOccupationBoxes(
     if (positionedUsers.isEmpty()) return emptyList()
     return positionedUsers.mapNotNull { user ->
         if (!user.display.isNearViewport(width, height, 120f)) return@mapNotNull null
-        val headRadius = if (user.user.username == selfMapUsername) 32f else 28f
+        val headRadius = if (user.user.isSelf) 32f else 28f
         val headBox = LabelBox(
             left = user.display.x - headRadius,
             top = user.display.y - headRadius,
@@ -1847,6 +2168,113 @@ private fun buildUserOccupationBoxes(
             if (label == "Eu") listOf(headBox, nameBox) else listOf(headBox, nameBox, distanceBox)
         }
     }.flatten()
+}
+
+private suspend fun PointerInputScope.detectStableMapTransformGestures(
+    onGesture: (centroid: Offset, panChange: Offset, zoomChange: Float) -> Unit,
+    onDoubleTap: (position: Offset) -> Unit
+) {
+    var lastTapPosition: Offset? = null
+    var lastTapUptimeMillis = 0L
+    val tapSlop = 10.dp.toPx()
+    val doubleTapDistance = 48.dp.toPx()
+    val doubleTapTimeoutMillis = 320L
+    awaitEachGesture {
+        var previousSinglePointer: Offset? = null
+        var previousCentroid: Offset? = null
+        var previousSpan: Float? = null
+        var lockedToPinchUntilRelease = false
+        var tapStartPosition: Offset? = null
+        var latestSinglePointer: Offset? = null
+        var maxTapMove = 0f
+        var hadMultiplePointers = false
+        while (true) {
+            val event = awaitPointerEvent()
+            val pressedChanges = event.changes.filter { it.pressed }
+            if (pressedChanges.isEmpty()) {
+                val tapPosition = latestSinglePointer ?: tapStartPosition
+                val eventUptimeMillis = event.changes.maxOfOrNull { it.uptimeMillis } ?: lastTapUptimeMillis
+                if (!hadMultiplePointers && tapPosition != null && maxTapMove <= tapSlop) {
+                    val previousTapPosition = lastTapPosition
+                    val isDoubleTap = previousTapPosition != null &&
+                        eventUptimeMillis - lastTapUptimeMillis in 1..doubleTapTimeoutMillis &&
+                        tapPosition.distanceTo(previousTapPosition) <= doubleTapDistance
+                    if (isDoubleTap) {
+                        onDoubleTap(tapPosition)
+                        lastTapPosition = null
+                        lastTapUptimeMillis = 0L
+                    } else {
+                        lastTapPosition = tapPosition
+                        lastTapUptimeMillis = eventUptimeMillis
+                    }
+                }
+                break
+            }
+
+            if (pressedChanges.size == 1) {
+                if (lockedToPinchUntilRelease) {
+                    previousSinglePointer = null
+                    previousCentroid = null
+                    previousSpan = null
+                    tapStartPosition = null
+                    latestSinglePointer = null
+                    hadMultiplePointers = true
+                    pressedChanges.forEach { it.consume() }
+                    continue
+                }
+                val pointer = pressedChanges.first()
+                val currentPosition = pointer.position
+                if (tapStartPosition == null) {
+                    tapStartPosition = currentPosition
+                }
+                latestSinglePointer = currentPosition
+                maxTapMove = maxOf(
+                    maxTapMove,
+                    tapStartPosition?.distanceTo(currentPosition) ?: 0f
+                )
+                val oldPosition = previousSinglePointer
+                if (oldPosition != null && maxTapMove > tapSlop) {
+                    onGesture(
+                        currentPosition,
+                        currentPosition - oldPosition,
+                        1f
+                    )
+                }
+                previousSinglePointer = currentPosition
+                previousCentroid = null
+                previousSpan = null
+                pressedChanges.forEach { it.consume() }
+                continue
+            }
+
+            lockedToPinchUntilRelease = true
+            hadMultiplePointers = true
+            tapStartPosition = null
+            latestSinglePointer = null
+            previousSinglePointer = null
+            val centroid = pressedChanges
+                .map { it.position }
+                .averageOffset()
+            val span = pressedChanges
+                .map { it.position.distanceTo(centroid) }
+                .average()
+                .toFloat()
+                .coerceAtLeast(1f)
+            val oldCentroid = previousCentroid
+            val oldSpan = previousSpan
+            if (oldCentroid != null && oldSpan != null && oldSpan > 0f) {
+                val zoomChange = (span / oldSpan).coerceIn(0.86f, 1.16f)
+                onGesture(
+                    centroid,
+                    centroid - oldCentroid,
+                    zoomChange
+                )
+            }
+            previousCentroid = centroid
+            previousSpan = span
+            pressedChanges.forEach { it.consume() }
+        }
+    }
 }
 
 private fun wrapHorizontalMapPan(panX: Float, worldWidthPx: Float): Float {
@@ -1936,14 +2364,14 @@ private fun separateNearbyUsers(
     val clusters = buildOrbitUserClusters(anchoredUsers, clusteredAnchorDistance)
     val placed = mutableListOf<PositionedOrbitUser>()
     val avatarRadius = 48f
-    clusters.forEachIndexed { clusterIndex, cluster ->
+    clusters.forEach { cluster ->
         val clusterCenter = cluster
             .map { it.anchor }
             .averageOffset()
         val isDenseCluster = cluster.size >= 4 ||
             (cluster.size >= 3 && cluster.maxAnchorDistance() < 54f)
         val forcePins = cluster.size > 1
-        cluster.forEachIndexed { memberIndex, anchored ->
+        cluster.sortedBy { it.user.username }.forEachIndexed { memberIndex, anchored ->
             val hasNearbyDisplay = placed.any { positioned ->
                 anchored.anchor.distanceTo(positioned.display) < clusteredAnchorDistance
             }
@@ -1956,7 +2384,7 @@ private fun separateNearbyUsers(
                     anchor = anchored.anchor,
                     clusterCenter = clusterCenter,
                     placed = placed.map { it.display },
-                    seed = clusterIndex + memberIndex,
+                    seed = stablePinSeed(anchored.user.username),
                     memberIndex = memberIndex,
                     memberCount = cluster.size,
                     width = width,
@@ -1970,7 +2398,7 @@ private fun separateNearbyUsers(
                 display = display,
                 needsPointer = !isDenseCluster && (forcePins || display.distanceTo(anchored.anchor) > 8f),
                 label = when {
-                    isDenseCluster && anchored.user.username == selfMapUsername -> "Eu"
+                    isDenseCluster && anchored.user.isSelf -> "Eu"
                     isDenseCluster -> null
                     else -> anchored.user.displayName
                 }
@@ -1978,6 +2406,10 @@ private fun separateNearbyUsers(
         }
     }
     return placed
+}
+
+private fun stablePinSeed(value: String): Int {
+    return value.hashCode().absoluteValue
 }
 
 private fun List<AnchoredOrbitUser>.maxAnchorDistance(): Float {
@@ -2005,7 +2437,7 @@ private fun bestSeparatedPoint(
     val isCluster = memberCount > 1
     val origin = if (isCluster) clusterCenter else anchor
     val preferredAngle = if (isCluster) {
-        -90.0 + (360.0 / memberCount.coerceAtLeast(1)) * memberIndex
+        -90.0 + (360.0 / memberCount.coerceAtLeast(1)) * memberIndex + (seed % 17)
     } else {
         null
     }
@@ -2114,7 +2546,19 @@ private data class OfflineMapPalette(
     val pointer: Color
 )
 
-private const val selfMapUsername = "__nuchat_self_location__"
+private val mapProfileColorOptions = listOf(
+    Color(0xFF6750A4),
+    Color(0xFF006A6A),
+    Color(0xFFB3261E),
+    Color(0xFF386A20),
+    Color(0xFF7D5260),
+    Color(0xFF005FAF)
+)
+
+private fun readableOnColor(color: Color): Color {
+    return if (color.luminance() > 0.5f) Color.Black else Color.White
+}
+
 private const val worldCircumferenceMeters = 40_075_000f
 private const val worldHeightMeters = 20_037_500f
 private const val continentOnlyMetersPerPixel = 12_500f
@@ -2192,6 +2636,21 @@ private data class GeoBounds(
         val height = (maxLatitude - minLatitude).coerceAtLeast(0.0)
         return width * height
     }
+
+    fun longitudeSpan(): Double {
+        return (maxLongitude - minLongitude).coerceAtLeast(0.0)
+    }
+
+    fun latitudeSpan(): Double {
+        return (maxLatitude - minLatitude).coerceAtLeast(0.0)
+    }
+
+    fun contains(longitude: Double, latitude: Double, paddingDegrees: Double = 0.0): Boolean {
+        return longitude >= minLongitude - paddingDegrees &&
+            longitude <= maxLongitude + paddingDegrees &&
+            latitude >= minLatitude - paddingDegrees &&
+            latitude <= maxLatitude + paddingDegrees
+    }
 }
 
 private enum class LabelKind {
@@ -2230,11 +2689,14 @@ internal data class OrbitUser(
     val username: String,
     val displayName: String,
     val emoji: String,
+    val mapColorArgb: Int,
     val distanceMeters: Float,
     val xMeters: Float,
     val yMeters: Float,
+    val hasLocation: Boolean,
     val locationUpdatedAt: Long,
     val isActive: Boolean,
+    val isSelf: Boolean = false,
     val lastActivityLabel: String
 ) {
     fun screenPoint(center: Offset, pan: Offset, metersPerPixel: Float): Offset {
@@ -2252,11 +2714,21 @@ internal data class OrbitUser(
     }
 
     fun distanceLabel(): String {
+        if (!hasLocation) return "sem localização"
         return "${formatDistance(distanceMeters)} (${formatElapsedAgo(locationUpdatedAt)})"
     }
 
     fun distanceOnlyLabel(): String {
+        if (!hasLocation) return "sem localização"
         return formatDistance(distanceMeters)
+    }
+
+    fun mapStatusLabel(): String {
+        return when {
+            !hasLocation -> "sem localização"
+            isActive -> "Disponível"
+            else -> "Visto ${formatElapsedTime(locationUpdatedAt)}"
+        }
     }
 }
 
@@ -2264,33 +2736,78 @@ private fun Offset.isInside(width: Float, height: Float, padding: Float): Boolea
     return x >= padding && x <= width - padding && y >= padding && y <= height - padding
 }
 
+private fun buildOwnPublicMapUser(
+    origin: Location,
+    distanceOrigin: Location?,
+    publicRoute: String,
+    myName: String,
+    myEmoji: String,
+    profileMapColor: Color,
+    sharedLocation: ChatViewModel.SharedRouteLocation?
+): OrbitUser? {
+    if (publicRoute.isBlank() || sharedLocation == null) return null
+    val target = Location(LocationManager.GPS_PROVIDER).apply {
+        latitude = sharedLocation.latitude
+        longitude = sharedLocation.longitude
+        sharedLocation.accuracyMeters?.let { accuracy = it }
+        time = sharedLocation.updatedAt
+    }
+    val distance = (distanceOrigin ?: origin).distanceTo(target).coerceAtLeast(1f)
+    val mapPosition = mapOffsetMeters(origin, target)
+    return OrbitUser(
+        username = publicRoute,
+        displayName = myName,
+        emoji = myEmoji,
+        mapColorArgb = profileMapColor.toArgb(),
+        distanceMeters = distance,
+        xMeters = mapPosition.x,
+        yMeters = mapPosition.y,
+        hasLocation = true,
+        locationUpdatedAt = sharedLocation.updatedAt,
+        isActive = true,
+        isSelf = true,
+        lastActivityLabel = "Sua localização"
+    )
+}
+
 internal fun buildMapUsers(
     origin: Location,
+    distanceOrigin: Location?,
+    ownRoute: String,
     contacts: List<ChatViewModel.ContactPreview>,
     sharedLocationForRoute: (String) -> ChatViewModel.SharedRouteLocation?,
     isRouteActive: (String) -> Boolean = { false },
+    mapColorForRoute: (String) -> Int = { 0xFF6750A4.toInt() },
     conversationForRoute: (String) -> ChatViewModel.ConversationPreview? = { null }
 ): List<OrbitUser> {
+    val cleanOwnRoute = ownRoute.normalizedRouteKey()
     if (contacts.isEmpty()) return emptyList()
-    return contacts.mapNotNull { contact ->
-        val sharedLocation = sharedLocationForRoute(contact.username) ?: return@mapNotNull null
-        val target = Location(LocationManager.GPS_PROVIDER).apply {
-            latitude = sharedLocation.latitude
-            longitude = sharedLocation.longitude
-            sharedLocation.accuracyMeters?.let { accuracy = it }
-            time = sharedLocation.updatedAt
+    return contacts
+        .map { contact ->
+        val sharedLocation = sharedLocationForRoute(contact.username)
+        val target = sharedLocation?.let { location ->
+            Location(LocationManager.GPS_PROVIDER).apply {
+                latitude = location.latitude
+                longitude = location.longitude
+                location.accuracyMeters?.let { accuracy = it }
+                time = location.updatedAt
+            }
         }
-        val distance = origin.distanceTo(target).coerceAtLeast(1f)
-        val bearing = Math.toRadians(origin.bearingTo(target).toDouble())
+        val distance = target?.let { (distanceOrigin ?: origin).distanceTo(it).coerceAtLeast(1f) } ?: 0f
+        val mapPosition = target?.let { mapOffsetMeters(origin, it) } ?: Offset.Zero
+        val isSelfRoute = cleanOwnRoute.isNotBlank() && contact.username.normalizedRouteKey() == cleanOwnRoute
         OrbitUser(
             username = contact.username,
             displayName = contact.displayName,
             emoji = contact.emoji,
+            mapColorArgb = mapColorForRoute(contact.username),
             distanceMeters = distance,
-            xMeters = (sin(bearing) * distance).toFloat(),
-            yMeters = (cos(bearing) * distance).toFloat(),
-            locationUpdatedAt = sharedLocation.updatedAt,
+            xMeters = mapPosition.x,
+            yMeters = mapPosition.y,
+            hasLocation = target != null,
+            locationUpdatedAt = sharedLocation?.updatedAt ?: 0L,
             isActive = isRouteActive(contact.username),
+            isSelf = isSelfRoute,
             lastActivityLabel = conversationForRoute(contact.username)?.let { preview ->
                 if (preview.lastTimestamp > 0L) {
                     "Última atividade no chat: ${formatElapsedTime(preview.lastTimestamp)}"
@@ -2299,7 +2816,19 @@ internal fun buildMapUsers(
                 }
             } ?: "Sem atividade no chat"
         )
-    }.sortedBy { it.distanceMeters }
+    }.sortedWith(compareBy<OrbitUser> { !it.hasLocation }.thenBy { it.distanceMeters }.thenBy { it.displayName })
+}
+
+private fun String.normalizedRouteKey(): String {
+    return trim().lowercase(Locale.ROOT)
+}
+
+private fun mapOffsetMeters(origin: Location, target: Location): Offset {
+    val latScale = 111_320.0
+    val lonScale = (111_320.0 * cos(Math.toRadians(origin.latitude))).coerceAtLeast(1e-6)
+    val xMeters = wrappedLongitudeDelta(origin.longitude, target.longitude) * lonScale
+    val yMeters = (target.latitude - origin.latitude) * latScale
+    return Offset(xMeters.toFloat(), yMeters.toFloat())
 }
 
 internal fun formatDistance(distanceMeters: Float): String {

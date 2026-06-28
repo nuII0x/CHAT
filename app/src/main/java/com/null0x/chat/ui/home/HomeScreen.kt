@@ -7,6 +7,7 @@ import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.Crossfade
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.LocalOverscrollConfiguration
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -77,6 +78,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
@@ -112,6 +114,7 @@ private sealed interface PendingProfileChange {
 fun HomeScreen(
     vm: ChatViewModel,
     onLockApp: () -> Unit,
+    onSignOut: () -> Unit,
     onOpenChat: (String) -> Unit
 ) {
     val context = LocalContext.current
@@ -234,6 +237,12 @@ fun HomeScreen(
     var showRefreshingTitle by remember { mutableStateOf(false) }
     var showStartingTitle by remember { mutableStateOf(false) }
     var mapTitle by rememberSaveable { mutableStateOf("Mapa") }
+    var displayedMapTitle by rememberSaveable { mutableStateOf("Terra") }
+
+    LaunchedEffect(mapTitle) {
+        delay(180)
+        displayedMapTitle = mapTitle.takeIf { it.isNotBlank() && it != "Mapa" } ?: "Terra"
+    }
 
     LaunchedEffect(networkAvailable, serviceReady, knownRoutesRefreshing) {
         showRefreshingTitle = false
@@ -310,36 +319,65 @@ fun HomeScreen(
                     tonalElevation = 0.dp,
                     shadowElevation = 0.dp
                 ) {
-                    Row(
+                    Box(
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(HomeHeaderHeight)
                             .padding(horizontal = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
-                            text = when (tab) {
-                                HomeTab.Chats, HomeTab.Contacts -> when {
-                                    !networkAvailable -> "Aguardando rede..."
-                                    showStartingTitle -> "Iniciando..."
-                                    showRefreshingTitle -> "Atualizando..."
-                                    else -> tab.title
-                                }
-                                HomeTab.Map -> mapTitle.ifBlank { tab.title }
-                                else -> tab.title
-                            },
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.onBackground,
-                            textAlign = if (tab == HomeTab.Map) TextAlign.Center else TextAlign.Start,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = if (tab == HomeTab.Map) {
-                                Modifier.fillMaxWidth()
-                            } else {
-                                Modifier.padding(start = 16.dp)
+                        if (tab == HomeTab.Map) {
+                            Text(
+                                text = tab.title,
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onBackground,
+                                textAlign = TextAlign.Start,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier
+                                    .align(Alignment.CenterStart)
+                                    .padding(start = 16.dp)
+                            )
+                            Crossfade(
+                                targetState = displayedMapTitle,
+                                label = "map-title-location",
+                                modifier = Modifier
+                                    .align(Alignment.Center)
+                                    .padding(horizontal = 96.dp)
+                            ) { title ->
+                                Text(
+                                    text = title,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onBackground,
+                                    textAlign = TextAlign.Center,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
                             }
-                        )
+                        } else {
+                            Text(
+                                text = when (tab) {
+                                    HomeTab.Chats, HomeTab.Contacts -> when {
+                                        !networkAvailable -> "Aguardando rede..."
+                                        showStartingTitle -> "Iniciando..."
+                                        showRefreshingTitle -> "Atualizando..."
+                                        else -> tab.title
+                                    }
+                                    else -> tab.title
+                                },
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onBackground,
+                                textAlign = TextAlign.Start,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier
+                                    .align(Alignment.CenterStart)
+                                    .padding(start = 16.dp)
+                            )
+                        }
                     }
                 }
             },
@@ -475,19 +513,24 @@ fun HomeScreen(
                                 pagerState.settledPage == HomeTab.Map.ordinal,
                             myName = vm.profileName.ifBlank { "Você" },
                             myEmoji = vm.profileEmojiSymbol,
+                            publicRoute = publicRoute,
+                            profileMapColor = Color(vm.profileMapColorArgb),
                             useDarkMapColors = themeMode == com.null0x.chat.ui.theme.ThemeMode.DARK ||
                                 (themeMode == com.null0x.chat.ui.theme.ThemeMode.SYSTEM && systemDarkTheme),
                             contacts = contacts,
                             conversations = conversations,
                             isRouteActive = vm::isPartnerOnline,
+                            mapColorForRoute = { route -> vm.publicProfileFor(route).mapColorArgb },
                             locationSharingMode = vm.locationSharingMode,
                             locationSharingAllowedRoutes = vm.locationSharingAllowedRoutes,
                             sharedLocationForRoute = vm::sharedLocationForRoute,
+                            onProfileEmojiChange = vm::updateProfileEmoji,
+                            onProfileMapColorChange = vm::updateProfileMapColor,
                             onShareLocationWithAll = vm::shareLocationWithAllContacts,
                             onShareLocationWithSelected = vm::shareLocationWithSelectedContacts,
                             onDisableLocationSharing = vm::disableLocationSharing,
                             onLocationReady = vm::updateSharedLocation,
-                            onMapTitleChange = { mapTitle = it.ifBlank { "Mapa" } },
+                            onMapTitleChange = { mapTitle = it.ifBlank { "Terra" } },
                             onOpenChat = {
                                 vm.selectTarget(it)
                                 onOpenChat(it)
@@ -505,10 +548,12 @@ fun HomeScreen(
                             publicRouteToken = publicRouteToken,
                             routeLabel = routeLabel,
                             profileBio = vm.profileBioText,
+                            profileMapColor = Color(vm.profileMapColorArgb),
                             onProfileBioSave = { bio ->
                                 profileAuthError = ""
                                 pendingProfileChange = PendingProfileChange.Bio(bio)
                             },
+                            onProfileMapColorChange = vm::updateProfileMapColor,
                             onEditProfile = { showProfileDialog = true },
                             onShareRoute = { showShareRoute = true }
                         )
@@ -538,6 +583,7 @@ fun HomeScreen(
                             onUnblockContact = vm::unblockContact,
                             onContactsBackupRequested = vm::contactsBackupJson,
                             onLockApp = onLockApp,
+                            onSignOut = onSignOut,
                         )
                     }
                 }
@@ -927,7 +973,9 @@ private fun ProfileTab(
     publicRouteToken: String,
     routeLabel: String,
     profileBio: String,
+    profileMapColor: Color,
     onProfileBioSave: (String) -> Unit,
+    onProfileMapColorChange: (Int) -> Unit,
     onEditProfile: () -> Unit,
     onShareRoute: () -> Unit
 ) {
@@ -1028,6 +1076,28 @@ private fun ProfileTab(
                         }
                     }
                     Text(
+                        text = "Cor no mapa",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        profileMapColorOptions.forEach { option ->
+                            val selected = option.toArgb() == profileMapColor.toArgb()
+                            Surface(
+                                modifier = Modifier
+                                    .size(if (selected) 38.dp else 34.dp)
+                                    .clickable { onProfileMapColorChange(option.toArgb()) },
+                                shape = CircleShape,
+                                color = option,
+                                border = if (selected) {
+                                    androidx.compose.foundation.BorderStroke(2.dp, MaterialTheme.colorScheme.onSurface)
+                                } else {
+                                    null
+                                }
+                            ) {}
+                        }
+                    }
+                    Text(
                         text = "Bio do perfil",
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.SemiBold
@@ -1058,6 +1128,15 @@ private fun ProfileTab(
         }
     }
 }
+
+private val profileMapColorOptions = listOf(
+    Color(0xFF6750A4),
+    Color(0xFF006A6A),
+    Color(0xFFB3261E),
+    Color(0xFF386A20),
+    Color(0xFF7D5260),
+    Color(0xFF005FAF)
+)
 
 @Composable
 private fun InfoPill(text: String) {

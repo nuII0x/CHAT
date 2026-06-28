@@ -117,6 +117,11 @@ class CryptoIdentityManager(
         return encode(exchangeSeedFrom(seed))
     }
 
+    fun getOnionServiceSeed(): ByteArray {
+        val seed = unlockedSeed ?: throw IllegalStateException("Identidade bloqueada")
+        return sha256(seed + "null0xchat-tor-onion-v3".toByteArray(Charsets.UTF_8))
+    }
+
     fun signRequest(method: String, path: String, body: String, timestamp: Long, nonce: String): String {
         val seed = unlockedSeed ?: throw IllegalStateException("Identidade bloqueada")
         val privateKey = Ed25519PrivateKeyParameters(signingSeedFrom(seed), 0)

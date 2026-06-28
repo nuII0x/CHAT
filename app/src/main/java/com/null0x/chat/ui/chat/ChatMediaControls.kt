@@ -384,7 +384,7 @@ internal fun FloatingMediaButtonOverlay(
                     }
                 }
                 Icon(
-                    painter = painterResource(id = R.drawable.ic_stat_nochat),
+                    painter = painterResource(id = R.drawable.ic_launcher_foreground_art),
                     contentDescription = "Criar mídia",
                     tint = mediaButtonContentColor
                 )

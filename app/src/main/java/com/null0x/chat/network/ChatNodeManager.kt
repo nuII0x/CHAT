@@ -51,6 +51,7 @@ object ChatNodeManager {
         val displayName: String,
         val emoji: String,
         val bio: String,
+        val mapColorArgb: Int,
         val signingPublicKey: String,
         val exchangePublicKey: String,
         val publicKeyHash: String,
@@ -154,6 +155,9 @@ object ChatNodeManager {
     var profileBio: String = ""
         private set
     @Volatile
+    var profileMapColorArgb: Int = 0xFF6750A4.toInt()
+        private set
+    @Volatile
     var profileKeepViewedMessages: Boolean = true
         private set
     @Volatile
@@ -243,6 +247,9 @@ object ChatNodeManager {
             profileBio = profilePrefs
                 ?.getString("profile_bio", null)
                 .orEmpty()
+            profileMapColorArgb = profilePrefs
+                ?.getInt("profile_map_color", profileMapColorArgb)
+                ?: profileMapColorArgb
             val savedRoute = profilePrefs
                 ?.getString(LAST_PUBLIC_ROUTE_KEY, null)
                 ?.let { normalizeRoute(it) }
@@ -491,6 +498,16 @@ object ChatNodeManager {
         profilePrefs = prefs
         prefs.edit()
             .putString("profile_bio", cleanBio)
+            .apply()
+        publishLocalProfile()
+    }
+
+    fun setProfileMapColor(context: Context, colorArgb: Int) {
+        profileMapColorArgb = colorArgb
+        val prefs = profilePrefs ?: context.applicationContext.getSharedPreferences("profile", Context.MODE_PRIVATE)
+        profilePrefs = prefs
+        prefs.edit()
+            .putInt("profile_map_color", colorArgb)
             .apply()
         publishLocalProfile()
     }
@@ -822,6 +839,7 @@ object ChatNodeManager {
                 displayName = profileName,
                 emoji = profileEmoji,
                 bio = profileBio,
+                mapColorArgb = profileMapColorArgb,
                 signingPublicKey = RouteIdentityRegistry.identityManager().getPublicKey(),
                 exchangePublicKey = RouteIdentityRegistry.identityManager().getExchangePublicKey(),
                 publicKeyHash = RouteIdentityRegistry.identityManager().getPublicKeyHash(),
@@ -848,6 +866,7 @@ object ChatNodeManager {
                 displayName = json.optString("displayName").trim(),
                 emoji = json.optString("emoji").trim(),
                 bio = json.optString("bio").trim(),
+                mapColorArgb = json.optInt("mapColorArgb", 0xFF6750A4.toInt()),
                 signingPublicKey = json.optString("signingPublicKey").trim(),
                 exchangePublicKey = json.optString("exchangePublicKey").trim(),
                 publicKeyHash = json.optString("publicKeyHash").trim(),
@@ -1122,6 +1141,7 @@ object ChatNodeManager {
                 displayName = json.optString("displayName").trim().take(80),
                 emoji = json.optString("emoji").trim().take(16),
                 bio = limitUtf8Bytes(json.optString("bio").trim(), 4 * 1024),
+                mapColorArgb = json.optInt("mapColorArgb", 0xFF6750A4.toInt()),
                 signingPublicKey = json.optString("signingPublicKey").trim(),
                 exchangePublicKey = json.optString("exchangePublicKey").trim(),
                 publicKeyHash = json.optString("publicKeyHash").trim(),
@@ -1141,6 +1161,7 @@ object ChatNodeManager {
             .put("displayName", profile.displayName)
             .put("emoji", profile.emoji)
             .put("bio", profile.bio)
+            .put("mapColorArgb", profile.mapColorArgb)
             .put("signingPublicKey", profile.signingPublicKey)
             .put("exchangePublicKey", profile.exchangePublicKey)
             .put("publicKeyHash", profile.publicKeyHash)
@@ -1177,6 +1198,7 @@ object ChatNodeManager {
             .put("displayName", profileName)
             .put("emoji", profileEmoji)
             .put("bio", profileBio)
+            .put("mapColorArgb", profileMapColorArgb)
             .put("signingPublicKey", RouteIdentityRegistry.identityManager().getPublicKey())
             .put("exchangePublicKey", RouteIdentityRegistry.identityManager().getExchangePublicKey())
             .put("publicKeyHash", RouteIdentityRegistry.identityManager().getPublicKeyHash())

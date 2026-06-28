@@ -70,7 +70,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val source: String,
         val localName: String,
         val emoji: String,
-        val bio: String
+        val bio: String,
+        val mapColorArgb: Int
     )
 
     data class PrivacyNotice(
@@ -131,6 +132,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val locationSharingModeKey = "location_sharing_mode"
     private val locationSharingRoutesKey = "location_sharing_routes"
     private val locationEmergencyRoutesKey = "location_emergency_routes"
+    private val profileMapColorKey = "profile_map_color"
     private val locationGridSizeMeters = 500f
     private val locationUpdateThresholdMeters = 250f
     private val outgoingSendJobs = mutableMapOf<String, Job>()
@@ -370,6 +372,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         private set
     var profileBioText by mutableStateOf("")
         private set
+    var profileMapColorArgb by mutableStateOf(0xFF6750A4.toInt())
+        private set
     var locationSharingMode by mutableStateOf(LocationSharingMode.UNSET)
         private set
     var locationSharingAllowedRoutes by mutableStateOf<Set<String>>(emptySet())
@@ -405,6 +409,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         profileEmojiSymbol = profileEmoji
         profileBio = profilePrefs.getString("profile_bio", "")?.orEmpty() ?: ""
         profileBioText = profileBio
+        profileMapColorArgb = profilePrefs.getInt(profileMapColorKey, profileMapColorArgb)
         locationSharingMode = loadLocationSharingMode()
         locationSharingAllowedRoutes = loadLocationSharingRoutes()
         locationEmergencyAllowedRoutes = loadLocationEmergencyRoutes()
@@ -415,6 +420,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         nodeManager.start(application.applicationContext, autoStartTor = true)
         nodeManager.setProfileEmoji(application.applicationContext, profileEmoji)
         nodeManager.setProfileBio(application.applicationContext, profileBio)
+        nodeManager.setProfileMapColor(application.applicationContext, profileMapColorArgb)
         nodeManager.setProfilePolicy(defaultKeepViewedMessages, defaultAllowScreenshots)
         nodeManager.setLocationSharingPolicy(
             shareWithAll = shouldShareWithAll(locationSharingMode),
@@ -573,6 +579,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         routeNamesVersion++
         refreshRouteLookup()
         refreshConversationPreviewsAsync()
+    }
+
+    fun updateProfileMapColor(colorArgb: Int) {
+        profileMapColorArgb = colorArgb
+        profilePrefs.edit().putInt(profileMapColorKey, colorArgb).apply()
+        nodeManager.setProfileMapColor(getApplication(), colorArgb)
+        routeNamesVersion++
     }
 
     fun updateProfileBio(bio: String) {
@@ -976,7 +989,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             source = "Rede",
             localName = localName,
             emoji = publicEmojiForRoute(route),
-            bio = publicBioForRoute(route)
+            bio = publicBioForRoute(route),
+            mapColorArgb = publicMapColorForRoute(route)
         )
     }
 
@@ -1843,6 +1857,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val clean = canonicalConversationKey(route)
         if (isLocalRoute(clean)) return profileBioText
         return nodeManager.publicProfileFor(clean)?.bio.orEmpty()
+    }
+
+    private fun publicMapColorForRoute(route: String): Int {
+        val clean = canonicalConversationKey(route)
+        if (isLocalRoute(clean)) return profileMapColorArgb
+        return nodeManager.publicProfileFor(clean)?.mapColorArgb ?: 0xFF6750A4.toInt()
     }
 
     private fun loadLocationSharingMode(): LocationSharingMode {
