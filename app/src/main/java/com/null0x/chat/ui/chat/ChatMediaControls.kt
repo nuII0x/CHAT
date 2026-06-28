@@ -116,7 +116,7 @@ private const val AudioMinBytes = 800L
 private const val VideoMinBytes = 1_200L
 private const val AudioMaxAmplitude = 32_767f
 private val CameraFrameAspectRatio = 9f / 16f
-private val CameraFrameShape = RoundedCornerShape(28.dp)
+private val CameraFrameShape = RoundedCornerShape(12.dp)
 
 @Composable
 internal fun FloatingMediaButtonOverlay(
@@ -132,6 +132,7 @@ internal fun FloatingMediaButtonOverlay(
 ) {
     val context = LocalContext.current
     val colorScheme = MaterialTheme.colorScheme
+
     var audioRecorder by remember { mutableStateOf<MediaRecorder?>(null) }
     var audioFile by remember { mutableStateOf<File?>(null) }
     var audioLevel by remember { mutableFloatStateOf(0f) }
@@ -140,37 +141,36 @@ internal fun FloatingMediaButtonOverlay(
     var audioButtonBounds by remember { mutableStateOf<Rect?>(null) }
     var audioTrashBounds by remember { mutableStateOf<Rect?>(null) }
     var audioIsOverTrash by remember { mutableStateOf(false) }
+
     val mediaButtonColor by animateColorAsState(
         targetValue = AppBluePrimary,
         label = "mediaButtonColor"
     )
+
     val mediaButtonContentColor = readableContentColor(mediaButtonColor)
+
     val audioVisualLevel by animateFloatAsState(
-        targetValue = audioLevel,
+        targetValue = 1f,
         label = "audioVisualLevel"
     )
+
     val mediaButtonScale by animateFloatAsState(
         targetValue = when {
-            isAudioRecording -> 1.12f + (audioVisualLevel * 0.34f)
-            isPressed -> 0.94f
+            isAudioRecording -> 1.7f * (1f + (audioVisualLevel * 0.5f))
+            isPressed -> 1.7f
             else -> 1f
         },
         label = "mediaButtonScale"
     )
-    val mediaButtonGlow by animateFloatAsState(
-        targetValue = when {
-            isAudioRecording -> 0.42f + (audioVisualLevel * 0.52f)
-            else -> 0f
-        },
-        label = "mediaButtonGlow"
-    )
+
     val audioPulseTransition = rememberInfiniteTransition(label = "audioPulseTransition")
+
     val audioPulse by audioPulseTransition.animateFloat(
         initialValue = 0f,
         targetValue = 1f,
         animationSpec = infiniteRepeatable(
             animation = tween(durationMillis = 900, easing = LinearEasing),
-            repeatMode = RepeatMode.Reverse
+            repeatMode = RepeatMode.Restart
         ),
         label = "audioPulse"
     )
@@ -180,13 +180,19 @@ internal fun FloatingMediaButtonOverlay(
             audioLevel = 0f
             return@LaunchedEffect
         }
+
         while (isAudioRecording) {
-            val amplitude = runCatching { audioRecorder?.maxAmplitude ?: 0 }.getOrDefault(0)
+            val amplitude = runCatching {
+                audioRecorder?.maxAmplitude ?: 0
+            }.getOrDefault(0)
+
             val level = (amplitude / AudioMaxAmplitude).coerceIn(0f, 1f)
             audioLevel = (audioLevel * 0.72f) + (level * 0.28f)
+
             delay(90L)
         }
     }
+
     LaunchedEffect(isAudioRecording) {
         if (!isAudioRecording) {
             audioTrashBounds = null
@@ -196,6 +202,7 @@ internal fun FloatingMediaButtonOverlay(
 
     fun translatedAudioButtonBounds(): Rect? {
         val bounds = audioButtonBounds ?: return null
+
         return Rect(
             left = bounds.left + audioButtonOffset.x,
             top = bounds.top + audioButtonOffset.y,
@@ -205,10 +212,20 @@ internal fun FloatingMediaButtonOverlay(
     }
 
     fun isAudioOverTrash(): Boolean {
-        val buttonBounds = translatedAudioButtonBounds() ?: return false
-        val trashBounds = audioTrashBounds ?: return false
-        return buttonBounds.overlaps(trashBounds)
-    }
+    val buttonBounds = translatedAudioButtonBounds() ?: return false
+    val trashBounds = audioTrashBounds ?: return false
+
+    val center = buttonBounds.center
+    val radius = minOf(buttonBounds.width, buttonBounds.height) / 2f
+
+    val closestX = center.x.coerceIn(trashBounds.left, trashBounds.right)
+    val closestY = center.y.coerceIn(trashBounds.top, trashBounds.bottom)
+
+    val dx = center.x - closestX
+    val dy = center.y - closestY
+
+    return (dx * dx + dy * dy) <= (radius * radius)
+}
 
     fun resetAudioInteraction() {
         audioLevel = 0f
@@ -220,13 +237,19 @@ internal fun FloatingMediaButtonOverlay(
     fun finishAudioRecording(cancel: Boolean) {
         val recorder = audioRecorder
         audioRecorder = null
+
         onAudioRecordingStateChange(false)
         resetAudioInteraction()
-        runCatching { recorder?.stop() }
+
+        runCatching {
+            recorder?.stop()
+        }
+
         recorder?.release()
 
         val recorded = audioFile
         audioFile = null
+
         if (!cancel && recorded?.exists() == true && recorded.length() > AudioMinBytes) {
             onAudioRecorded()
         } else {
@@ -241,7 +264,9 @@ internal fun FloatingMediaButtonOverlay(
             } else {
                 MaterialTheme.colorScheme.errorContainer
             }
+
             val trashTint = readableContentColor(trashColor)
+
             Surface(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
@@ -258,17 +283,14 @@ internal fun FloatingMediaButtonOverlay(
                     imageVector = Icons.Filled.Delete,
                     contentDescription = "Cancelar áudio",
                     tint = trashTint,
-                    modifier = Modifier.padding(14.dp).size(22.dp)
+                    modifier = Modifier
+                        .padding(14.dp)
+                        .size(22.dp)
                 )
             }
         }
 
-        Surface(
-            shape = CircleShape,
-            color = when {
-                isAudioRecording && audioIsOverTrash -> MaterialTheme.colorScheme.errorContainer
-                else -> mediaButtonColor
-            },
+        Box(
             modifier = Modifier
                 .align(buttonAlignment)
                 .offset(x = buttonOffsetX)
@@ -276,118 +298,149 @@ internal fun FloatingMediaButtonOverlay(
                     translationX = audioButtonOffset.x,
                     translationY = audioButtonOffset.y
                 )
-                .size(if (isAudioRecording) RecordingMediaButtonSize else MediaButtonSize)
-                .scale(mediaButtonScale)
-                .zIndex(if (isAudioRecording) 1f else 0f)
-                .onGloballyPositioned { coordinates ->
-                    audioButtonBounds = coordinates.boundsInRoot()
-                }
+                .zIndex(if (isAudioRecording) 1f else 0f),
+            contentAlignment = Alignment.Center
         ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                .border(
-                        width = if (mediaButtonGlow > 0f) 2.dp else 0.dp,
-                        color = mediaButtonColor.copy(alpha = 0.24f + (mediaButtonGlow * 0.38f)),
-                        shape = CircleShape
-                    )
-                    .pointerInput(context) {
-                        awaitEachGesture {
-                            val down = awaitFirstDown(requireUnconsumed = false)
-                            isPressed = true
-                            val tapReleasedEarly = withTimeoutOrNull(AudioLongPressMillis) {
-                                waitForUpOrCancellation()
-                            }
-                            if (tapReleasedEarly != null) {
-                                isPressed = false
-                                onMediaClick()
-                                return@awaitEachGesture
-                            }
+            if (isAudioRecording) {
+                repeat(3) { index ->
+                    val haloScale = 1.15f +
+                        (audioPulse * (0.45f + index * 0.25f)) +
+                        (audioVisualLevel * (0.22f + index * 0.12f))
 
-                            if (!onAudioHoldStart()) {
-                                isPressed = false
-                                onAudioPermissionNeeded()
-                                waitForUpOrCancellation()
-                                return@awaitEachGesture
-                            }
+                    val haloAlpha = when (index) {
+                        0 -> 0.18f
+                        1 -> 0.10f
+                        else -> 0.05f
+                    } * (1f - audioPulse) * (0.7f + audioVisualLevel)
 
-                            val targetFile = ephemeralMediaFile(context, "audio", "m4a")
-                            audioFile = targetFile
-                            onAudioRecordingStateChange(true)
-                            audioRecorder = createAudioRecorder(context, targetFile).also { recorder ->
-                                runCatching {
-                                    recorder.prepare()
-                                    recorder.start()
-                                }.onFailure {
-                                    recorder.release()
-                                    audioRecorder = null
-                                    audioFile = null
-                                    onAudioRecordingStateChange(false)
-                                    resetAudioInteraction()
-                                    targetFile.delete()
-                                }
-                            }
-
-                            audioButtonOffset = Offset.Zero
-                            while (true) {
-                                val event = awaitPointerEvent()
-                                val change = event.changes.firstOrNull { it.id == down.id } ?: continue
-                                val delta = change.positionChange()
-                                if (delta != Offset.Zero) {
-                                    audioButtonOffset += delta
-                                }
-                                audioIsOverTrash = isAudioOverTrash()
-                                if (!change.pressed) break
-                            }
-                            finishAudioRecording(cancel = isAudioOverTrash())
-                        }
-                    },
-                contentAlignment = Alignment.Center
-            ) {
-                if (isAudioRecording) {
-                    val haloColor = colorScheme.primary.copy(alpha = 0.16f + (audioVisualLevel * 0.34f))
                     Box(
                         modifier = Modifier
-                            .fillMaxSize()
-                            .scale(1.06f + (audioPulse * 0.20f) + (audioVisualLevel * 0.18f))
-                            .border(
-                                width = 2.dp,
-                                color = haloColor,
+                            .size(RecordingMediaButtonSize)
+                            .scale(mediaButtonScale * haloScale)
+                            .background(
+                                color = colorScheme.primary.copy(alpha = haloAlpha),
                                 shape = CircleShape
                             )
                     )
-                    Row(
-                        modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp),
-                        horizontalArrangement = Arrangement.spacedBy(2.dp),
-                        verticalAlignment = Alignment.Bottom
-                    ) {
-                        val barBase = 6.dp
-                        val barOne = barBase + ((audioVisualLevel * 10f) + (audioPulse * 3f)).dp
-                        val barTwo = barBase + ((audioVisualLevel * 14f) + (audioPulse * 5f)).dp
-                        val barThree = barBase + ((audioVisualLevel * 8f) + (audioPulse * 4f)).dp
-                        listOf(barOne, barTwo, barThree).forEachIndexed { index, barHeight ->
-                            Box(
-                                modifier = Modifier
-                                    .width(3.dp)
-                                    .height(barHeight.coerceAtMost(18.dp))
-                                    .background(
-                                        color = mediaButtonContentColor.copy(
-                                            alpha = when (index) {
-                                                1 -> 0.88f
-                                                else -> 0.72f
-                                            }
-                                        ),
-                                        shape = RoundedCornerShape(999.dp)
-                                    )
-                            )
+                }
+            }
+
+            Surface(
+                shape = CircleShape,
+                color = when {
+                    isAudioRecording && audioIsOverTrash -> MaterialTheme.colorScheme.errorContainer
+                    else -> mediaButtonColor
+                },
+                modifier = Modifier
+                    .size(if (isAudioRecording) RecordingMediaButtonSize else MediaButtonSize)
+                    .scale(mediaButtonScale)
+                    .onGloballyPositioned { coordinates ->
+                        audioButtonBounds = coordinates.boundsInRoot()
+                    }
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .pointerInput(context) {
+                            awaitEachGesture {
+                                val down = awaitFirstDown(requireUnconsumed = false)
+                                isPressed = true
+
+                                val tapReleasedEarly = withTimeoutOrNull(AudioLongPressMillis) {
+                                    waitForUpOrCancellation()
+                                }
+
+                                if (tapReleasedEarly != null) {
+                                    isPressed = false
+                                    onMediaClick()
+                                    return@awaitEachGesture
+                                }
+
+                                if (!onAudioHoldStart()) {
+                                    isPressed = false
+                                    onAudioPermissionNeeded()
+                                    waitForUpOrCancellation()
+                                    return@awaitEachGesture
+                                }
+
+                                val targetFile = ephemeralMediaFile(context, "audio", "m4a")
+                                audioFile = targetFile
+
+                                onAudioRecordingStateChange(true)
+
+                                audioRecorder = createAudioRecorder(context, targetFile).also { recorder ->
+                                    runCatching {
+                                        recorder.prepare()
+                                        recorder.start()
+                                    }.onFailure {
+                                        recorder.release()
+                                        audioRecorder = null
+                                        audioFile = null
+                                        onAudioRecordingStateChange(false)
+                                        resetAudioInteraction()
+                                        targetFile.delete()
+                                    }
+                                }
+
+                                audioButtonOffset = Offset.Zero
+
+                                while (true) {
+                                    val event = awaitPointerEvent()
+                                    val change = event.changes.firstOrNull { it.id == down.id } ?: continue
+                                    val delta = change.positionChange()
+
+                                    if (delta != Offset.Zero) {
+                                        audioButtonOffset += delta
+                                    }
+
+                                    audioIsOverTrash = isAudioOverTrash()
+
+                                    if (!change.pressed) break
+                                }
+
+                                finishAudioRecording(cancel = audioIsOverTrash)
+                            }
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (isAudioRecording) {
+                        Row(
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .padding(bottom = 8.dp),
+                            horizontalArrangement = Arrangement.spacedBy(2.dp),
+                            verticalAlignment = Alignment.Bottom
+                        ) {
+                            val barBase = 6.dp
+                            val barOne = barBase + ((audioVisualLevel * 12f) + (audioPulse * 3f)).dp
+                            val barTwo = barBase + ((audioVisualLevel * 18f) + (audioPulse * 5f)).dp
+                            val barThree = barBase + ((audioVisualLevel * 12f) + (audioPulse * 4f)).dp
+
+                            listOf(barOne, barTwo, barThree).forEachIndexed { index, barHeight ->
+                                Box(
+                                    modifier = Modifier
+                                        .width(3.dp)
+                                        .height(barHeight.coerceAtMost(24.dp))
+                                        .background(
+                                            color = mediaButtonContentColor.copy(
+                                                alpha = when (index) {
+                                                    1 -> 0.88f
+                                                    else -> 0.72f
+                                                }
+                                            ),
+                                            shape = RoundedCornerShape(999.dp)
+                                        )
+                                )
+                            }
                         }
                     }
+
+                    Icon(
+                        painter = painterResource(id = R.drawable.ic_launcher_foreground_art),
+                        contentDescription = "Criar mídia",
+                        tint = mediaButtonContentColor
+                    )
                 }
-                Icon(
-                    painter = painterResource(id = R.drawable.ic_launcher_foreground_art),
-                    contentDescription = "Criar mídia",
-                    tint = mediaButtonContentColor
-                )
             }
         }
     }

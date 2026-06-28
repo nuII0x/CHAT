@@ -159,7 +159,8 @@ if (requestedReleaseType != null) {
         dependsOn(persistVersion)
     }
 }
-
+//Este bloco é opcional, caso queira, descomente-o.
+/*
 val playBuildFinishedSound = tasks.register("playBuildFinishedSound") {
     group = "verification"
     description = "Emite um alerta sonoro curto ao concluir tarefas principais de build."
@@ -182,7 +183,7 @@ tasks.matching {
 }.configureEach {
     finalizedBy(playBuildFinishedSound)
 }
-
+*/
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.core.splashscreen)
