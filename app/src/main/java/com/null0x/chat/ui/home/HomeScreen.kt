@@ -414,6 +414,17 @@ fun HomeScreen(
                             headerSearchActive = true
                         }
                     },
+                    selectedChatsCount = selectedChatUsernames.size,
+                    onDeleteSelectedChats = {
+                        selectedChatUsernames.forEach { username ->
+                            if (vm.isNullAiConversation(username)) {
+                                vm.disableNullAi()
+                            } else {
+                                vm.removeConversation(username)
+                            }
+                        }
+                        selectedChatUsernames = emptySet()
+                    },
                     selectedContactUsername = selectedContactUsername,
                     onDeleteSelectedContact = {
                         selectedContactUsername?.let { username ->
@@ -571,6 +582,8 @@ fun HomeScreen(
                             onShowChatPresenceStatusChange = vm::updateChatPresenceStatusVisibility,
                             showChatLastActivity = vm.showChatLastActivity,
                             onShowChatLastActivityChange = vm::updateChatLastActivityVisibility,
+                            nullAiEnabled = vm.nullAiEnabled,
+                            onNullAiEnabledChange = vm::updateNullAiEnabled,
                             contacts = contacts,
                             locationSharingMode = vm.locationSharingMode,
                             locationSharingAllowedRoutes = vm.locationSharingAllowedRoutes,
@@ -778,7 +791,7 @@ private fun ConversationsPanelSelection(
                 ConversationRowSelectable(
                     item = item,
                     selected = selected,
-                    active = isRouteActive(item.username),
+                    active = if (item.isAi) true else isRouteActive(item.username),
                     onClick = {
                         if (selectedChatUsernames.isNotEmpty()) {
                             onToggleSelection(item.username)
@@ -786,7 +799,9 @@ private fun ConversationsPanelSelection(
                             onSelect(item.username)
                         }
                     },
-                    onLongClick = { onToggleSelection(item.username) }
+                    onLongClick = {
+                        onToggleSelection(item.username)
+                    }
                 )
             }
         }

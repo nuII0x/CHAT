@@ -487,6 +487,8 @@ internal fun BottomDock(
     onSearchValueChange: (String) -> Unit = {},
     onSearchSubmit: () -> Unit = {},
     onSearchToggle: () -> Unit = {},
+    selectedChatsCount: Int = 0,
+    onDeleteSelectedChats: () -> Unit = {},
     selectedContactUsername: String? = null,
     onDeleteSelectedContact: () -> Unit = {},
     onLockApp: () -> Unit,
@@ -659,7 +661,15 @@ internal fun BottomDock(
                 }
             }
 
-            if (!searchActive && selectedContactUsername != null) {
+            if (!searchActive && selectedChatsCount > 0) {
+                IconButton(onClick = onDeleteSelectedChats) {
+                    Icon(
+                        imageVector = Icons.Filled.Delete,
+                        contentDescription = "Remover chats selecionados",
+                        tint = idleIconTint
+                    )
+                }
+            } else if (!searchActive && selectedContactUsername != null) {
                 IconButton(onClick = onDeleteSelectedContact) {
                     Icon(
                         imageVector = Icons.Filled.Delete,

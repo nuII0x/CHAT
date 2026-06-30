@@ -277,11 +277,16 @@ fun ChatScreen(vm: ChatViewModel, themeMode: ThemeMode, onBack: () -> Unit, onLo
     }
 
     val headerUser = peers.getOrNull(pagerState.currentPage)?.trim().orEmpty().ifBlank { vm.targetUsername }
-    val chatTitle = vm.chatTitleFor(headerUser).ifBlank { maskedRouteLabel(headerUser) }
+    val isNullAiChat = vm.isNullAiConversation(headerUser)
+    val chatTitle = if (isNullAiChat) {
+        vm.nullAiDisplayName()
+    } else {
+        vm.chatTitleFor(headerUser).ifBlank { maskedRouteLabel(headerUser) }
+    }
     val headerConversation = remember(headerUser, vm.conversationPreviews()) {
         vm.conversationPreviews().firstOrNull { it.username == headerUser }
     }
-    val headerUserAvailable = vm.showChatPresenceStatus && vm.isPartnerOnline(headerUser)
+    val headerUserAvailable = !isNullAiChat && vm.showChatPresenceStatus && vm.isPartnerOnline(headerUser)
     val chatPresenceLabel = if (headerUserAvailable) {
         "disponível"
     } else {
@@ -292,13 +297,37 @@ fun ChatScreen(vm: ChatViewModel, themeMode: ThemeMode, onBack: () -> Unit, onLo
     } else {
         ""
     }
-    val chatHeaderSubtitle = listOfNotNull(
-        chatPresenceLabel.takeIf { it.isNotBlank() },
-        chatLastActivityLabel.takeIf { it.isNotBlank() }
-    ).joinToString(" • ")
+    val chatHeaderSubtitle = if (isNullAiChat) {
+        vm.nullAiSubtitle()
+    } else {
+        listOfNotNull(
+            chatPresenceLabel.takeIf { it.isNotBlank() },
+            chatLastActivityLabel.takeIf { it.isNotBlank() }
+        ).joinToString(" • ")
+    }
     val unreadHintCount = vm.unreadEntryCountFor(headerUser)
     val currentChatLoaded = vm.isCurrentChatLoaded()
     val currentMessages = vm.messagesFor(vm.targetUsername)
+    val nullAiConversationAvailable = !isNullAiChat || vm.isNullAiConversationAvailable()
+    val displayedMessages = if (isNullAiChat && vm.nullAiPreparing) {
+        currentMessages + Message(
+            id = "null-ai-preparing",
+            text = "Preparando, por favor, espere...",
+            isMine = false,
+            timestamp = System.currentTimeMillis(),
+            delivery = DeliveryState.Delivered
+        )
+    } else if (isNullAiChat && vm.nullAiPrepareError.isNotBlank()) {
+        currentMessages + Message(
+            id = "null-ai-prepare-error",
+            text = vm.nullAiPrepareError,
+            isMine = false,
+            timestamp = System.currentTimeMillis(),
+            delivery = DeliveryState.Delivered
+        )
+    } else {
+        currentMessages
+    }
 
     LaunchedEffect(headerUser) {
         val draft = vm.draftFor(headerUser)
@@ -336,9 +365,16 @@ fun ChatScreen(vm: ChatViewModel, themeMode: ThemeMode, onBack: () -> Unit, onLo
         }
     }
 
+    LaunchedEffect(nullAiConversationAvailable) {
+        if (!nullAiConversationAvailable) {
+            showTextInput = false
+            keyboardController?.hide()
+        }
+    }
+
     LaunchedEffect(headerUser, input) {
         val target = headerUser.trim()
-        if (target.isBlank()) return@LaunchedEffect
+        if (target.isBlank() || vm.isNullAiConversation(target)) return@LaunchedEffect
         if (input.isBlank()) {
             vm.updateLocalTyping(target, false)
             return@LaunchedEffect
@@ -350,7 +386,7 @@ fun ChatScreen(vm: ChatViewModel, themeMode: ThemeMode, onBack: () -> Unit, onLo
 
     LaunchedEffect(headerUser) {
         val target = headerUser.trim()
-        if (target.isBlank()) return@LaunchedEffect
+        if (target.isBlank() || vm.isNullAiConversation(target)) return@LaunchedEffect
         while (true) {
             vm.refreshLocalChatPresence(target)
             delay(15_000)
@@ -433,12 +469,16 @@ fun ChatScreen(vm: ChatViewModel, themeMode: ThemeMode, onBack: () -> Unit, onLo
                             subtitle = chatHeaderSubtitle,
                             onBack = onBack,
                             onOpenProfile = {
-                                profileRoute = headerUser
-                                showProfile = true
+                                if (!isNullAiChat) {
+                                    profileRoute = headerUser
+                                    showProfile = true
+                                }
                             },
                             onCopyRoute = {
-                                SensitiveClipboard.copy(context, "Rota contato", maskedRouteLabel(headerUser))
-                                Toast.makeText(context, "Token sensível copiado por 60 segundos", Toast.LENGTH_SHORT).show()
+                                if (!isNullAiChat) {
+                                    SensitiveClipboard.copy(context, "Rota contato", maskedRouteLabel(headerUser))
+                                    Toast.makeText(context, "Token sensível copiado por 60 segundos", Toast.LENGTH_SHORT).show()
+                                }
                             }
                         )
                         if (unreadHintCount > 0) {
@@ -467,7 +507,7 @@ fun ChatScreen(vm: ChatViewModel, themeMode: ThemeMode, onBack: () -> Unit, onLo
                     ) {
                         MessageList(
                             conversationKey = user,
-                            messages = vm.messagesFor(user),
+                            messages = if (user == vm.targetUsername) displayedMessages else vm.messagesFor(user),
                             privacyNotices = vm.privacyNotices(),
                             loaded = currentChatLoaded && user == vm.targetUsername,
                             unreadHintCount = unreadHintCount,
@@ -491,7 +531,7 @@ fun ChatScreen(vm: ChatViewModel, themeMode: ThemeMode, onBack: () -> Unit, onLo
             ) {
                 val marker = vm.emojiForRoute(headerUser)
                     .ifBlank { compactOnionRoute(vm.chatTitleFor(headerUser)).take(1).ifBlank { "?" }.uppercase() }
-                if (marker.isNotBlank() && vm.isPartnerChatOpen(headerUser)) {
+                if (!isNullAiChat && marker.isNotBlank() && vm.isPartnerChatOpen(headerUser)) {
                     PartnerMarkerBadge(
                         marker = marker,
                         typing = vm.isPartnerTyping(headerUser),
@@ -510,6 +550,8 @@ fun ChatScreen(vm: ChatViewModel, themeMode: ThemeMode, onBack: () -> Unit, onLo
                     focusRequester = composerFocusRequester,
                     appearance = appearance,
                     trailingActionSpace = if (showTextInput) ChatDockActionReserve else 0.dp,
+                    enabled = nullAiConversationAvailable,
+                    placeholder = if (nullAiConversationAvailable) "Mensagem" else "Preparando...",
                     onInputChange = {
                         input = it
                         vm.updateDraft(headerUser, it)
@@ -517,7 +559,7 @@ fun ChatScreen(vm: ChatViewModel, themeMode: ThemeMode, onBack: () -> Unit, onLo
                     onShowTextInputChange = { showTextInput = it },
                     onSend = {
                         val text = input.trim()
-                        if (text.isNotBlank()) {
+                        if (text.isNotBlank() && nullAiConversationAvailable) {
                             vm.updateLocalTyping(headerUser, false)
                             vm.sendTo(headerUser, text)
                             input = ""
@@ -531,30 +573,32 @@ fun ChatScreen(vm: ChatViewModel, themeMode: ThemeMode, onBack: () -> Unit, onLo
                     showButtonWhenOpen = !showTextInput
                 )
 
-                FloatingMediaButtonOverlay(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(bottom = ChatDockBottomLift),
-                    buttonAlignment = if (showTextInput) Alignment.BottomEnd else Alignment.BottomCenter,
-                    buttonOffsetX = if (showTextInput) ChatDockMediaOpenEndOffset else ChatDockButtonOffset,
-                    isAudioRecording = isAudioRecording,
-                    onAudioRecordingStateChange = { isAudioRecording = it },
-                    onMediaClick = {
-                        openEphemeralMediaRecorder()
-                    },
-                    onAudioHoldStart = {
-                        ContextCompat.checkSelfPermission(
-                            context,
-                            Manifest.permission.RECORD_AUDIO
-                        ) == PackageManager.PERMISSION_GRANTED
-                    },
-                    onAudioRecorded = {
-                        vm.sendEphemeralMediaTo(headerUser, ChatViewModel.EphemeralMediaType.AUDIO)
-                    },
-                    onAudioPermissionNeeded = {
-                        audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                    }
-                )
+                if (!isNullAiChat) {
+                    FloatingMediaButtonOverlay(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(bottom = ChatDockBottomLift),
+                        buttonAlignment = if (showTextInput) Alignment.BottomEnd else Alignment.BottomCenter,
+                        buttonOffsetX = if (showTextInput) ChatDockMediaOpenEndOffset else ChatDockButtonOffset,
+                        isAudioRecording = isAudioRecording,
+                        onAudioRecordingStateChange = { isAudioRecording = it },
+                        onMediaClick = {
+                            openEphemeralMediaRecorder()
+                        },
+                        onAudioHoldStart = {
+                            ContextCompat.checkSelfPermission(
+                                context,
+                                Manifest.permission.RECORD_AUDIO
+                            ) == PackageManager.PERMISSION_GRANTED
+                        },
+                        onAudioRecorded = {
+                            vm.sendEphemeralMediaTo(headerUser, ChatViewModel.EphemeralMediaType.AUDIO)
+                        },
+                        onAudioPermissionNeeded = {
+                            audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                        }
+                    )
+                }
 
                 ChatBottomActions(
                     modifier = Modifier
@@ -567,7 +611,8 @@ fun ChatScreen(vm: ChatViewModel, themeMode: ThemeMode, onBack: () -> Unit, onLo
                         keyboardController?.hide()
                         chatSettingsRoute = ChatSettingsRoute
                         showChatSettings = true
-                    }
+                    },
+                    settingsEnabled = !isNullAiChat
                 )
             }
         }
@@ -776,7 +821,8 @@ private fun ChatBottomActions(
     onLockApp: () -> Unit,
     onClear: () -> Unit,
     onOpenSettings: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    settingsEnabled: Boolean = true
 ) {
     var showMenu by rememberSaveable { mutableStateOf(false) }
     val systemDarkTheme = androidx.compose.foundation.isSystemInDarkTheme()
@@ -806,19 +852,21 @@ private fun ChatBottomActions(
                         onClear()
                     }
                 )
-                DropdownMenuItem(
-                    text = { Text("Configuração") },
-                    leadingIcon = {
-                        Icon(
-                            imageVector = Icons.Filled.Settings,
-                            contentDescription = null
-                        )
-                    },
-                    onClick = {
-                        showMenu = false
-                        onOpenSettings()
-                    }
-                )
+                if (settingsEnabled) {
+                    DropdownMenuItem(
+                        text = { Text("Configuração") },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.Filled.Settings,
+                                contentDescription = null
+                            )
+                        },
+                        onClick = {
+                            showMenu = false
+                            onOpenSettings()
+                        }
+                    )
+                }
             }
         }
         IconButton(onClick = onLockApp) {
@@ -1901,6 +1949,8 @@ private fun MessageComposer(
     focusRequester: FocusRequester,
     appearance: com.null0x.chat.ui.theme.AppearanceSettings,
     trailingActionSpace: Dp,
+    enabled: Boolean,
+    placeholder: String,
     onInputChange: (String) -> Unit,
     onShowTextInputChange: (Boolean) -> Unit,
     onSend: () -> Unit,
@@ -1920,8 +1970,8 @@ private fun MessageComposer(
             onShowTextInputChange(true)
         }
     }
-    LaunchedEffect(showTextInput) {
-        if (showTextInput) {
+    LaunchedEffect(showTextInput, enabled) {
+        if (showTextInput && enabled) {
             delay(120)
             var focused = false
             repeat(4) {
@@ -1974,19 +2024,23 @@ private fun MessageComposer(
                     .padding(end = trailingActionSpace)
                     .focusRequester(focusRequester),
                 maxLines = 4,
+                enabled = enabled,
                 shape = RoundedCornerShape(20.dp),
-                placeholder = { Text("Mensagem") },
+                placeholder = { Text(placeholder) },
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedTextColor = fieldTextColor,
                     unfocusedTextColor = fieldTextColor,
+                    disabledTextColor = fieldTextColor.copy(alpha = 0.58f),
                     focusedContainerColor = fieldBackground,
                     unfocusedContainerColor = fieldBackground,
                     disabledContainerColor = fieldBackground,
                     cursorColor = fieldTextColor,
                     focusedBorderColor = fieldBorder,
                     unfocusedBorderColor = fieldBorder,
+                    disabledBorderColor = fieldBorder.copy(alpha = 0.68f),
                     focusedPlaceholderColor = fieldPlaceholderColor,
-                    unfocusedPlaceholderColor = fieldPlaceholderColor
+                    unfocusedPlaceholderColor = fieldPlaceholderColor,
+                    disabledPlaceholderColor = fieldPlaceholderColor
                 ),
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                 keyboardActions = KeyboardActions(onSend = { onSend() })
@@ -2000,16 +2054,19 @@ private fun MessageComposer(
         ) {
             Surface(
                 shape = CircleShape,
-                color = presenceButtonColor,
+                color = presenceButtonColor.copy(alpha = if (enabled) 1f else 0.45f),
                 modifier = Modifier
                     .offset(x = buttonOffsetX)
                     .size(54.dp)
             ) {
-                IconButton(onClick = { onShowTextInputChange(true) }) {
+                IconButton(
+                    enabled = enabled,
+                    onClick = { onShowTextInputChange(true) }
+                ) {
                     Icon(
                         imageVector = Icons.Filled.Edit,
                         contentDescription = "Abrir texto",
-                        tint = presenceButtonTint
+                        tint = presenceButtonTint.copy(alpha = if (enabled) 1f else 0.58f)
                     )
                 }
             }

@@ -108,7 +108,6 @@ import android.widget.VideoView
 import android.widget.ImageView
 
 private val MediaButtonSize = 54.dp
-private val RecordingMediaButtonSize = 66.dp
 private val AudioTrashBottomPadding = 76.dp
 private const val AudioLongPressMillis = 100L
 private const val VideoQuickReleaseMillis = 300L
@@ -150,16 +149,12 @@ internal fun FloatingMediaButtonOverlay(
     val mediaButtonContentColor = readableContentColor(mediaButtonColor)
 
     val audioVisualLevel by animateFloatAsState(
-        targetValue = 1f,
+        targetValue = audioLevel,
         label = "audioVisualLevel"
     )
 
     val mediaButtonScale by animateFloatAsState(
-        targetValue = when {
-            isAudioRecording -> 1.7f * (1f + (audioVisualLevel * 0.5f))
-            isPressed -> 1.7f
-            else -> 1f
-        },
+        targetValue = 1f,
         label = "mediaButtonScale"
     )
 
@@ -315,7 +310,7 @@ internal fun FloatingMediaButtonOverlay(
 
                     Box(
                         modifier = Modifier
-                            .size(RecordingMediaButtonSize)
+                            .size(MediaButtonSize)
                             .scale(mediaButtonScale * haloScale)
                             .background(
                                 color = colorScheme.primary.copy(alpha = haloAlpha),
@@ -332,7 +327,7 @@ internal fun FloatingMediaButtonOverlay(
                     else -> mediaButtonColor
                 },
                 modifier = Modifier
-                    .size(if (isAudioRecording) RecordingMediaButtonSize else MediaButtonSize)
+                    .size(MediaButtonSize)
                     .scale(mediaButtonScale)
                     .onGloballyPositioned { coordinates ->
                         audioButtonBounds = coordinates.boundsInRoot()

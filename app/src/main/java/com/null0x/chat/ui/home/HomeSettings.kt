@@ -29,9 +29,12 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -48,6 +51,7 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.null0x.chat.ai.NullAiModelStore
 import com.null0x.chat.model.DeliveryState
 import com.null0x.chat.model.Message
 import com.null0x.chat.network.TorManager
@@ -73,10 +77,15 @@ import com.null0x.chat.ui.theme.ThemePreference
 import com.null0x.chat.ui.theme.readableContentColor
 import com.null0x.chat.ui.theme.themeBackgroundColor
 import com.null0x.chat.ui.theme.themeDialogColor
+import com.null0x.chat.update.AppUpdateManager
+import com.null0x.chat.update.AppUpdateState
 import com.null0x.chat.viewmodel.ChatViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import org.json.JSONObject
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 @Composable
 internal fun SettingsTab(
@@ -93,6 +102,8 @@ internal fun SettingsTab(
     onShowChatPresenceStatusChange: (Boolean) -> Unit,
     showChatLastActivity: Boolean,
     onShowChatLastActivityChange: (Boolean) -> Unit,
+    nullAiEnabled: Boolean,
+    onNullAiEnabledChange: (Boolean) -> Unit,
     contacts: List<ChatViewModel.ContactPreview>,
     locationSharingMode: ChatViewModel.LocationSharingMode,
     locationSharingAllowedRoutes: Set<String>,
@@ -108,10 +119,20 @@ internal fun SettingsTab(
     onSignOut: () -> Unit
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val tokenLabel = publicRouteToken.ifBlank { "Aguardando token..." }
     var identityVersion by rememberSaveable { mutableStateOf(0) }
+    var nullAiModelLabel by remember { mutableStateOf(NullAiModelStore.currentModel(context).label) }
+    var nullAiModelUrl by rememberSaveable { mutableStateOf(NullAiModelStore.modelDownloadUrl(context)) }
+    var nullAiAutoDownload by rememberSaveable { mutableStateOf(NullAiModelStore.isAutoDownloadEnabled(context)) }
+    val collectedAppUpdateState by AppUpdateManager.state.collectAsState()
+    val appUpdateState = collectedAppUpdateState ?: remember(context) { AppUpdateManager.refreshState(context) }
+    var showUpdatePrompt by rememberSaveable { mutableStateOf(false) }
+    var showInstallPrompt by rememberSaveable { mutableStateOf(false) }
     var showTokensWindow by rememberSaveable { mutableStateOf(false) }
     var showAccountWindow by rememberSaveable { mutableStateOf(false) }
+    var showChatsWindow by rememberSaveable { mutableStateOf(false) }
+    var showNullAiWindow by rememberSaveable { mutableStateOf(false) }
     var showBlockedWindow by rememberSaveable { mutableStateOf(false) }
     var showAppearancesWindow by rememberSaveable { mutableStateOf(false) }
     var showLocationWindow by rememberSaveable { mutableStateOf(false) }
@@ -146,6 +167,7 @@ internal fun SettingsTab(
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
                 notificationsEnabled = NotificationManagerCompat.from(context).areNotificationsEnabled()
+                AppUpdateManager.refreshState(context)
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -202,8 +224,51 @@ internal fun SettingsTab(
             Toast.LENGTH_SHORT
         ).show()
     }
+    val nullAiModelPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { source ->
+        if (source == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            val result = NullAiModelStore.importModel(context, source)
+            result
+                .onSuccess { model ->
+                    nullAiModelLabel = model.label
+                    onNullAiEnabledChange(true)
+                    Toast.makeText(context, "Modelo da Null IA importado", Toast.LENGTH_SHORT).show()
+                }
+                .onFailure { error ->
+                    Toast.makeText(
+                        context,
+                        error.message ?: "Falha ao importar modelo GGUF",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+        }
+    }
+    fun refreshNullAiDownloadUrl(url: String) {
+        nullAiModelUrl = url
+        NullAiModelStore.setModelDownloadUrl(context, url)
+    }
+    fun refreshNullAiAutoDownload(enabled: Boolean) {
+        nullAiAutoDownload = enabled
+        NullAiModelStore.setAutoDownloadEnabled(context, enabled)
+    }
+    LaunchedEffect(appUpdateState.availableVersionCode, appUpdateState.status) {
+        if (appUpdateState.hasNewVersion && !appUpdateState.isDownloading && !appUpdateState.isDownloaded) {
+            showUpdatePrompt = true
+        }
+        if (appUpdateState.isDownloaded) {
+            showInstallPrompt = true
+        }
+    }
     BackHandler(enabled = showTokensWindow && !showRestoreIdentity && !showPrivateInbox) {
         showTokensWindow = false
+    }
+    BackHandler(enabled = showChatsWindow && !showRestoreIdentity && !showPrivateInbox) {
+        showChatsWindow = false
+    }
+    BackHandler(enabled = showNullAiWindow && !showRestoreIdentity && !showPrivateInbox) {
+        showNullAiWindow = false
     }
     BackHandler(enabled = showBlockedWindow && !showRestoreIdentity && !showPrivateInbox) {
         showBlockedWindow = false
@@ -245,6 +310,24 @@ internal fun SettingsTab(
             }
             item {
                 SettingsRow(
+                    title = "Chats",
+                    subtitle = "Presença, atividade e histórico",
+                    onClick = { showChatsWindow = true }
+                )
+            }
+            item {
+                SettingsRow(
+                    title = "Null IA",
+                    subtitle = if (nullAiEnabled) {
+                        "IA local ativa"
+                    } else {
+                        "IA local oculta"
+                    },
+                    onClick = { showNullAiWindow = true }
+                )
+            }
+            item {
+                SettingsRow(
                     title = "Bloqueados",
                     subtitle = if (blockedContacts.isEmpty()) {
                         "Nenhum contato bloqueado"
@@ -255,11 +338,11 @@ internal fun SettingsTab(
                 )
             }
             item {
-            SettingsRow(
-                title = "Aparências",
-                subtitle = "Abas, diálogos e conversas",
-                onClick = { showAppearancesWindow = true }
-            )
+                SettingsRow(
+                    title = "Aparências",
+                    subtitle = "Abas, diálogos e conversas",
+                    onClick = { showAppearancesWindow = true }
+                )
             }
             if (!notificationsEnabled) {
                 item {
@@ -277,6 +360,36 @@ internal fun SettingsTab(
                             }
                         } else null,
                         onClick = { openNotificationSettings(context) }
+                    )
+                }
+            }
+            item { SectionTitle("Atualizações") }
+            item {
+                SettingsSwitchRow(
+                    title = "Baixar automaticamente",
+                    subtitle = appUpdateSubtitle(appUpdateState),
+                    checked = appUpdateState.autoDownloadEnabled,
+                    onCheckedChange = { enabled ->
+                        AppUpdateManager.setAutoDownloadEnabled(context, enabled)
+                    }
+                )
+            }
+            if (appUpdateState.isDownloaded) {
+                item {
+                    SettingsRow(
+                        title = "Instalar atualização",
+                        subtitle = "Versão ${appUpdateState.availableVersionName} pronta",
+                        important = true,
+                        onClick = {
+                            AppUpdateManager.installDownloadedUpdate(context)
+                                .onFailure { error ->
+                                    Toast.makeText(
+                                        context,
+                                        error.message ?: "Não foi possível instalar",
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                }
+                        }
                     )
                 }
             }
@@ -381,9 +494,9 @@ internal fun SettingsTab(
             enter = androidx.compose.animation.slideInHorizontally(initialOffsetX = { fullWidth -> fullWidth }) + androidx.compose.animation.fadeIn(),
             exit = androidx.compose.animation.slideOutHorizontally(targetOffsetX = { fullWidth -> fullWidth }) + androidx.compose.animation.fadeOut()
         ) {
-            AccountActionsScreen(
-                privateInboxMessages = privateInboxMessages,
-                onBack = { showAccountWindow = false },
+        AccountActionsScreen(
+            privateInboxMessages = privateInboxMessages,
+            onBack = { showAccountWindow = false },
                 onLockApp = onLockApp,
                 onCopyPublicSend = {
                     SensitiveClipboard.copy(context, "Envio publico NoChat", publicSendPackage)
@@ -411,6 +524,56 @@ internal fun SettingsTab(
                 onSignOut = onSignOut
             )
         }
+    }
+
+    androidx.compose.animation.AnimatedVisibility(
+        visible = showChatsWindow,
+        modifier = Modifier.fillMaxSize(),
+        enter = androidx.compose.animation.slideInHorizontally(initialOffsetX = { fullWidth -> fullWidth }) + androidx.compose.animation.fadeIn(),
+        exit = androidx.compose.animation.slideOutHorizontally(targetOffsetX = { fullWidth -> fullWidth }) + androidx.compose.animation.fadeOut()
+    ) {
+        ChatsSettingsScreen(
+            keepViewedMessages = keepViewedMessages,
+            onKeepViewedMessagesChange = onKeepViewedMessagesChange,
+            screenshotsEnabled = screenshotsEnabled,
+            onScreenshotsEnabledChange = onScreenshotsEnabledChange,
+            showChatPresenceStatus = showChatPresenceStatus,
+            onShowChatPresenceStatusChange = onShowChatPresenceStatusChange,
+            showChatLastActivity = showChatLastActivity,
+            onShowChatLastActivityChange = onShowChatLastActivityChange,
+            onBack = { showChatsWindow = false },
+            onLockApp = onLockApp
+        )
+    }
+
+    androidx.compose.animation.AnimatedVisibility(
+        visible = showNullAiWindow,
+        modifier = Modifier.fillMaxSize(),
+        enter = androidx.compose.animation.slideInHorizontally(initialOffsetX = { fullWidth -> fullWidth }) + androidx.compose.animation.fadeIn(),
+        exit = androidx.compose.animation.slideOutHorizontally(targetOffsetX = { fullWidth -> fullWidth }) + androidx.compose.animation.fadeOut()
+    ) {
+        NullAiSettingsScreen(
+            modelLabel = nullAiModelLabel,
+            modelUrl = nullAiModelUrl,
+            autoDownloadEnabled = nullAiAutoDownload,
+            nullAiEnabled = nullAiEnabled,
+            onNullAiEnabledChange = onNullAiEnabledChange,
+            onModelPicked = {
+                nullAiModelPickerLauncher.launch(arrayOf("*/*"))
+            },
+            onModelUrlChange = { refreshNullAiDownloadUrl(it) },
+            onAutoDownloadChange = { refreshNullAiAutoDownload(it) },
+            onDownloadNow = {
+                if (nullAiModelUrl.isBlank()) {
+                    Toast.makeText(context, "Informe a URL do modelo", Toast.LENGTH_SHORT).show()
+                } else {
+                    NullAiModelStore.enqueueModelDownloadNow(context)
+                    Toast.makeText(context, "Download iniciado fora do Tor", Toast.LENGTH_SHORT).show()
+                }
+            },
+            onBack = { showNullAiWindow = false },
+            onLockApp = onLockApp
+        )
     }
 
     androidx.compose.animation.AnimatedVisibility(
@@ -489,6 +652,62 @@ internal fun SettingsTab(
                 onDelete = { message ->
                 onionInboxStore.delete(message.id)
                 identityVersion++
+            }
+        )
+    }
+    if (showUpdatePrompt) {
+        AlertDialog(
+            onDismissRequest = { showUpdatePrompt = false },
+            title = { Text("Há uma nova versão, baixar?") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Versão atual: ${appUpdateState.currentVersionName}")
+                    Text("Nova versão: ${appUpdateState.availableVersionName}")
+                    if (appUpdateState.releaseNotes.isNotBlank()) {
+                        Text(appUpdateState.releaseNotes)
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showUpdatePrompt = false
+                    AppUpdateManager.enqueueDownload(context)
+                    Toast.makeText(context, "Download da atualização iniciado", Toast.LENGTH_SHORT).show()
+                }) {
+                    Text("Baixar")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showUpdatePrompt = false }) {
+                    Text("Agora não")
+                }
+            }
+        )
+    }
+    if (showInstallPrompt) {
+        AlertDialog(
+            onDismissRequest = { showInstallPrompt = false },
+            title = { Text("Atualização pronta") },
+            text = { Text("A versão ${appUpdateState.availableVersionName} já foi baixada.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showInstallPrompt = false
+                    AppUpdateManager.installDownloadedUpdate(context)
+                        .onFailure { error ->
+                            Toast.makeText(
+                                context,
+                                error.message ?: "Não foi possível instalar",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
+                }) {
+                    Text("Instalar")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showInstallPrompt = false }) {
+                    Text("Depois")
+                }
             }
         )
     }
@@ -664,6 +883,221 @@ internal fun AccountActionsScreen(
                 }
             }
         )
+    }
+}
+
+@Composable
+internal fun ChatsSettingsScreen(
+    keepViewedMessages: Boolean,
+    onKeepViewedMessagesChange: (Boolean) -> Unit,
+    screenshotsEnabled: Boolean,
+    onScreenshotsEnabledChange: (Boolean) -> Unit,
+    showChatPresenceStatus: Boolean,
+    onShowChatPresenceStatusChange: (Boolean) -> Unit,
+    showChatLastActivity: Boolean,
+    onShowChatLastActivityChange: (Boolean) -> Unit,
+    onBack: () -> Unit,
+    onLockApp: () -> Unit
+) {
+    SettingsWindowScaffold(
+        title = "Chats",
+        subtitle = "Visibilidade, histórico e captura",
+        onBack = onBack,
+        onLockApp = onLockApp
+    ) {
+        item { SectionTitle("Visibilidade") }
+        item {
+            SettingsSwitchRow(
+                title = "Estado no chat",
+                subtitle = if (showChatPresenceStatus) "Mostra Disponível ou Indisponível" else "Oculto no subtítulo do chat",
+                checked = showChatPresenceStatus,
+                onCheckedChange = onShowChatPresenceStatusChange
+            )
+        }
+        item {
+            SettingsSwitchRow(
+                title = "Última atividade no chat",
+                subtitle = if (showChatLastActivity) "Mostra quando houve atividade recente" else "Oculta do subtítulo do chat",
+                checked = showChatLastActivity,
+                onCheckedChange = onShowChatLastActivityChange
+            )
+        }
+        item { SectionTitle("Conversa") }
+        item {
+            SettingsSwitchRow(
+                title = "Manter historico de mensagens",
+                subtitle = "Padrao para novas conversas",
+                checked = keepViewedMessages,
+                onCheckedChange = onKeepViewedMessagesChange
+            )
+        }
+        item {
+            SettingsSwitchRow(
+                title = "Permitir print da tela",
+                subtitle = "Padrao para novas conversas",
+                checked = screenshotsEnabled,
+                onCheckedChange = onScreenshotsEnabledChange
+            )
+        }
+    }
+}
+
+@Composable
+internal fun NullAiSettingsScreen(
+    modelLabel: String,
+    modelUrl: String,
+    autoDownloadEnabled: Boolean,
+    nullAiEnabled: Boolean,
+    onNullAiEnabledChange: (Boolean) -> Unit,
+    onModelPicked: () -> Unit,
+    onModelUrlChange: (String) -> Unit,
+    onAutoDownloadChange: (Boolean) -> Unit,
+    onDownloadNow: () -> Unit,
+    onBack: () -> Unit,
+    onLockApp: () -> Unit
+) {
+    val context = LocalContext.current
+    var urlDraft by rememberSaveable(modelUrl) { mutableStateOf(modelUrl) }
+    var editingUrl by rememberSaveable { mutableStateOf(modelUrl.isBlank()) }
+    val focusRequester = remember { FocusRequester() }
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+
+    LaunchedEffect(modelUrl) {
+        if (!editingUrl) {
+            urlDraft = modelUrl
+        }
+        if (modelUrl.isBlank()) {
+            editingUrl = true
+        }
+    }
+
+    LaunchedEffect(editingUrl) {
+        if (editingUrl) {
+            focusRequester.requestFocus()
+        }
+    }
+
+    SettingsWindowScaffold(
+        title = "Null IA",
+        subtitle = "Modelo, URL e download",
+        onBack = onBack,
+        onLockApp = onLockApp
+    ) {
+        item { SectionTitle("Ativação") }
+        item {
+            SettingsSwitchRow(
+                title = "Null IA",
+                subtitle = if (nullAiEnabled) "Chat local fixado na aba Chats" else "Oculta o chat da IA local",
+                checked = nullAiEnabled,
+                onCheckedChange = onNullAiEnabledChange
+            )
+        }
+        item { SectionTitle("Modelo") }
+        item {
+            SettingsRow(
+                title = "Modelo da Null IA",
+                subtitle = modelLabel,
+                onClick = onModelPicked
+            )
+        }
+        item {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = urlDraft,
+                    onValueChange = {
+                        if (editingUrl) {
+                            urlDraft = it.take(512)
+                        }
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .focusRequester(focusRequester),
+                    singleLine = true,
+                    enabled = editingUrl,
+                    readOnly = !editingUrl,
+                    label = { Text("URL do modelo GGUF") },
+                    placeholder = { Text("https://.../modelo.gguf") },
+                    shape = RoundedCornerShape(16.dp),
+                    keyboardOptions = KeyboardOptions(
+                        capitalization = KeyboardCapitalization.None,
+                        autoCorrectEnabled = false,
+                        keyboardType = KeyboardType.Uri,
+                        imeAction = ImeAction.Done
+                    ),
+                    keyboardActions = KeyboardActions(
+                        onDone = {
+                            val cleaned = urlDraft.trim().take(512)
+                            if (cleaned.isNotBlank()) {
+                                onModelUrlChange(cleaned)
+                                editingUrl = false
+                                focusManager.clearFocus()
+                                keyboardController?.hide()
+                            }
+                        }
+                    ),
+                    trailingIcon = if (modelUrl.isNotBlank() && !editingUrl) {
+                        {
+                            TextButton(onClick = {
+                                editingUrl = true
+                                urlDraft = modelUrl
+                                focusRequester.requestFocus()
+                            }) {
+                                Text("Mudar URL")
+                            }
+                        }
+                    } else null
+                )
+                Text(
+                    text = if (editingUrl || modelUrl.isBlank()) {
+                        "Use um link direto para um arquivo .gguf. O download roda fora do Tor."
+                    } else {
+                        "URL salva. Toque em Mudar URL para editar. O download roda fora do Tor."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (editingUrl) {
+                    TextButton(onClick = {
+                        val cleaned = urlDraft.trim().take(512)
+                        if (cleaned.isBlank()) {
+                            Toast.makeText(context, "Informe a URL do modelo", Toast.LENGTH_SHORT).show()
+                        } else {
+                            onModelUrlChange(cleaned)
+                            editingUrl = false
+                            focusManager.clearFocus()
+                            keyboardController?.hide()
+                        }
+                    }) {
+                        Text("Salvar URL")
+                    }
+                }
+            }
+        }
+        item { SectionTitle("Download") }
+        item {
+            SettingsSwitchRow(
+                title = "Baixar automaticamente",
+                subtitle = if (autoDownloadEnabled) {
+                    "Baixa o modelo quando o Wi-Fi estiver disponível"
+                } else {
+                    "Desligado"
+                },
+                checked = autoDownloadEnabled,
+                onCheckedChange = onAutoDownloadChange
+            )
+        }
+        item {
+            SettingsRow(
+                title = "Baixar agora",
+                subtitle = if (modelUrl.isBlank()) {
+                    "Salve uma URL primeiro"
+                } else {
+                    "Baixa usando a rede disponível, fora de Tor"
+                },
+                onClick = onDownloadNow
+            )
+        }
     }
 }
 
@@ -1426,6 +1860,26 @@ internal fun SettingsRow(
             ListSeparator()
         }
     }
+}
+
+private fun appUpdateSubtitle(state: AppUpdateState): String {
+    val checked = if (state.lastCheckedAt > 0L) {
+        "Última checagem: ${formatUpdateCheckTime(state.lastCheckedAt)}"
+    } else {
+        "Ainda não checou versões"
+    }
+    return when {
+        state.isDownloading -> "Baixando atualização..."
+        state.isDownloaded -> "Versão ${state.availableVersionName} pronta para instalar"
+        state.hasNewVersion -> "Nova versão ${state.availableVersionName} disponível"
+        state.hasError -> "Erro: ${state.error}"
+        state.autoDownloadEnabled -> "Checa no Wi-Fi. $checked"
+        else -> "Desligado. Versão atual ${state.currentVersionName}"
+    }
+}
+
+private fun formatUpdateCheckTime(timestamp: Long): String {
+    return SimpleDateFormat("dd/MM HH:mm", Locale.getDefault()).format(Date(timestamp))
 }
 
 @Composable

@@ -12,6 +12,8 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.null0x.chat.AppBranding
 import com.null0x.chat.AppVisibility
+import com.null0x.chat.ai.LlamaCppEngine
+import com.null0x.chat.ai.NullAiModelStore
 import com.null0x.chat.model.DeliveryState
 import com.null0x.chat.model.Message
 import com.null0x.chat.network.ChatNodeManager
@@ -38,6 +40,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         private const val CONTACT_REQUEST_PREFIX = "[Null0xChat:contact-request]"
         private const val CONTACT_ACCEPT_PREFIX = "[Null0xChat:contact-accept]"
         private const val CONTACT_ACCEPT_NOTICE_PREFIX = "accepted_notice"
+        const val NULL_AI_CONVERSATION = "null-ai"
     }
 
     data class ConversationPreview(
@@ -46,7 +49,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val emoji: String,
         val lastTimestamp: Long,
         val unreadCount: Int,
-        val previewLine: String
+        val previewLine: String,
+        val isAi: Boolean = false
     )
 
     data class SearchSummary(
@@ -119,6 +123,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private val nodeManager = ChatNodeManager
     private val chatStore = ChatStore(application.applicationContext)
+    private val aiEngine = LlamaCppEngine(application.applicationContext)
     private val profilePrefs = application.applicationContext.getSharedPreferences("profile", Context.MODE_PRIVATE)
     private val contactsPrefs = application.applicationContext.getSharedPreferences("contacts", Context.MODE_PRIVATE)
     private val routeNamesPrefs = application.applicationContext.getSharedPreferences("route_names", Context.MODE_PRIVATE)
@@ -129,6 +134,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val privacyNoticesKey = "privacy_notices"
     private val showChatPresenceStatusKey = "show_chat_presence_status"
     private val showChatLastActivityKey = "show_chat_last_activity"
+    private val nullAiEnabledKey = "null_ai_enabled"
     private val locationSharingModeKey = "location_sharing_mode"
     private val locationSharingRoutesKey = "location_sharing_routes"
     private val locationEmergencyRoutesKey = "location_emergency_routes"
@@ -342,12 +348,22 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         private set
     var showChatLastActivity by mutableStateOf(true)
         private set
+    var nullAiEnabled by mutableStateOf(true)
+        private set
+    var nullAiPreparing by mutableStateOf(false)
+        private set
+    var nullAiReady by mutableStateOf(false)
+        private set
+    var nullAiPrepareError by mutableStateOf("")
+        private set
     private var profileEmoji by mutableStateOf("🙂")
     private var profileBio by mutableStateOf("")
     private var routeNamesVersion by mutableStateOf(0)
     private var openChatJob: Job? = null
     private var cleanupChatJob: Job? = null
     private var previewsJob: Job? = null
+    private var nullAiPrepareJob: Job? = null
+    private var nullAiPreparedModelPath: String = ""
     private var warmCacheJob: Job? = null
     private var conversationPreviewCache by mutableStateOf<List<ConversationPreview>>(emptyList())
     private val conversationHistoryLock = Any()
@@ -403,6 +419,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         defaultAllowScreenshots = profilePrefs.getBoolean("chat_screenshots_enabled", false)
         showChatPresenceStatus = profilePrefs.getBoolean(showChatPresenceStatusKey, true)
         showChatLastActivity = profilePrefs.getBoolean(showChatLastActivityKey, true)
+        nullAiEnabled = profilePrefs.getBoolean(nullAiEnabledKey, true)
         currentKeepViewedMessages = defaultKeepViewedMessages
         currentAllowScreenshots = defaultAllowScreenshots
         profileEmoji = profilePrefs.getString("profile_emoji", "🙂")?.takeIf { it.isNotBlank() } ?: "🙂"
@@ -414,6 +431,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         locationSharingAllowedRoutes = loadLocationSharingRoutes()
         locationEmergencyAllowedRoutes = loadLocationEmergencyRoutes()
         myUsername = lastKnownOwnRoute().ifBlank { myUsername }
+        NullAiModelStore.scheduleAutoDownload(application.applicationContext)
         nodeManager.setChatMessageAuthorization { route -> canMessageContact(route) }
         prepareLocalListsSynchronously()
         warmConversationHistoryCacheAsync()
@@ -433,7 +451,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         val current = canonicalConversationKey(targetUsername)
-        if (current.isNotBlank()) {
+        if (current.isNotBlank() && !isNullAiConversation(current)) {
             AppVisibility.markChatClosed(current)
             sendChatPresence(current, "idle")
             sendChatPresence(current, "closed")
@@ -447,12 +465,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     fun selectTarget(username: String) {
         val cleanTarget = canonicalConversationKey(username)
+        if (isNullAiConversation(cleanTarget) && !nullAiEnabled) return
         val previousTarget = canonicalConversationKey(targetUsername)
         if (cleanTarget.isNotBlank() && cleanTarget == previousTarget && inChat && currentChatLoaded) {
             return
         }
         openChatJob?.cancel()
-        if (previousTarget.isNotBlank() && previousTarget != cleanTarget) {
+        if (previousTarget.isNotBlank() && previousTarget != cleanTarget && !isNullAiConversation(previousTarget)) {
             AppVisibility.markChatClosed(previousTarget)
             sendChatPresence(previousTarget, "idle")
             sendChatPresence(previousTarget, "closed")
@@ -465,6 +484,23 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         cleanupChatJob = null
         chatOpenedAtMs = System.currentTimeMillis()
         if (cleanTarget.isBlank()) return
+
+        if (isNullAiConversation(cleanTarget)) {
+            setConversationHidden(cleanTarget, false)
+            chatStore.rememberPeer(cleanTarget, nullAiDisplayName())
+            messages.addAll(conversationMessagesFor(cleanTarget))
+            currentChatLoaded = true
+            if (!startedConversations.contains(cleanTarget)) {
+                startedConversations.add(0, cleanTarget)
+            }
+            unreadByPeer[cleanTarget] = 0
+            seenButNotClearedByPeer[cleanTarget] = true
+            inChat = true
+            conversationsVersion++
+            refreshConversationPreviewsAsync()
+            prepareNullAi()
+            return
+        }
 
         messages.addAll(conversationMessagesFor(cleanTarget))
         currentChatLoaded = true
@@ -493,7 +529,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val previous = targetUsername
         openChatJob?.cancel()
         openChatJob = null
-        if (previous.isNotBlank()) {
+        if (previous.isNotBlank() && !isNullAiConversation(previous)) {
             AppVisibility.markChatClosed(previous)
             sendChatPresence(previous, "idle")
             sendChatPresence(previous, "closed")
@@ -541,6 +577,32 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         profilePrefs.edit().putBoolean(showChatLastActivityKey, visible).apply()
     }
 
+    fun updateNullAiEnabled(enabled: Boolean) {
+        if (nullAiEnabled == enabled) return
+        nullAiEnabled = enabled
+        profilePrefs.edit().putBoolean(nullAiEnabledKey, enabled).apply()
+        setConversationHidden(NULL_AI_CONVERSATION, !enabled)
+        if (!enabled) {
+            nullAiPrepareJob?.cancel()
+            nullAiPreparing = false
+            nullAiReady = false
+            nullAiPrepareError = ""
+            nullAiPreparedModelPath = ""
+        }
+        if (!enabled && isNullAiConversation(targetUsername)) {
+            openHome()
+        }
+        if (enabled && isNullAiConversation(targetUsername)) {
+            prepareNullAi()
+        }
+        conversationsVersion++
+        refreshConversationPreviewsAsync()
+    }
+
+    fun disableNullAi() {
+        updateNullAiEnabled(false)
+    }
+
     fun updateScreenshotsPreference(enabled: Boolean) {
         if (defaultAllowScreenshots == enabled) return
         defaultAllowScreenshots = enabled
@@ -585,7 +647,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         profileMapColorArgb = colorArgb
         profilePrefs.edit().putInt(profileMapColorKey, colorArgb).apply()
         nodeManager.setProfileMapColor(getApplication(), colorArgb)
+        conversationsVersion++
         routeNamesVersion++
+        refreshConversationPreviewsAsync()
     }
 
     fun updateProfileBio(bio: String) {
@@ -1120,12 +1184,21 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun prepareLocalListsSynchronously() {
         if (localListsPrepared) return
-        val loadedConversations = chatStore.knownPeers()
+        val loadedConversations = buildList {
+            if (nullAiEnabled) {
+                add(NULL_AI_CONVERSATION)
+            }
+            addAll(chatStore.knownPeers())
+        }
             .map { canonicalConversationKey(it) }
             .filter { it.isNotBlank() }
+            .filter { nullAiEnabled || !isNullAiConversation(it) }
             .distinct()
         loadedConversations.forEach { peer ->
-            chatStore.rememberPeer(peer, conversationLabelFor(peer))
+            chatStore.rememberPeer(
+                peer,
+                if (isNullAiConversation(peer)) nullAiDisplayName() else conversationLabelFor(peer)
+            )
         }
         startedConversations.clear()
         startedConversations.addAll(loadedConversations)
@@ -1389,6 +1462,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         if (target.isBlank()) return
+        if (isNullAiConversation(target)) {
+            sendToNullAi(target, message)
+            return
+        }
         if (isContactBlocked(target)) return
         if (!canQueueOutgoingMessageFor(target)) return
         setConversationHidden(target, false)
@@ -1438,9 +1515,87 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         scheduleOutgoingDelivery(target, priorityMessageId = localId)
     }
 
+    private fun sendToNullAi(target: String, message: String) {
+        if (!nullAiEnabled) return
+        if (!isNullAiConversationAvailable()) {
+            prepareNullAi()
+            return
+        }
+        val localId = java.util.UUID.randomUUID().toString()
+        val outgoing = Message(
+            id = localId,
+            text = message,
+            isMine = true,
+            delivery = DeliveryState.Delivered
+        )
+        clearDraft(target)
+        setConversationHidden(target, false)
+        chatStore.rememberPeer(target, nullAiDisplayName())
+        if (appendConversationMessage(target, outgoing)) {
+            appendVisibleMessage(outgoing)
+        }
+        chatStore.upsert(target, outgoing)
+        conversationsVersion++
+        refreshConversationPreviewsAsync()
+
+        viewModelScope.launch {
+            val replyPrompt = buildNullAiPrompt(target)
+            val reply = aiEngine.generateReply(replyPrompt).getOrElse { error ->
+                error.message ?: "Nao consegui gerar resposta agora."
+            }.let(::cleanNullAiReply)
+            val incoming = Message(
+                text = reply,
+                isMine = false,
+                delivery = DeliveryState.Delivered
+            )
+            if (appendConversationMessage(target, incoming)) {
+                appendVisibleMessage(incoming)
+            }
+            chatStore.upsert(target, incoming)
+            conversationsVersion++
+            refreshConversationPreviewsAsync()
+        }
+    }
+
+    private fun buildNullAiPrompt(target: String): String {
+        val history = conversationMessagesFor(target).takeLast(4)
+        val systemInstructions = listOf(
+            "Voce e a Null IA, uma assistente local.",
+            "Responda em portugues, em 1 ou 2 frases curtas.",
+            "Nao cumprimente sem necessidade.",
+            "Nao repita o usuario e nao use rotulos como Usuario:, Null IA:, Assistente: ou AI:.",
+            "Comece direto na resposta e termine sem assinatura."
+        )
+        return buildString {
+            systemInstructions.forEach { line ->
+                append(line).append('\n')
+            }
+            append('\n')
+            history.forEach { item ->
+                val speaker = if (item.isMine) "Usuario" else "Null IA"
+                val content = item.text.trim().replace(Regex("\\s+"), " ").take(180)
+                append(speaker).append(": ").append(content).append('\n')
+            }
+            append("Null IA:")
+        }
+    }
+
+    private fun cleanNullAiReply(rawReply: String): String {
+        var reply = rawReply.trim()
+        reply = reply
+            .replace(Regex("(?i)\\s*(null ia|assistente|assistant|ai)\\s*:\\s*$"), "")
+            .replace(Regex("(?i)^\\s*(null ia|assistente|assistant|ai)\\s*:\\s*"), "")
+            .replace(Regex("(?m)^\\s*(Usuario|User)\\s*:\\s*.*$"), "")
+            .replace(Regex("(?m)^\\s*(Null IA|Assistente|Assistant|AI)\\s*:\\s*.*$"), "")
+            .replace(Regex("\\n{3,}"), "\n\n")
+            .trim()
+        reply = reply.takeIf { it.isNotBlank() } ?: "Nao consegui gerar resposta agora."
+        return reply.ifBlank { "Nao consegui gerar resposta agora." }
+    }
+
     private fun sendChatPresence(route: String, state: String) {
         val clean = canonicalConversationKey(route)
-        if (clean.isBlank()) return
+        if (clean.isBlank() || isNullAiConversation(clean)) return
         nodeManager.sendChatPresence(clean, state)
     }
 
@@ -1477,6 +1632,52 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             messages.toList()
         } else {
             conversationMessagesFor(target)
+        }
+    }
+
+    fun isNullAiConversation(username: String): Boolean {
+        return canonicalConversationKey(username) == NULL_AI_CONVERSATION
+    }
+
+    fun nullAiDisplayName(): String = "Null IA"
+
+    fun nullAiSubtitle(): String {
+        return when {
+            nullAiPreparing -> "Preparando modelo..."
+            nullAiPrepareError.isNotBlank() -> "IA local indisponivel"
+            else -> "IA local • ${aiEngine.activeModel.label}"
+        }
+    }
+
+    fun isNullAiConversationAvailable(): Boolean {
+        return nullAiEnabled && nullAiReady && !nullAiPreparing && nullAiPrepareError.isBlank()
+    }
+
+    private fun prepareNullAi() {
+        if (!nullAiEnabled) return
+        val modelPath = aiEngine.activeModel.path
+        if (nullAiReady && nullAiPreparedModelPath == modelPath) return
+        if (nullAiPreparing) return
+
+        nullAiReady = false
+        nullAiPrepareError = ""
+        nullAiPreparing = true
+        nullAiPrepareJob?.cancel()
+        nullAiPrepareJob = viewModelScope.launch {
+            val result = aiEngine.prepare()
+            result
+                .onSuccess {
+                    nullAiPreparedModelPath = aiEngine.activeModel.path
+                    nullAiReady = true
+                    nullAiPrepareError = ""
+                }
+                .onFailure { error ->
+                    nullAiReady = false
+                    nullAiPrepareError = error.message ?: "Nao consegui preparar a Null IA."
+                }
+            nullAiPreparing = false
+            conversationsVersion++
+            refreshConversationPreviewsAsync()
         }
     }
 
@@ -1549,6 +1750,21 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             val target = canonicalConversationKey(username)
             val items = conversationMessagesFor(target).takeLast(16)
             val last = items.lastOrNull()
+            if (isNullAiConversation(target)) {
+                return@map ConversationPreview(
+                    username = target,
+                    displayName = nullAiDisplayName(),
+                    emoji = "IA",
+                    lastTimestamp = last?.timestamp ?: 0L,
+                    unreadCount = unreadByPeer[target] ?: 0,
+                    previewLine = if (items.isEmpty()) {
+                        "IA local desativavel"
+                    } else {
+                        previewLineFor(items, unreadByPeer[target] ?: 0)
+                    },
+                    isAi = true
+                )
+            }
             val fallbackLine = when {
                 hasDraft(target) -> "Rascunho"
                 isContactBlocked(target) -> "Bloqueado"
@@ -1572,7 +1788,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 }
             )
         }.sortedWith(
-            compareByDescending<ConversationPreview> { it.lastTimestamp }
+            compareByDescending<ConversationPreview> { if (it.isAi) 1 else 0 }
+                .thenByDescending { it.lastTimestamp }
                 .thenByDescending { conversationPriority(it.username) }
                 .thenBy { it.displayName.lowercase() }
         )
@@ -1599,12 +1816,16 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             contactRoutesWithPrefix("accepted:") +
             contactRoutesWithPrefix("pending:")
         return buildList {
+            if (nullAiEnabled) {
+                add(NULL_AI_CONVERSATION)
+            }
             addAll(startedConversations.map { canonicalConversationKey(it) })
             addAll(chatStore.knownPeers().map { canonicalConversationKey(it) })
             addAll(contactRoutes.map { canonicalConversationKey(it) })
         }
             .map { canonicalConversationKey(it) }
             .filter { it.isNotBlank() }
+            .filter { nullAiEnabled || !isNullAiConversation(it) }
             .filterNot { isContactBlocked(it) }
             .filterNot { contactsPrefs.getBoolean(contactRemovedKey(it), false) }
             .filterNot { isConversationHidden(it) }
@@ -1614,6 +1835,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private fun conversationPriority(route: String): Int {
         val clean = canonicalConversationKey(route)
         return when {
+            isNullAiConversation(clean) -> 4
             isContactAccepted(clean) -> 3
             isContactRequested(clean) -> 2
             isContactPending(clean) -> 1

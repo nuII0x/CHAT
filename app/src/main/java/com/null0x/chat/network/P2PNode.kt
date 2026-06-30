@@ -6,6 +6,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import android.util.Log
+import com.null0x.chat.AppBranding
 import com.null0x.chat.security.identity.OnionHttpRequest
 import com.null0x.chat.security.identity.OnionHttpResponse
 import java.io.BufferedReader
@@ -151,7 +153,16 @@ class P2PNode(
     private fun sendEncryptedLine(endpoint: RouteEndpoint, encrypted: String) {
         var lastError: Throwable? = null
         repeat(2) { attempt ->
-            val connection = openOutgoingConnection(endpoint, forceNew = attempt > 0)
+            val connection = runCatching {
+                openOutgoingConnection(endpoint, forceNew = attempt > 0)
+            }.getOrElse { error ->
+                lastError = error
+                Log.w(
+                    "${AppBranding.APP_NAME}P2P",
+                    "Falha ao abrir conexao Tor para ${endpoint.maskedHost()}: ${error.message.orEmpty()}"
+                )
+                return@repeat
+            }
             val result = runCatching {
                 synchronized(connection) {
                     connection.writer.write(encrypted)
@@ -162,6 +173,10 @@ class P2PNode(
             }
             if (result.isSuccess) return
             lastError = result.exceptionOrNull()
+            Log.w(
+                "${AppBranding.APP_NAME}P2P",
+                "Falha ao enviar para ${endpoint.maskedHost()}; descartando conexao: ${lastError?.message.orEmpty()}"
+            )
             dropOutgoingConnection(endpoint, connection)
         }
         throw IOException("Falha ao enviar mensagem pela conexao ativa", lastError)
@@ -175,11 +190,25 @@ class P2PNode(
                 return existing
             }
             existing?.closeQuietly()
-            val socket = openSocks5Socket(endpoint)
-            val writer = BufferedWriter(OutputStreamWriter(socket.getOutputStream(), Charsets.UTF_8))
-            return OutgoingConnection(socket, writer, System.currentTimeMillis()).also {
-                outgoingConnections[endpoint] = it
+            outgoingConnections.remove(endpoint)
+        }
+
+        val socket = openSocks5Socket(endpoint)
+        val connection = OutgoingConnection(
+            socket = socket,
+            writer = BufferedWriter(OutputStreamWriter(socket.getOutputStream(), Charsets.UTF_8)),
+            lastUsedAtMs = System.currentTimeMillis()
+        )
+        synchronized(outgoingConnectionsLock) {
+            pruneIdleOutgoingConnectionsLocked()
+            val existing = outgoingConnections[endpoint]
+            if (!forceNew && existing != null && !existing.socket.isClosed) {
+                connection.closeQuietly()
+                return existing
             }
+            existing?.closeQuietly()
+            outgoingConnections[endpoint] = connection
+            return connection
         }
     }
 
@@ -341,6 +370,10 @@ class P2PNode(
     }
 
     private data class RouteEndpoint(val host: String, val port: Int) {
+        fun maskedHost(): String {
+            return "${host.take(6)}...${host.takeLast(6)}:$port"
+        }
+
         companion object {
             fun parse(route: String): RouteEndpoint? {
                 val clean = route.trim()

@@ -41,6 +41,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
@@ -128,7 +130,11 @@ fun RouteProfileScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        ProfileAvatar(text = profile.displayName, emoji = profile.emoji)
+                        ProfileAvatar(
+                            text = profile.displayName,
+                            emoji = profile.emoji,
+                            backgroundColor = Color(profile.mapColorArgb)
+                        )
                         Column(modifier = Modifier.widthIn(max = 260.dp)) {
                             Text(
                                 text = profile.displayName.ifBlank { "Rota" },
@@ -353,11 +359,12 @@ private fun ProfileBlockContactConfirmationDialog(
 }
 
 @Composable
-private fun ProfileAvatar(text: String, emoji: String) {
+private fun ProfileAvatar(text: String, emoji: String, backgroundColor: Color) {
     val avatarSize = 72.dp
+    val contentColor = if (backgroundColor.luminance() > 0.58f) Color.Black else Color.White
     Surface(
         shape = CircleShape,
-        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+        color = backgroundColor,
         modifier = Modifier
             .width(avatarSize)
             .height(avatarSize)
@@ -369,7 +376,7 @@ private fun ProfileAvatar(text: String, emoji: String) {
                 } else {
                     emoji
                 },
-                color = MaterialTheme.colorScheme.primary,
+                color = contentColor,
                 fontWeight = FontWeight.Bold,
                 style = MaterialTheme.typography.titleMedium
             )

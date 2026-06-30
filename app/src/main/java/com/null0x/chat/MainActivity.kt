@@ -78,6 +78,7 @@ import com.null0x.chat.ui.theme.ChatTheme
 import com.null0x.chat.ui.theme.AppearancePreference
 import com.null0x.chat.ui.theme.ThemeMode
 import com.null0x.chat.ui.theme.ThemePreference
+import com.null0x.chat.update.AppUpdateManager
 import com.null0x.chat.viewmodel.ChatViewModel
 
 class MainActivity : ComponentActivity() {
@@ -121,6 +122,7 @@ class MainActivity : ComponentActivity() {
         ThemePreference.initialize(this)
         AppearancePreference.initialize(this)
         BackgroundConnectionModeController.initialize(this)
+        AppUpdateManager.initialize(this)
 
         val vmFactory = object : ViewModelProvider.Factory {
             override fun <T : ViewModel> create(modelClass: Class<T>): T {
@@ -288,6 +290,7 @@ class MainActivity : ComponentActivity() {
 
     private fun requestBackgroundBootstrap() {
         BackgroundConnectionModeController.onAppVisible(applicationContext)
+        AppUpdateManager.enqueueCheck(applicationContext)
     }
 }
 

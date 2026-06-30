@@ -52,7 +52,7 @@ object TorManager {
     val diagnostics: StateFlow<List<String>> = _diagnostics.asStateFlow()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val onionHostRegex = Regex("^[a-z2-7]{56}\\.onion$")
-    private const val START_TIMEOUT_MS = 45_000L
+    private const val START_TIMEOUT_MS = 90_000L
     private const val HOSTNAME_TIMEOUT_MS = 30_000L
     private const val HOSTNAME_CHECK_INTERVAL_MS = 250L
     private const val DEFAULT_SOCKS_PORT = 9050
@@ -282,6 +282,10 @@ object TorManager {
             waitForNetwork(appContext)
             return
         }
+        if (_status.value is Status.Starting || restartJob?.isActive == true) {
+            record(appContext, "recuperacao Tor ignorada: inicializacao em andamento")
+            return
+        }
         record(appContext, "recuperando Tor apos falha de envio: ${reason.ifBlank { "sem detalhe" }}")
         registerRestartFailure()
         scheduleRestart(appContext, delayMs = nextRestartDelay(requestedDelayMs = 10_000L))
@@ -415,7 +419,7 @@ object TorManager {
             record(appContext, "rede Android disponivel")
             val status = _status.value
             if (!manualStop && status !is Status.Ready && status !is Status.Starting) {
-                scheduleRestart(appContext, delayMs = 250)
+                scheduleRestart(appContext, delayMs = 1_500)
             }
         }
 
@@ -430,7 +434,7 @@ object TorManager {
                 record(appContext, "rede Android validada")
                 val status = _status.value
                 if (!manualStop && status !is Status.Ready && status !is Status.Starting) {
-                    scheduleRestart(appContext, delayMs = 250)
+                    scheduleRestart(appContext, delayMs = 1_500)
                 }
             } else {
                 if (networkAvailable == available) return
@@ -588,7 +592,7 @@ object TorManager {
         }
     }
 
-    private fun scheduleNetworkLoss(appContext: Context, reason: String, delayMs: Long = 1_200L) {
+    private fun scheduleNetworkLoss(appContext: Context, reason: String, delayMs: Long = 5_000L) {
         if (manualStop) return
         if (networkLossJob?.isActive == true) {
             record(appContext, "queda de rede já aguardando confirmação")
@@ -611,7 +615,7 @@ object TorManager {
                 networkRecoveryJob?.cancel()
                 networkRecoveryJob = null
                 if (_status.value !is Status.Ready && _status.value !is Status.Starting) {
-                    scheduleRestart(appContext, delayMs = 250)
+                    scheduleRestart(appContext, delayMs = 1_500)
                 }
             }
         }
@@ -647,7 +651,7 @@ object TorManager {
             if (!manualStop) {
                 record(appContext, "tempo esgotado aguardando nome onion")
                 _status.value = Status.Error(WAITING_NETWORK_MESSAGE)
-                scheduleRestart(appContext, delayMs = 750)
+                scheduleRestart(appContext, delayMs = 5_000)
             }
         }
     }
@@ -671,7 +675,7 @@ object TorManager {
             if (!manualStop && _status.value is Status.Starting) {
                 record(appContext, "timeout de inicializacao")
                 _status.value = Status.Error(WAITING_NETWORK_MESSAGE)
-                scheduleRestart(appContext, delayMs = 750)
+                scheduleRestart(appContext, delayMs = 5_000)
             }
         }
     }
@@ -709,7 +713,7 @@ object TorManager {
                 _networkAvailableState.value = true
                 networkRecoveryJob = null
                 record(appContext, "internet voltou; retomando Tor")
-                scheduleRestart(appContext, delayMs = 250)
+                scheduleRestart(appContext, delayMs = 1_500)
                 return@launch
             }
         }
@@ -733,8 +737,7 @@ object TorManager {
     }
 
     private fun hasValidatedInternet(capabilities: NetworkCapabilities): Boolean {
-        return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
-            capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+        return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
     }
 
     private fun readOnionHostname(context: Context): String? {

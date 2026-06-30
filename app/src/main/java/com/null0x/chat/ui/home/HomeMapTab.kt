@@ -494,6 +494,8 @@ private fun OrbitMapContent(
             val effectiveZoom = zoom
             val metersPerPixel = (baseMetersPerPixel / effectiveZoom).coerceIn(minMetersPerPixel, maxMetersPerPixel)
             val worldWidthPx = worldCircumferenceMeters / metersPerPixel
+            val worldHeightPx = worldHeightMeters / metersPerPixel
+            val wholeMapHeightVisible = worldHeightPx <= heightPx + 1f
             val renderPan = Offset(
                 x = wrapHorizontalMapPan(pan.x, worldWidthPx),
                 y = clampVerticalMapPan(
@@ -619,28 +621,6 @@ private fun OrbitMapContent(
                         outlineColor = gridColor.copy(alpha = if (useDarkMapColors) 0.22f else 0.30f)
                     )
                 }
-                val gridStep = 72.dp.toPx()
-                var x = (center.x + renderPan.x) % gridStep
-                while (x < size.width) {
-                    drawLine(
-                        color = gridColor,
-                        start = Offset(x, 0f),
-                        end = Offset(x, size.height),
-                        strokeWidth = 1.dp.toPx()
-                    )
-                    x += gridStep
-                }
-                var y = (center.y + renderPan.y) % gridStep
-                while (y < size.height) {
-                    drawLine(
-                        color = gridColor,
-                        start = Offset(0f, y),
-                        end = Offset(size.width, y),
-                        strokeWidth = 1.dp.toPx(),
-                        cap = StrokeCap.Round
-                    )
-                    y += gridStep
-                }
                 horizontalCopies.forEach { copyOffset ->
                     drawOfflineMapLabels(
                         countryLabels = countryLabels,
@@ -651,7 +631,8 @@ private fun OrbitMapContent(
                         metersPerPixel = metersPerPixel,
                         labelColor = cityColor,
                         dotColor = cityDotColor,
-                        occupiedBoxes = occupiedUserLabelBoxes
+                        occupiedBoxes = occupiedUserLabelBoxes,
+                        showContinentOverview = wholeMapHeightVisible
                     )
                 }
                 positionedUsers.forEach { positionedUser ->
@@ -1393,7 +1374,8 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawOfflineMapLabel
     metersPerPixel: Float,
     labelColor: Color,
     dotColor: Color,
-    occupiedBoxes: List<LabelBox>
+    occupiedBoxes: List<LabelBox>,
+    showContinentOverview: Boolean
 ) {
     if (countryLabels.isEmpty() && cityPoints.isEmpty()) return
     val labelZoom = mapLabelZoom(metersPerPixel)
@@ -1419,7 +1401,7 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawOfflineMapLabel
     val placedLabels = mutableListOf<LabelBox>()
     val labelRenderPadding = 220f
 
-    if (metersPerPixel > continentOnlyMetersPerPixel) {
+    if (showContinentOverview || metersPerPixel > continentOnlyMetersPerPixel) {
         drawContinentLabels(
             origin = origin,
             center = center,
@@ -1987,6 +1969,7 @@ private fun approximateGeoDistanceScore(
 
 private fun isWholeEarthViewport(viewport: GeoBounds, metersPerPixel: Float): Boolean {
     return metersPerPixel >= 22_000f ||
+        viewport.latitudeSpan() >= 168.0 ||
         (viewport.longitudeSpan() >= 260.0 && viewport.latitudeSpan() >= 120.0)
 }
 
@@ -2183,7 +2166,7 @@ private suspend fun PointerInputScope.detectStableMapTransformGestures(
         var previousSinglePointer: Offset? = null
         var previousCentroid: Offset? = null
         var previousSpan: Float? = null
-        var lockedToPinchUntilRelease = false
+        var resumedSinglePointerAfterPinch = false
         var tapStartPosition: Offset? = null
         var latestSinglePointer: Offset? = null
         var maxTapMove = 0f
@@ -2212,18 +2195,18 @@ private suspend fun PointerInputScope.detectStableMapTransformGestures(
             }
 
             if (pressedChanges.size == 1) {
-                if (lockedToPinchUntilRelease) {
-                    previousSinglePointer = null
+                val pointer = pressedChanges.first()
+                val currentPosition = pointer.position
+                if (resumedSinglePointerAfterPinch) {
+                    previousSinglePointer = currentPosition
                     previousCentroid = null
                     previousSpan = null
-                    tapStartPosition = null
                     latestSinglePointer = null
-                    hadMultiplePointers = true
+                    tapStartPosition = null
+                    resumedSinglePointerAfterPinch = false
                     pressedChanges.forEach { it.consume() }
                     continue
                 }
-                val pointer = pressedChanges.first()
-                val currentPosition = pointer.position
                 if (tapStartPosition == null) {
                     tapStartPosition = currentPosition
                 }
@@ -2247,8 +2230,8 @@ private suspend fun PointerInputScope.detectStableMapTransformGestures(
                 continue
             }
 
-            lockedToPinchUntilRelease = true
             hadMultiplePointers = true
+            resumedSinglePointerAfterPinch = true
             tapStartPosition = null
             latestSinglePointer = null
             previousSinglePointer = null
