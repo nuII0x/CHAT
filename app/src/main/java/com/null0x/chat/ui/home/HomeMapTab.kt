@@ -417,6 +417,9 @@ private fun OrbitMapContent(
     val cityPoints = rememberOfflineCityPoints()
     val countryLabels = rememberOfflineCountryLabels()
     val adminRegions = rememberOfflineAdminRegions()
+    val brazilPlaces = rememberBrazilPlaces()
+    val brazilStateBoundaries = rememberBrazilStateBoundaries()
+    val countryBoundaries = rememberCountryBoundaries()
     val mapPalette = remember(useDarkMapColors) { offlineMapPalette(useDarkMapColors) }
     var selectedUser by remember { mutableStateOf<OrbitUser?>(null) }
     var showSelfSheet by remember { mutableStateOf(false) }
@@ -521,14 +524,15 @@ private fun OrbitMapContent(
                 width = widthPx,
                 height = heightPx
             )
-            val dynamicMapTitle = remember(centerGeoPoint, viewportGeoBounds, metersPerPixel, countryLabels, cityPoints, adminRegions) {
+            val dynamicMapTitle = remember(centerGeoPoint, viewportGeoBounds, metersPerPixel, countryLabels, cityPoints, adminRegions, brazilPlaces) {
                 titleForMapCenter(
                     center = centerGeoPoint,
                     viewport = viewportGeoBounds,
                     metersPerPixel = metersPerPixel,
                     countryLabels = countryLabels,
                     cityPoints = cityPoints,
-                    adminRegions = adminRegions
+                    adminRegions = adminRegions,
+                    brazilPlaces = brazilPlaces.all
                 )
             }
             LaunchedEffect(dynamicMapTitle) {
@@ -542,6 +546,8 @@ private fun OrbitMapContent(
             val gridColor = mapPalette.grid
             val mapBackground = mapPalette.ocean
             val landColor = mapPalette.land
+            val boundaryColor = mapPalette.boundary
+            val stateBoundaryColor = mapPalette.stateBoundary
             val cityColor = mapPalette.cityLabel
             val cityDotColor = mapPalette.cityDot
             val locationMapCards = remember(mapUsers) {
@@ -622,6 +628,30 @@ private fun OrbitMapContent(
                     )
                 }
                 horizontalCopies.forEach { copyOffset ->
+                    drawMapBoundaries(
+                        boundaryRings = countryBoundaries,
+                        viewport = viewportGeoBounds,
+                        origin = origin,
+                        center = center,
+                        pan = renderPan.copy(x = renderPan.x + copyOffset),
+                        metersPerPixel = metersPerPixel,
+                        color = boundaryColor,
+                        strokeWidth = 0.9.dp.toPx(),
+                        visibleWhen = metersPerPixel <= countryBoundaryMetersPerPixel
+                    )
+                    drawMapBoundaries(
+                        boundaryRings = brazilStateBoundaries,
+                        viewport = viewportGeoBounds,
+                        origin = origin,
+                        center = center,
+                        pan = renderPan.copy(x = renderPan.x + copyOffset),
+                        metersPerPixel = metersPerPixel,
+                        color = stateBoundaryColor,
+                        strokeWidth = 1.15.dp.toPx(),
+                        visibleWhen = metersPerPixel <= stateBoundaryMetersPerPixel
+                    )
+                }
+                horizontalCopies.forEach { copyOffset ->
                     drawOfflineMapLabels(
                         countryLabels = countryLabels,
                         adminRegions = adminRegions,
@@ -634,6 +664,17 @@ private fun OrbitMapContent(
                         dotColor = cityDotColor,
                         occupiedBoxes = occupiedUserLabelBoxes,
                         showContinentOverview = wholeMapHeightVisible
+                    )
+                    drawBrazilPlaceLabels(
+                        places = brazilPlaces,
+                        viewport = viewportGeoBounds,
+                        origin = origin,
+                        center = center,
+                        pan = renderPan.copy(x = renderPan.x + copyOffset),
+                        metersPerPixel = metersPerPixel,
+                        labelColor = cityColor,
+                        dotColor = cityDotColor,
+                        occupiedBoxes = occupiedUserLabelBoxes
                     )
                 }
                 positionedUsers.forEach { positionedUser ->
@@ -1227,6 +1268,30 @@ private fun rememberOfflineAdminRegions(): List<AdminRegion> {
     }
 }
 
+@Composable
+private fun rememberBrazilPlaces(): BrazilPlacesData {
+    val context = LocalContext.current
+    return remember(context) {
+        loadBrazilPlaces(context)
+    }
+}
+
+@Composable
+private fun rememberBrazilStateBoundaries(): List<BoundaryRing> {
+    val context = LocalContext.current
+    return remember(context) {
+        loadBoundaryRings(context, "map/br_state_boundaries.json")
+    }
+}
+
+@Composable
+private fun rememberCountryBoundaries(): List<BoundaryRing> {
+    val context = LocalContext.current
+    return remember(context) {
+        loadBoundaryRings(context, "map/ne_country_boundaries_110m.json")
+    }
+}
+
 private fun loadOfflineLandRings(context: Context, assetPath: String): List<LandRing> {
     val raw = runCatching {
         context.assets.open(assetPath).bufferedReader().use { it.readText() }
@@ -1258,16 +1323,23 @@ private fun loadOfflineCityPoints(context: Context): List<CityPoint> {
             val city = cities.optJSONObject(index) ?: continue
             val name = city.optString("name").trim()
             if (name.isBlank()) continue
+            val longitude = city.optDouble("lon")
+            val latitude = city.optDouble("lat")
+            if (isInsideBrazilLabelBounds(longitude, latitude)) continue
             add(
                 CityPoint(
                     name = name,
-                    longitude = city.optDouble("lon"),
-                    latitude = city.optDouble("lat"),
+                    longitude = longitude,
+                    latitude = latitude,
                     importanceRank = cityImportanceRank(name)
                 )
             )
         }
     }
+}
+
+private fun isInsideBrazilLabelBounds(longitude: Double, latitude: Double): Boolean {
+    return longitude in -74.5..-33.0 && latitude in -34.2..6.0
 }
 
 private fun loadOfflineCountryLabels(context: Context): List<CountryLabel> {
@@ -1323,6 +1395,78 @@ private fun loadOfflineAdminRegions(context: Context): List<AdminRegion> {
     }
 }
 
+private fun loadBrazilPlaces(context: Context): BrazilPlacesData {
+    val raw = runCatching {
+        context.assets.open("map/br_places.json").bufferedReader().use { it.readText() }
+    }.getOrNull() ?: return BrazilPlacesData(emptyList())
+    val places = runCatching { JSONArray(raw) }.getOrNull() ?: return BrazilPlacesData(emptyList())
+    return BrazilPlacesData(buildList {
+        for (index in 0 until places.length()) {
+            val place = places.optJSONObject(index) ?: continue
+            val name = place.optString("n").trim()
+            if (name.isBlank()) continue
+            add(
+                BrazilPlacePoint(
+                    name = name,
+                    longitude = place.optDouble("lon"),
+                    latitude = place.optDouble("lat"),
+                    kind = when (place.optString("k")) {
+                        "d" -> BrazilPlaceKind.District
+                        "s" -> BrazilPlaceKind.Subdistrict
+                        else -> BrazilPlaceKind.Municipality
+                    },
+                    rank = place.optInt("rank", 3)
+                )
+            )
+        }
+    })
+}
+
+private fun loadBoundaryRings(context: Context, assetPath: String): List<BoundaryRing> {
+    val raw = runCatching {
+        context.assets.open(assetPath).bufferedReader().use { it.readText() }
+    }.getOrNull() ?: return emptyList()
+    val features = runCatching { JSONArray(raw) }.getOrNull() ?: return emptyList()
+    return buildList {
+        for (featureIndex in 0 until features.length()) {
+            val feature = features.optJSONObject(featureIndex) ?: continue
+            val rings = feature.optJSONArray("rings") ?: continue
+            for (ringIndex in 0 until rings.length()) {
+                boundaryRingFromJson(rings.optJSONArray(ringIndex))?.let { add(it) }
+            }
+        }
+    }
+}
+
+private fun boundaryRingFromJson(ring: JSONArray?): BoundaryRing? {
+    if (ring == null || ring.length() < 2) return null
+    var minLongitude = Double.POSITIVE_INFINITY
+    var minLatitude = Double.POSITIVE_INFINITY
+    var maxLongitude = Double.NEGATIVE_INFINITY
+    var maxLatitude = Double.NEGATIVE_INFINITY
+    val points = buildList {
+        for (pointIndex in 0 until ring.length()) {
+            val point = ring.optJSONArray(pointIndex) ?: continue
+            val longitude = point.optDouble(0)
+            val latitude = point.optDouble(1)
+            if (!longitude.isFinite() || !latitude.isFinite()) continue
+            minLongitude = minOf(minLongitude, longitude)
+            minLatitude = minOf(minLatitude, latitude)
+            maxLongitude = maxOf(maxLongitude, longitude)
+            maxLatitude = maxOf(maxLatitude, latitude)
+            add(GeoPoint(longitude = longitude, latitude = latitude))
+        }
+    }
+    if (points.size < 2) return null
+    return BoundaryRing(
+        points = points.withContinuousLongitudes(),
+        minLongitude = minLongitude,
+        minLatitude = minLatitude,
+        maxLongitude = maxLongitude,
+        maxLatitude = maxLatitude
+    )
+}
+
 private data class OfflineLandData(
     val land50m: List<LandRing>,
     val land110m: List<LandRing>
@@ -1334,6 +1478,35 @@ private data class OfflineLandData(
             else -> land110m
         }
     }
+}
+
+private data class BrazilPlacesData(
+    val all: List<BrazilPlacePoint>
+) {
+    private val byCell: Map<Long, List<BrazilPlacePoint>> = all.groupBy { place ->
+        brazilPlaceCellKey(place.longitude, place.latitude)
+    }
+
+    fun near(viewport: GeoBounds, paddingDegrees: Double): List<BrazilPlacePoint> {
+        if (all.isEmpty()) return emptyList()
+        val minLon = kotlin.math.floor(viewport.minLongitude - paddingDegrees).toInt()
+        val maxLon = kotlin.math.ceil(viewport.maxLongitude + paddingDegrees).toInt()
+        val minLat = kotlin.math.floor(viewport.minLatitude - paddingDegrees).toInt()
+        val maxLat = kotlin.math.ceil(viewport.maxLatitude + paddingDegrees).toInt()
+        return buildList {
+            for (lon in minLon..maxLon) {
+                for (lat in minLat..maxLat) {
+                    byCell[brazilPlaceCellKey(lon.toDouble(), lat.toDouble())]?.let { addAll(it) }
+                }
+            }
+        }
+    }
+}
+
+private fun brazilPlaceCellKey(longitude: Double, latitude: Double): Long {
+    val lonCell = kotlin.math.floor(longitude).toInt() + 180
+    val latCell = kotlin.math.floor(latitude).toInt() + 90
+    return (lonCell.toLong() shl 32) xor (latCell.toLong() and 0xffffffffL)
 }
 
 private fun MutableList<LandRing>.addPolygonRings(polygon: JSONArray?) {
@@ -1675,6 +1848,151 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawOfflineWorldLan
     }
 }
 
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawMapBoundaries(
+    boundaryRings: List<BoundaryRing>,
+    viewport: GeoBounds,
+    origin: Location,
+    center: Offset,
+    pan: Offset,
+    metersPerPixel: Float,
+    color: Color,
+    strokeWidth: Float,
+    visibleWhen: Boolean
+) {
+    if (!visibleWhen || boundaryRings.isEmpty()) return
+    val latScale = 111_320.0
+    val lonScale = (111_320.0 * cos(Math.toRadians(origin.latitude))).coerceAtLeast(1e-6)
+    val renderPadding = 260.dp.toPx()
+    boundaryRings
+        .asSequence()
+        .filter { it.intersects(viewport, paddingDegrees = 2.5) }
+        .forEach { ring ->
+            val path = Path()
+            var hasPoint = false
+            var minX = Float.POSITIVE_INFINITY
+            var maxX = Float.NEGATIVE_INFINITY
+            var minY = Float.POSITIVE_INFINITY
+            var maxY = Float.NEGATIVE_INFINITY
+            ring.points.forEachIndexed { index, geoPoint ->
+                val point = mapLabelPoint(
+                    longitude = geoPoint.longitude,
+                    latitude = geoPoint.latitude,
+                    origin = origin,
+                    center = center,
+                    pan = pan,
+                    metersPerPixel = metersPerPixel,
+                    lonScale = lonScale,
+                    latScale = latScale
+                )
+                if (!point.x.isFinite() || !point.y.isFinite()) return@forEachIndexed
+                if (index == 0) path.moveTo(point.x, point.y) else path.lineTo(point.x, point.y)
+                hasPoint = true
+                minX = minOf(minX, point.x)
+                maxX = maxOf(maxX, point.x)
+                minY = minOf(minY, point.y)
+                maxY = maxOf(maxY, point.y)
+            }
+            if (!hasPoint) return@forEach
+            val intersectsViewport = maxX >= -renderPadding &&
+                minX <= size.width + renderPadding &&
+                maxY >= -renderPadding &&
+                minY <= size.height + renderPadding
+            if (intersectsViewport) {
+                drawPath(path = path, color = color, style = Stroke(width = strokeWidth, cap = StrokeCap.Round))
+            }
+        }
+}
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawBrazilPlaceLabels(
+    places: BrazilPlacesData,
+    viewport: GeoBounds,
+    origin: Location,
+    center: Offset,
+    pan: Offset,
+    metersPerPixel: Float,
+    labelColor: Color,
+    dotColor: Color,
+    occupiedBoxes: List<LabelBox>
+) {
+    if (places.all.isEmpty() || metersPerPixel > brazilMunicipalityMetersPerPixel) return
+    val latScale = 111_320.0
+    val lonScale = (111_320.0 * cos(Math.toRadians(origin.latitude))).coerceAtLeast(1e-6)
+    val renderPadding = 140f
+    val labelRadius = minOf(size.width, size.height) * 0.42f
+    val placePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = labelColor.toArgb()
+        textSize = when {
+            metersPerPixel <= brazilSubdistrictMetersPerPixel -> 10.sp.toPx()
+            metersPerPixel <= brazilDistrictMetersPerPixel -> 10.5.sp.toPx()
+            else -> 11.sp.toPx()
+        }
+        typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.NORMAL)
+    }
+    val visible = places.near(viewport, paddingDegrees = 0.9)
+        .asSequence()
+        .filter { place -> place.isVisibleAtBrazilZoom(metersPerPixel) }
+        .filter { place -> viewport.contains(place.longitude, place.latitude, paddingDegrees = 0.8) }
+        .mapNotNull { place ->
+            val point = mapLabelPoint(
+                longitude = place.longitude,
+                latitude = place.latitude,
+                origin = origin,
+                center = center,
+                pan = pan,
+                metersPerPixel = metersPerPixel,
+                lonScale = lonScale,
+                latScale = latScale
+            )
+            if (point.isNearViewport(size.width, size.height, renderPadding)) place to point else null
+        }
+        .toList()
+    if (visible.isEmpty()) return
+
+    visible.forEach { (place, point) ->
+        if (place.kind == BrazilPlaceKind.Municipality || metersPerPixel <= brazilDistrictMetersPerPixel) {
+            val radius = if (place.kind == BrazilPlaceKind.Municipality) 2.25.dp.toPx() else 1.45.dp.toPx()
+            drawCircle(color = dotColor.copy(alpha = place.dotAlpha()), radius = radius, center = point)
+        }
+    }
+
+    val labelLimit = brazilLabelLimit(metersPerPixel, size.width, size.height)
+    val placedLabels = mutableListOf<LabelBox>()
+    visible
+        .asSequence()
+        .filter { (_, point) -> point.distanceTo(center) <= labelRadius }
+        .sortedWith(
+            compareBy<Pair<BrazilPlacePoint, Offset>> { it.first.rank }
+                .thenBy { it.first.kind.ordinal }
+                .thenBy { it.first.name }
+        )
+        .forEach { (place, point) ->
+            if (placedLabels.size >= labelLimit) return@forEach
+            val placement = cityLabelPlacement(
+                text = place.name,
+                point = point,
+                paint = placePaint,
+                placedLabels = placedLabels,
+                occupiedBoxes = occupiedBoxes,
+                width = size.width,
+                height = size.height,
+                renderPadding = renderPadding,
+                normalXOffset = 5.dp.toPx(),
+                normalYOffset = -5.dp.toPx()
+            ) ?: return@forEach
+            if (placement.pinned) {
+                drawLine(
+                    color = dotColor.copy(alpha = 0.50f),
+                    start = point,
+                    end = placement.box.connectorPointToward(point),
+                    strokeWidth = 0.8.dp.toPx(),
+                    cap = StrokeCap.Round
+                )
+            }
+            drawContext.canvas.nativeCanvas.drawText(place.name, placement.box.textX, placement.box.textY, placePaint)
+            placedLabels += placement.box
+        }
+}
+
 private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawContinentLabels(
     origin: Location,
     center: Offset,
@@ -1755,6 +2073,32 @@ private fun CityPoint.isVisibleAt(metersPerPixel: Float): Boolean {
 private fun CityPoint.preProjectionSampledAt(metersPerPixel: Float): Boolean {
     val step = preProjectionCitySampleStep(metersPerPixel)
     return step == 1 || importanceRank <= 1 || stableSampleIndex() % step == 0
+}
+
+private fun BrazilPlacePoint.isVisibleAtBrazilZoom(metersPerPixel: Float): Boolean {
+    return when (kind) {
+        BrazilPlaceKind.Municipality -> metersPerPixel <= brazilMunicipalityMetersPerPixel
+        BrazilPlaceKind.District -> metersPerPixel <= brazilDistrictMetersPerPixel
+        BrazilPlaceKind.Subdistrict -> metersPerPixel <= brazilSubdistrictMetersPerPixel
+    }
+}
+
+private fun BrazilPlacePoint.dotAlpha(): Float {
+    return when (kind) {
+        BrazilPlaceKind.Municipality -> 0.90f
+        BrazilPlaceKind.District -> 0.68f
+        BrazilPlaceKind.Subdistrict -> 0.48f
+    }
+}
+
+private fun brazilLabelLimit(metersPerPixel: Float, width: Float, height: Float): Int {
+    val base = ((width * height) / 18_500f).roundToInt().coerceIn(12, 82)
+    return when {
+        metersPerPixel > 460f -> 18
+        metersPerPixel > 260f -> base.coerceAtMost(34)
+        metersPerPixel > 120f -> base.coerceAtMost(56)
+        else -> base
+    }
 }
 
 private fun cityLimitForZoom(metersPerPixel: Float, crowdedCityLimit: Int): Int {
@@ -1888,7 +2232,8 @@ private fun titleForMapCenter(
     metersPerPixel: Float,
     countryLabels: List<CountryLabel>,
     cityPoints: List<CityPoint>,
-    adminRegions: List<AdminRegion>
+    adminRegions: List<AdminRegion>,
+    brazilPlaces: List<BrazilPlacePoint>
 ): String {
     if (isWholeEarthViewport(viewport, metersPerPixel)) {
         return "Terra"
@@ -1900,6 +2245,12 @@ private fun titleForMapCenter(
     )
     if (metersPerPixel > continentOnlyMetersPerPixel) {
         return dominantContinentName(viewport, center) ?: nearestContinentName(center) ?: "Terra"
+    }
+    if (metersPerPixel <= brazilSubdistrictTitleMetersPerPixel) {
+        nearestBrazilPlaceName(center, brazilPlaces, maxDegrees = 0.08, includeDistricts = true)?.let { return it }
+    }
+    if (metersPerPixel <= cityTitleMetersPerPixel) {
+        nearestBrazilPlaceName(center, brazilPlaces, maxDegrees = 0.32, includeDistricts = true)?.let { return it }
     }
     if (metersPerPixel <= cityTitleMetersPerPixel) {
         nearestCityName(center, cityPoints, maxDegrees = 2.8)?.let { return it }
@@ -1922,6 +2273,34 @@ private fun titleForMapCenter(
     return dominantContinentName(viewport, center)
         ?: nearestContinentName(center)
         ?: "Terra"
+}
+
+private fun nearestBrazilPlaceName(
+    center: GeoPoint,
+    places: List<BrazilPlacePoint>,
+    maxDegrees: Double,
+    includeDistricts: Boolean
+): String? {
+    if (places.isEmpty()) return null
+    val allowedKinds = if (includeDistricts) {
+        setOf(BrazilPlaceKind.Municipality, BrazilPlaceKind.District, BrazilPlaceKind.Subdistrict)
+    } else {
+        setOf(BrazilPlaceKind.Municipality)
+    }
+    return places
+        .asSequence()
+        .filter { it.kind in allowedKinds }
+        .map { place ->
+            place to approximateGeoDistanceScore(center.longitude, center.latitude, place.longitude, place.latitude)
+        }
+        .filter { (_, score) -> score <= maxDegrees * maxDegrees }
+        .minWithOrNull(
+            compareBy<Pair<BrazilPlacePoint, Double>> { it.second }
+                .thenBy { it.first.rank }
+                .thenBy { it.first.kind.ordinal }
+        )
+        ?.first
+        ?.name
 }
 
 private fun dominantAdminRegionName(
@@ -2412,6 +2791,8 @@ private fun offlineMapPalette(useDarkMapColors: Boolean): OfflineMapPalette {
             ocean = Color(0xFF071B33),
             land = Color(0xFF153D2A).copy(alpha = 0.84f),
             grid = Color.White.copy(alpha = 0.10f),
+            boundary = Color.White.copy(alpha = 0.28f),
+            stateBoundary = Color(0xFFC9F2D1).copy(alpha = 0.36f),
             cityLabel = Color(0xFFD8EBF8),
             cityDot = Color(0xFF8FCBFF),
             pointer = Color(0xFF9FD3FF)
@@ -2421,6 +2802,8 @@ private fun offlineMapPalette(useDarkMapColors: Boolean): OfflineMapPalette {
             ocean = Color(0xFFD8F0FF),
             land = Color(0xFFE7F3D4).copy(alpha = 0.92f),
             grid = Color(0xFF5A91B8).copy(alpha = 0.16f),
+            boundary = Color(0xFF2F6F93).copy(alpha = 0.34f),
+            stateBoundary = Color(0xFF3D7D3C).copy(alpha = 0.42f),
             cityLabel = Color(0xFF17425F),
             cityDot = Color(0xFF1976A8),
             pointer = Color(0xFF1976A8).copy(alpha = 0.74f)
@@ -2627,6 +3010,8 @@ private data class OfflineMapPalette(
     val ocean: Color,
     val land: Color,
     val grid: Color,
+    val boundary: Color,
+    val stateBoundary: Color,
     val cityLabel: Color,
     val cityDot: Color,
     val pointer: Color
@@ -2648,7 +3033,13 @@ private fun readableOnColor(color: Color): Color {
 private const val worldCircumferenceMeters = 40_075_000f
 private const val worldHeightMeters = 20_037_500f
 private const val continentOnlyMetersPerPixel = 12_500f
+private const val countryBoundaryMetersPerPixel = 16_000f
+private const val stateBoundaryMetersPerPixel = 3_600f
 private const val adminLabelMetersPerPixel = 2_400f
+private const val brazilMunicipalityMetersPerPixel = 720f
+private const val brazilDistrictMetersPerPixel = 220f
+private const val brazilSubdistrictMetersPerPixel = 110f
+private const val brazilSubdistrictTitleMetersPerPixel = 90f
 private const val cityLabelMetersPerPixel = 540f
 private const val cityTitleMetersPerPixel = 180f
 

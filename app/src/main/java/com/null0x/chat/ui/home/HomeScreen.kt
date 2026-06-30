@@ -8,6 +8,11 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.LocalOverscrollConfiguration
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -41,6 +46,9 @@ import androidx.compose.material.icons.filled.ChatBubble
 import androidx.compose.material.icons.filled.Contacts
 import androidx.compose.material.icons.filled.Done
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowLeft
+import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.outlined.Settings
@@ -109,6 +117,21 @@ private sealed interface PendingProfileChange {
     data class Identity(val name: String, val emoji: String) : PendingProfileChange
     data class Bio(val bio: String) : PendingProfileChange
 }
+
+private enum class ReviewCueKind {
+    Chat,
+    ContactRequest,
+    ContactLookup,
+    ProfileIdentity,
+    ProfileBio
+}
+
+private data class ReviewCue(
+    val key: String,
+    val title: String,
+    val detail: String,
+    val kind: ReviewCueKind
+)
 
 @Composable
 fun HomeScreen(
@@ -234,6 +257,90 @@ fun HomeScreen(
         )
     }
     val visibleConversations = searchSummary?.conversations ?: conversations
+    val chatReviewCues = remember(visibleConversations) {
+        visibleConversations
+            .filter { it.unreadCount > 0 }
+            .map {
+                ReviewCue(
+                    key = it.username,
+                    title = it.displayName,
+                    detail = pluralize(it.unreadCount, "mensagem nova", "mensagens novas"),
+                    kind = ReviewCueKind.Chat
+                )
+            }
+    }
+    val contactReviewCues = remember(pendingContactRequests, vm.routeLookup) {
+        buildList {
+            vm.routeLookup
+                ?.takeIf { !it.isLocalOwner }
+                ?.let { lookup ->
+                    add(
+                        ReviewCue(
+                            key = "lookup:${lookup.username}",
+                            title = lookup.displayName,
+                            detail = "Resultado pronto para revisar",
+                            kind = ReviewCueKind.ContactLookup
+                        )
+                    )
+                }
+            pendingContactRequests.forEach { request ->
+                add(
+                    ReviewCue(
+                        key = "request:${request.username}",
+                        title = request.displayName,
+                        detail = "Solicitacao aguardando resposta",
+                        kind = ReviewCueKind.ContactRequest
+                    )
+                )
+            }
+        }
+    }
+    val profileReviewCues = remember(vm.profileName, vm.profileEmojiSymbol, vm.profileBioText) {
+        buildList {
+            if (vm.profileName.trim().isBlank()) {
+                add(
+                    ReviewCue(
+                        key = "profile:name",
+                        title = "Nome do perfil",
+                        detail = "Defina um nome para sua rota",
+                        kind = ReviewCueKind.ProfileIdentity
+                    )
+                )
+            }
+            if (vm.profileEmojiSymbol.trim().isBlank()) {
+                add(
+                    ReviewCue(
+                        key = "profile:emoji",
+                        title = "Emoji do perfil",
+                        detail = "Escolha um emoji para aparecer nas listas",
+                        kind = ReviewCueKind.ProfileIdentity
+                    )
+                )
+            }
+            if (vm.profileBioText.trim().isBlank()) {
+                add(
+                    ReviewCue(
+                        key = "profile:bio",
+                        title = "Bio do perfil",
+                        detail = "Escreva uma bio para quem abrir sua rota",
+                        kind = ReviewCueKind.ProfileBio
+                    )
+                )
+            }
+        }
+    }
+    var chatReviewIndex by rememberSaveable { mutableStateOf(0) }
+    var contactReviewIndex by rememberSaveable { mutableStateOf(0) }
+    var profileReviewIndex by rememberSaveable { mutableStateOf(0) }
+    LaunchedEffect(chatReviewCues.size) {
+        chatReviewIndex = chatReviewIndex.coerceIn(0, (chatReviewCues.size - 1).coerceAtLeast(0))
+    }
+    LaunchedEffect(contactReviewCues.size) {
+        contactReviewIndex = contactReviewIndex.coerceIn(0, (contactReviewCues.size - 1).coerceAtLeast(0))
+    }
+    LaunchedEffect(profileReviewCues.size) {
+        profileReviewIndex = profileReviewIndex.coerceIn(0, (profileReviewCues.size - 1).coerceAtLeast(0))
+    }
     var showRefreshingTitle by remember { mutableStateOf(false) }
     var showStartingTitle by remember { mutableStateOf(false) }
     var mapTitle by rememberSaveable { mutableStateOf("Mapa") }
@@ -403,6 +510,10 @@ fun HomeScreen(
                         }
                         keyboardController?.hide()
                     },
+                    onSearchQrClick = {
+                        keyboardController?.hide()
+                        openRouteQrScanner()
+                    },
                     onSearchToggle = {
                         if (headerSearchActive) {
                             headerSearchActive = false
@@ -466,6 +577,18 @@ fun HomeScreen(
                             hasSearch = searchSummary != null,
                             publicRouteToken = publicRouteToken,
                             selectedChatUsernames = selectedChatUsernames,
+                            reviewCues = chatReviewCues,
+                            pointedReviewCue = chatReviewCues.getOrNull(chatReviewIndex),
+                            onPreviousReviewCue = {
+                                if (chatReviewCues.isNotEmpty()) {
+                                    chatReviewIndex = (chatReviewIndex - 1 + chatReviewCues.size) % chatReviewCues.size
+                                }
+                            },
+                            onNextReviewCue = {
+                                if (chatReviewCues.isNotEmpty()) {
+                                    chatReviewIndex = (chatReviewIndex + 1) % chatReviewCues.size
+                                }
+                            },
                             isRouteActive = vm::isPartnerOnline,
                             onSelect = {
                                 vm.selectTarget(it)
@@ -488,6 +611,18 @@ fun HomeScreen(
                             onShowQrScannerChange = { showRouteQrScanner = it },
                             contacts = contacts,
                             pendingRequests = pendingContactRequests,
+                            reviewCues = contactReviewCues,
+                            pointedReviewCue = contactReviewCues.getOrNull(contactReviewIndex),
+                            onPreviousReviewCue = {
+                                if (contactReviewCues.isNotEmpty()) {
+                                    contactReviewIndex = (contactReviewIndex - 1 + contactReviewCues.size) % contactReviewCues.size
+                                }
+                            },
+                            onNextReviewCue = {
+                                if (contactReviewCues.isNotEmpty()) {
+                                    contactReviewIndex = (contactReviewIndex + 1) % contactReviewCues.size
+                                }
+                            },
                             isValidQrCode = vm::isValidNoChatQrToken,
                             isContactRequested = vm::isContactRequested,
                             isContactAccepted = vm::isContactAccepted,
@@ -560,6 +695,18 @@ fun HomeScreen(
                             routeLabel = routeLabel,
                             profileBio = vm.profileBioText,
                             profileMapColor = Color(vm.profileMapColorArgb),
+                            reviewCues = profileReviewCues,
+                            pointedReviewCue = profileReviewCues.getOrNull(profileReviewIndex),
+                            onPreviousReviewCue = {
+                                if (profileReviewCues.isNotEmpty()) {
+                                    profileReviewIndex = (profileReviewIndex - 1 + profileReviewCues.size) % profileReviewCues.size
+                                }
+                            },
+                            onNextReviewCue = {
+                                if (profileReviewCues.isNotEmpty()) {
+                                    profileReviewIndex = (profileReviewIndex + 1) % profileReviewCues.size
+                                }
+                            },
                             onProfileBioSave = { bio ->
                                 profileAuthError = ""
                                 pendingProfileChange = PendingProfileChange.Bio(bio)
@@ -715,15 +862,26 @@ private fun ChatsTabSelectionAware(
     hasSearch: Boolean,
     publicRouteToken: String,
     selectedChatUsernames: Set<String>,
+    reviewCues: List<ReviewCue>,
+    pointedReviewCue: ReviewCue?,
+    onPreviousReviewCue: () -> Unit,
+    onNextReviewCue: () -> Unit,
     isRouteActive: (String) -> Boolean,
     onSelect: (String) -> Unit,
     onToggleSelection: (String) -> Unit
 ) {
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
     val summaryHeight = if (searchSummary != null) 42.dp else 0.dp
-    val listHeight = (maxHeight - summaryHeight).coerceAtLeast(260.dp)
+    val cueHeight = if (reviewCues.isNotEmpty()) 86.dp else 0.dp
+    val listHeight = (maxHeight - summaryHeight - cueHeight).coerceAtLeast(260.dp)
         Column(modifier = Modifier.fillMaxSize()) {
             SearchSummaryRow(searchSummary)
+            ReviewCueCard(
+                cues = reviewCues,
+                pointedCue = pointedReviewCue,
+                onPrevious = onPreviousReviewCue,
+                onNext = onNextReviewCue
+            )
             ConversationsPanelSelection(
                 modifier = Modifier
                     .height(listHeight)
@@ -734,6 +892,8 @@ private fun ChatsTabSelectionAware(
                 hasSearch = hasSearch,
                 publicRouteToken = publicRouteToken,
                 selectedChatUsernames = selectedChatUsernames,
+                highlightedUsernames = reviewCues.map { it.key }.toSet(),
+                pointedUsername = pointedReviewCue?.key,
                 isRouteActive = isRouteActive,
                 onSelect = onSelect,
                 onToggleSelection = onToggleSelection
@@ -764,6 +924,8 @@ private fun ConversationsPanelSelection(
     hasSearch: Boolean,
     publicRouteToken: String,
     selectedChatUsernames: Set<String>,
+    highlightedUsernames: Set<String>,
+    pointedUsername: String?,
     isRouteActive: (String) -> Boolean,
     onSelect: (String) -> Unit,
     onToggleSelection: (String) -> Unit
@@ -791,6 +953,8 @@ private fun ConversationsPanelSelection(
                 ConversationRowSelectable(
                     item = item,
                     selected = selected,
+                    highlighted = highlightedUsernames.contains(item.username),
+                    pointed = pointedUsername == item.username,
                     active = if (item.isAi) true else isRouteActive(item.username),
                     onClick = {
                         if (selectedChatUsernames.isNotEmpty()) {
@@ -813,16 +977,23 @@ private fun ConversationsPanelSelection(
 private fun ConversationRowSelectable(
     item: ChatViewModel.ConversationPreview,
     selected: Boolean,
+    highlighted: Boolean,
+    pointed: Boolean,
     active: Boolean,
     onClick: () -> Unit,
     onLongClick: () -> Unit
 ) {
+    val highlightAlpha = pulsingHighlightAlpha(highlighted)
     Surface(
         modifier = Modifier
             .fillMaxWidth()
             .combinedClickable(onClick = onClick, onLongClick = onLongClick),
-        color = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.10f) else Color.Transparent,
-        tonalElevation = 0.dp
+        color = when {
+            selected -> MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
+            highlighted -> MaterialTheme.colorScheme.primary.copy(alpha = highlightAlpha)
+            else -> Color.Transparent
+        },
+        tonalElevation = if (highlighted) 1.dp else 0.dp
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
             Row(
@@ -858,6 +1029,14 @@ private fun ConversationRowSelectable(
                     }
                 }
                 Column(horizontalAlignment = Alignment.End) {
+                    if (pointed) {
+                        Icon(
+                            imageVector = Icons.Filled.KeyboardArrowDown,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
                     Text(
                         text = formatTime(item.lastTimestamp),
                         style = MaterialTheme.typography.bodySmall,
@@ -881,6 +1060,10 @@ private fun ContactsTab(
     onShowQrScannerChange: (Boolean) -> Unit,
     contacts: List<ChatViewModel.ContactPreview>,
     pendingRequests: List<ChatViewModel.ConversationPreview>,
+    reviewCues: List<ReviewCue>,
+    pointedReviewCue: ReviewCue?,
+    onPreviousReviewCue: () -> Unit,
+    onNextReviewCue: () -> Unit,
     isValidQrCode: (String) -> Boolean,
     isContactRequested: (String) -> Boolean,
     isContactAccepted: (String) -> Boolean,
@@ -904,10 +1087,20 @@ private fun ContactsTab(
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         item {
+            ReviewCueCard(
+                cues = reviewCues,
+                pointedCue = pointedReviewCue,
+                onPrevious = onPreviousReviewCue,
+                onNext = onNextReviewCue
+            )
+        }
+        item {
             RouteSearchPanel(
                 onRouteNameChange = onRouteNameChange,
                 routeLookup = routeLookup,
                 routeStatus = routeStatus,
+                highlighted = reviewCues.any { it.kind == ReviewCueKind.ContactLookup },
+                pointed = pointedReviewCue?.kind == ReviewCueKind.ContactLookup,
                 onSearchRouteName = onSearchRouteName,
                 showQrScanner = showQrScanner,
                 onShowQrScannerChange = onShowQrScannerChange,
@@ -936,7 +1129,9 @@ private fun ContactsTab(
                         trailingActionProminent = true,
                         onTrailingAction = { onAcceptContact(item.username) },
                         onLongClick = { onSelectContactForDeletion(item.username) },
-                        selected = selectedContactUsername == item.username
+                        selected = selectedContactUsername == item.username,
+                        highlighted = reviewCues.any { it.key == "request:${item.username}" },
+                        pointed = pointedReviewCue?.key == "request:${item.username}"
                     )
                 }
             }
@@ -989,6 +1184,10 @@ private fun ProfileTab(
     routeLabel: String,
     profileBio: String,
     profileMapColor: Color,
+    reviewCues: List<ReviewCue>,
+    pointedReviewCue: ReviewCue?,
+    onPreviousReviewCue: () -> Unit,
+    onNextReviewCue: () -> Unit,
     onProfileBioSave: (String) -> Unit,
     onProfileMapColorChange: (Int) -> Unit,
     onEditProfile: () -> Unit,
@@ -1007,6 +1206,20 @@ private fun ProfileTab(
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         item {
+            ReviewCueCard(
+                cues = reviewCues,
+                pointedCue = pointedReviewCue,
+                onPrevious = onPreviousReviewCue,
+                onNext = onNextReviewCue
+            )
+        }
+        item {
+            val identityHighlighted = reviewCues.any { it.kind == ReviewCueKind.ProfileIdentity }
+            val identityPointed = pointedReviewCue?.kind == ReviewCueKind.ProfileIdentity
+            val bioHighlighted = reviewCues.any { it.kind == ReviewCueKind.ProfileBio }
+            val bioPointed = pointedReviewCue?.kind == ReviewCueKind.ProfileBio
+            val identityAlpha = pulsingHighlightAlpha(identityHighlighted)
+            val bioAlpha = pulsingHighlightAlpha(bioHighlighted)
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(22.dp),
@@ -1054,8 +1267,8 @@ private fun ProfileTab(
                                 .size(44.dp)
                                 .clickable(onClick = onEditProfile),
                             shape = CircleShape,
-                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
-                            tonalElevation = 0.dp
+                            color = MaterialTheme.colorScheme.primary.copy(alpha = if (identityHighlighted) identityAlpha else 0.14f),
+                            tonalElevation = if (identityHighlighted) 1.dp else 0.dp
                         ) {
                             Box(contentAlignment = Alignment.Center) {
                                 Icon(
@@ -1063,6 +1276,16 @@ private fun ProfileTab(
                                     contentDescription = "Editar perfil",
                                     tint = MaterialTheme.colorScheme.primary
                                 )
+                                if (identityPointed) {
+                                    Icon(
+                                        imageVector = Icons.Filled.KeyboardArrowDown,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier
+                                            .align(Alignment.BottomEnd)
+                                            .size(16.dp)
+                                    )
+                                }
                             }
                         }
                     }
@@ -1117,16 +1340,35 @@ private fun ProfileTab(
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.SemiBold
                     )
-                    OutlinedTextField(
-                        value = bioDraft,
-                        onValueChange = { bioDraft = limitUtf8Bytes(it, 4 * 1024) },
-                        modifier = Modifier.fillMaxWidth(),
-                        minLines = 5,
-                        maxLines = 10,
-                        label = { Text("Escreva tudo que quiser") },
-                        placeholder = { Text("Até 4 KB visíveis para quem visitar a rota.") },
-                        shape = RoundedCornerShape(16.dp)
-                    )
+                    Surface(
+                        shape = RoundedCornerShape(18.dp),
+                        color = if (bioHighlighted) MaterialTheme.colorScheme.primary.copy(alpha = bioAlpha) else Color.Transparent,
+                        tonalElevation = if (bioHighlighted) 1.dp else 0.dp
+                    ) {
+                        Box(modifier = Modifier.fillMaxWidth()) {
+                            OutlinedTextField(
+                                value = bioDraft,
+                                onValueChange = { bioDraft = limitUtf8Bytes(it, 4 * 1024) },
+                                modifier = Modifier.fillMaxWidth(),
+                                minLines = 5,
+                                maxLines = 10,
+                                label = { Text("Escreva tudo que quiser") },
+                                placeholder = { Text("Até 4 KB visíveis para quem visitar a rota.") },
+                                shape = RoundedCornerShape(16.dp)
+                            )
+                            if (bioPointed) {
+                                Icon(
+                                    imageVector = Icons.Filled.KeyboardArrowDown,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier
+                                        .align(Alignment.TopEnd)
+                                        .padding(8.dp)
+                                        .size(18.dp)
+                                )
+                            }
+                        }
+                    }
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -1271,6 +1513,8 @@ private fun RouteSearchPanel(
     onRouteNameChange: (String) -> Unit,
     routeLookup: ChatViewModel.RouteLookup?,
     routeStatus: String,
+    highlighted: Boolean,
+    pointed: Boolean,
     onSearchRouteName: () -> Unit,
     showQrScanner: Boolean,
     onShowQrScannerChange: (Boolean) -> Unit,
@@ -1296,6 +1540,8 @@ private fun RouteSearchPanel(
                 routeLookup = lookup,
                 alreadyAdded = isContactActive(lookup.username) && isContactAccepted(lookup.username),
                 requestSent = isContactActive(lookup.username) && isContactRequested(lookup.username),
+                highlighted = highlighted,
+                pointed = pointed,
                 onAddContact = onAddContact,
                 onRemoveContact = onRemoveContact,
                 onOpenProfile = onOpenProfile
@@ -1322,16 +1568,19 @@ private fun RouteLookupRow(
     routeLookup: ChatViewModel.RouteLookup,
     alreadyAdded: Boolean,
     requestSent: Boolean,
+    highlighted: Boolean,
+    pointed: Boolean,
     onAddContact: (String) -> Unit,
     onRemoveContact: (String) -> Unit,
     onOpenProfile: (String) -> Unit
 ) {
     val added = alreadyAdded || requestSent
     var showRemoveConfirm by rememberSaveable(routeLookup.username) { mutableStateOf(false) }
+    val highlightAlpha = pulsingHighlightAlpha(highlighted)
     Surface(
         shape = RoundedCornerShape(18.dp),
-        color = Color.Transparent,
-        tonalElevation = 0.dp,
+        color = if (highlighted) MaterialTheme.colorScheme.primary.copy(alpha = highlightAlpha) else Color.Transparent,
+        tonalElevation = if (highlighted) 1.dp else 0.dp,
         modifier = Modifier
             .fillMaxWidth()
             .clickable { onOpenProfile(routeLookup.username) }
@@ -1372,6 +1621,14 @@ private fun RouteLookupRow(
                         maxLines = 1,
                         softWrap = false,
                         overflow = TextOverflow.Ellipsis
+                    )
+                }
+                if (pointed) {
+                    Icon(
+                        imageVector = Icons.Filled.KeyboardArrowDown,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(18.dp)
                     )
                 }
                 if (added) {
@@ -1446,12 +1703,19 @@ private fun ContactRow(
     trailingActionProminent: Boolean = false,
     onTrailingAction: (() -> Unit)? = null,
     selected: Boolean = false,
+    highlighted: Boolean = false,
+    pointed: Boolean = false,
     active: Boolean = false
 ) {
+    val highlightAlpha = pulsingHighlightAlpha(highlighted)
     Surface(
         shape = RoundedCornerShape(18.dp),
-        color = if (selected) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f) else Color.Transparent,
-        tonalElevation = if (selected) 1.dp else 0.dp,
+        color = when {
+            selected -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)
+            highlighted -> MaterialTheme.colorScheme.primary.copy(alpha = highlightAlpha)
+            else -> Color.Transparent
+        },
+        tonalElevation = if (selected || highlighted) 1.dp else 0.dp,
         modifier = Modifier
             .fillMaxWidth()
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
@@ -1516,10 +1780,108 @@ private fun ContactRow(
                         prominent = trailingActionProminent
                     )
                 }
+                if (pointed) {
+                    Icon(
+                        imageVector = Icons.Filled.KeyboardArrowDown,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
             }
             ListSeparator(modifier = Modifier.padding(start = 68.dp))
         }
     }
+}
+
+@Composable
+private fun ReviewCueCard(
+    cues: List<ReviewCue>,
+    pointedCue: ReviewCue?,
+    onPrevious: () -> Unit,
+    onNext: () -> Unit
+) {
+    if (cues.isEmpty()) return
+    val cue = pointedCue ?: cues.first()
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.10f),
+        tonalElevation = 0.dp
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            IconButton(
+                onClick = onPrevious,
+                enabled = cues.size > 1,
+                modifier = Modifier.size(34.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.KeyboardArrowLeft,
+                    contentDescription = "Item anterior"
+                )
+            }
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Revisar novidade",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1
+                )
+                Text(
+                    text = cue.title,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = cue.detail,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Icon(
+                imageVector = Icons.Filled.KeyboardArrowDown,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(24.dp)
+            )
+            IconButton(
+                onClick = onNext,
+                enabled = cues.size > 1,
+                modifier = Modifier.size(34.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.KeyboardArrowRight,
+                    contentDescription = "Proximo item"
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun pulsingHighlightAlpha(enabled: Boolean): Float {
+    if (!enabled) return 0f
+    val transition = rememberInfiniteTransition(label = "review-highlight")
+    return transition.animateFloat(
+        initialValue = 0.08f,
+        targetValue = 0.20f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 920),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "review-highlight-alpha"
+    ).value
 }
 
 @Composable

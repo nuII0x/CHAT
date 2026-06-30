@@ -314,7 +314,7 @@ fun ChatScreen(vm: ChatViewModel, themeMode: ThemeMode, onBack: () -> Unit, onLo
     val unreadHintCount = vm.unreadEntryCountFor(headerUser)
     val currentChatLoaded = vm.isCurrentChatLoaded()
     val currentMessages = vm.messagesFor(vm.targetUsername)
-    val nullAiConversationAvailable = !isNullAiChat || vm.isNullAiConversationAvailable()
+    val nullAiConversationAvailable = !isNullAiChat || (vm.isNullAiConversationAvailable() && !vm.nullAiThinking)
     val displayedMessages = if (isNullAiChat && vm.nullAiPreparing) {
         currentMessages + Message(
             id = "null-ai-preparing",
@@ -573,7 +573,11 @@ fun ChatScreen(vm: ChatViewModel, themeMode: ThemeMode, onBack: () -> Unit, onLo
                     appearance = appearance,
                     trailingActionSpace = if (showTextInput) ChatDockActionReserve else 0.dp,
                     enabled = nullAiConversationAvailable,
-                    placeholder = if (nullAiConversationAvailable) "Mensagem" else "Preparando...",
+                    placeholder = when {
+                        nullAiConversationAvailable -> "Mensagem"
+                        isNullAiChat && vm.nullAiThinking -> "Pensando..."
+                        else -> "Preparando..."
+                    },
                     onInputChange = {
                         input = it
                         vm.updateDraft(headerUser, it)
@@ -1310,7 +1314,17 @@ private fun MessageList(
 ) {
     val timelineItems = remember(messages, privacyNotices) {
         buildList {
-            messages.forEach { add(TimelineItem.MessageItem(it)) }
+            messages.forEach { message ->
+                val timingText = message.text
+                    .removePrefix(ChatViewModel.NULL_AI_TIMING_NOTICE_PREFIX)
+                    .takeIf { it.length != message.text.length }
+                    ?.trim()
+                if (timingText != null) {
+                    add(TimelineItem.TimingNoticeItem(message.id, message.timestamp, timingText))
+                } else {
+                    add(TimelineItem.MessageItem(message))
+                }
+            }
             privacyNotices
                 .sortedBy { it.timestamp }
                 .forEach { add(TimelineItem.PrivacyNoticeItem(it)) }
@@ -1480,6 +1494,7 @@ private fun MessageList(
                         )
                     }
                     is TimelineItem.PrivacyNoticeItem -> PrivacyNoticeDivider(item.notice.text)
+                    is TimelineItem.TimingNoticeItem -> PrivacyNoticeDivider(item.text)
                 }
             }
         }
@@ -1542,6 +1557,12 @@ private sealed class TimelineItem {
         override val id: String = "privacy:${notice.id}"
         override val timestamp: Long = notice.timestamp
     }
+
+    data class TimingNoticeItem(
+        override val id: String,
+        override val timestamp: Long,
+        val text: String
+    ) : TimelineItem()
 }
 
 @Composable

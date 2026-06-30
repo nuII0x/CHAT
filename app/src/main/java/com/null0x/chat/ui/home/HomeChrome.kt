@@ -487,6 +487,7 @@ internal fun BottomDock(
     onSearchValueChange: (String) -> Unit = {},
     onSearchSubmit: () -> Unit = {},
     onSearchToggle: () -> Unit = {},
+    onSearchQrClick: () -> Unit = {},
     selectedChatsCount: Int = 0,
     onDeleteSelectedChats: () -> Unit = {},
     selectedContactUsername: String? = null,
@@ -569,10 +570,12 @@ internal fun BottomDock(
                             )
                         },
                         leadingIcon = {
-                            Icon(
-                                imageVector = Icons.Filled.Search,
-                                contentDescription = null
-                            )
+                            IconButton(onClick = onSearchQrClick) {
+                                Icon(
+                                    imageVector = Icons.Filled.QrCodeScanner,
+                                    contentDescription = "Ler QR"
+                                )
+                            }
                         },
                         trailingIcon = {
                             IconButton(

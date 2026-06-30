@@ -13,6 +13,7 @@ import androidx.lifecycle.viewModelScope
 import com.null0x.chat.AppBranding
 import com.null0x.chat.AppVisibility
 import com.null0x.chat.ai.LlamaCppEngine
+import com.null0x.chat.ai.NullAiKotlinTools
 import com.null0x.chat.ai.NullAiModelStore
 import com.null0x.chat.ai.NullAiMemoryStore
 import com.null0x.chat.model.DeliveryState
@@ -42,6 +43,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         private const val CONTACT_ACCEPT_PREFIX = "[Null0xChat:contact-accept]"
         private const val CONTACT_ACCEPT_NOTICE_PREFIX = "accepted_notice"
         const val NULL_AI_CONVERSATION = "null-ai"
+        const val NULL_AI_TIMING_NOTICE_PREFIX = "[NullIA:timing]"
     }
 
     data class ConversationPreview(
@@ -369,6 +371,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private var previewsJob: Job? = null
     private var nullAiPrepareJob: Job? = null
     private var nullAiPreparedModelPath: String = ""
+    @Volatile
+    private var nullAiConversationRevision: Int = 0
     private var warmCacheJob: Job? = null
     private var conversationPreviewCache by mutableStateOf<List<ConversationPreview>>(emptyList())
     private val conversationHistoryLock = Any()
@@ -1399,6 +1403,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
         cleanupChatJob?.cancel()
         nodeManager.clearMessages(target)
+        clearNullAiConversationState(target)
         clearPrivacyNotices(target)
         clearConversationCache(target)
         unreadByPeer[target] = 0
@@ -1419,6 +1424,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         cleanupChatJob?.cancel()
         setConversationHidden(target, true)
         nodeManager.removeConversation(target)
+        clearNullAiConversationState(target)
         startedConversations.remove(target)
         clearConversationCache(target)
         unreadByPeer.remove(target)
@@ -1524,6 +1530,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun sendToNullAi(target: String, message: String) {
         if (!nullAiEnabled) return
+        if (nullAiThinking) return
         if (!isNullAiConversationAvailable()) {
             prepareNullAi()
             return
@@ -1546,13 +1553,29 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         refreshConversationPreviewsAsync()
 
         viewModelScope.launch {
+            val generationRevision = nullAiConversationRevision
             nullAiThinking = true
             nullAiRenderingReply = false
             try {
-                val replyPrompt = buildNullAiPrompt(target)
-                val reply = aiEngine.generateReply(replyPrompt).getOrElse { error ->
-                    error.message ?: "Nao consegui gerar resposta agora."
-                }.let(::cleanNullAiReply)
+                val kotlinResult = NullAiKotlinTools.analyze(message)
+                val replyPrompt = withContext(Dispatchers.IO) {
+                    buildNullAiPrompt(
+                        target = target,
+                        toolContext = kotlinResult?.context,
+                        toolAnswer = kotlinResult?.answer
+                    )
+                }
+                val generation = aiEngine.generateReplyWithStats(replyPrompt).getOrElse { error ->
+                    com.null0x.chat.ai.AiGeneration(
+                        text = error.message ?: "Nao consegui gerar resposta agora."
+                    )
+                }
+                val reply = generation.text
+                    .let(::cleanNullAiReply)
+                    .let { enforceToolAnswer(it, kotlinResult?.answer) }
+                if (generationRevision != nullAiConversationRevision) {
+                    return@launch
+                }
                 nullAiThinking = false
                 nullAiRenderingReply = true
                 val incoming = Message(
@@ -1563,8 +1586,20 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 if (appendConversationMessage(target, incoming)) {
                     appendVisibleMessage(incoming)
                 }
+                generation.timingNotice()?.let { notice ->
+                    appendVisibleMessage(
+                        Message(
+                            text = "$NULL_AI_TIMING_NOTICE_PREFIX $notice",
+                            isMine = false,
+                            delivery = DeliveryState.Delivered
+                        )
+                    )
+                }
                 chatStore.upsert(target, incoming)
-                NullAiMemoryStore.update(getApplication(), conversationMessagesFor(target))
+                val memoryMessages = conversationMessagesFor(target).takeLast(6)
+                viewModelScope.launch(Dispatchers.IO) {
+                    NullAiMemoryStore.update(getApplication(), target, memoryMessages)
+                }
                 conversationsVersion++
                 refreshConversationPreviewsAsync()
                 delay(1_200)
@@ -1575,25 +1610,50 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun buildNullAiPrompt(target: String): String {
-        val memory = NullAiMemoryStore.read(getApplication())
+    private fun buildNullAiPrompt(
+        target: String,
+        toolContext: String?,
+        toolAnswer: String?
+    ): String {
         val lastUserMessage = conversationMessagesFor(target)
             .lastOrNull { it.isMine }
             ?.text
             ?.trim()
             ?.replace(Regex("\\s+"), " ")
-            ?.take(220)
+            ?.take(90)
             .orEmpty()
+        val memory = if (shouldUseNullAiMemory(lastUserMessage)) {
+            NullAiMemoryStore.snapshot(getApplication(), target, lastUserMessage).toPromptMemory()
+        } else {
+            ""
+        }
         return buildString {
-            append("Voce e a Null IA. Responda em portugues do Brasil, curto e natural.\n")
-            append("Use no maximo duas frases. Nao copie a mensagem. Nao use rotulos.\n")
+            append("PT-BR.\n")
             if (memory.isNotBlank()) {
-                append("Memoria recente:\n")
-                append(memory).append('\n')
+                append("Memoria: ").append(memory.take(120)).append('\n')
             }
-            append("Mensagem: ").append(lastUserMessage).append('\n')
+            if (!toolAnswer.isNullOrBlank()) {
+                append("Resultado exato: ").append(toolAnswer.take(60)).append('\n')
+                if (!toolContext.isNullOrBlank()) {
+                    append("Contexto: ").append(toolContext.take(80)).append('\n')
+                }
+            }
+            append("Usuario: ").append(lastUserMessage).append('\n')
             append("Resposta:")
         }
+    }
+
+    private fun shouldUseNullAiMemory(message: String): Boolean {
+        val text = message.lowercase()
+        return listOf(
+            "lembra",
+            "lembre",
+            "memoria",
+            "memória",
+            "meu nome",
+            "minha",
+            "meu "
+        ).any { text.contains(it) }
     }
 
     private fun cleanNullAiReply(rawReply: String): String {
@@ -1607,6 +1667,27 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             .trim()
         reply = reply.takeIf { it.isNotBlank() } ?: "Nao consegui gerar resposta agora."
         return reply.ifBlank { "Nao consegui gerar resposta agora." }
+    }
+
+    private fun enforceToolAnswer(reply: String, toolAnswer: String?): String {
+        val answer = toolAnswer?.trim().orEmpty()
+        if (answer.isBlank()) return reply
+
+        val normalizedReply = reply.lowercase().replace(',', '.')
+        val normalizedAnswer = answer.lowercase().replace(',', '.')
+        if (normalizedReply.contains(normalizedAnswer)) return reply
+
+        val cleanReply = reply.trim().ifBlank { "Resultado: $answer." }
+        if (cleanReply.contains("tempo demais", ignoreCase = true) ||
+            cleanReply.contains("mensagem mais curta", ignoreCase = true)
+        ) {
+            return "Resultado: $answer."
+        }
+
+        val separator = if (cleanReply.lastOrNull() in listOf('.', '!', '?')) " " else ". "
+        return "$cleanReply${separator}Resultado exato: $answer."
+            .replace(Regex("\\s+"), " ")
+            .trim()
     }
 
     private fun sendChatPresence(route: String, state: String) {
@@ -2367,6 +2448,20 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private fun clearNullAiConversationState(route: String) {
+        val clean = canonicalConversationKey(route)
+        if (!isNullAiConversation(clean)) return
+        nullAiConversationRevision++
+        nullAiPrepareJob?.cancel()
+        nullAiThinking = false
+        nullAiRenderingReply = false
+        nullAiReady = false
+        nullAiPreparing = false
+        nullAiPrepareError = ""
+        clearDraft(clean)
+        NullAiMemoryStore.clearConversation(getApplication(), clean)
+    }
+
     private fun conversationMessageExists(route: String, message: Message): Boolean {
         val clean = canonicalConversationKey(route)
         if (clean.isBlank()) return false
@@ -2696,6 +2791,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             "/clear" -> {
                 if (target.isNotBlank() && !hasProtectedUnreadMessages(target)) {
                     nodeManager.clearMessages(target)
+                    clearNullAiConversationState(target)
                     clearPrivacyNotices(target)
                     clearConversationCache(target)
                     messages.clear()

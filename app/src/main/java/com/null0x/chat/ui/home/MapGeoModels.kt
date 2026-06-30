@@ -23,6 +23,35 @@ internal data class CityPoint(
     val importanceRank: Int
 )
 
+internal data class BrazilPlacePoint(
+    val name: String,
+    val longitude: Double,
+    val latitude: Double,
+    val kind: BrazilPlaceKind,
+    val rank: Int
+)
+
+internal enum class BrazilPlaceKind {
+    Municipality,
+    District,
+    Subdistrict
+}
+
+internal data class BoundaryRing(
+    val points: List<GeoPoint>,
+    val minLongitude: Double,
+    val minLatitude: Double,
+    val maxLongitude: Double,
+    val maxLatitude: Double
+) {
+    fun intersects(viewport: GeoBounds, paddingDegrees: Double = 0.0): Boolean {
+        return maxLongitude >= viewport.minLongitude - paddingDegrees &&
+            minLongitude <= viewport.maxLongitude + paddingDegrees &&
+            maxLatitude >= viewport.minLatitude - paddingDegrees &&
+            minLatitude <= viewport.maxLatitude + paddingDegrees
+    }
+}
+
 internal data class AdminRegion(
     val name: String,
     val country: String,

@@ -2,6 +2,7 @@
 #include <jni.h>
 
 #include <algorithm>
+#include <chrono>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -12,19 +13,32 @@
 namespace {
 
 constexpr const char * TAG = "NullAi";
-constexpr int MAX_CONTEXT_TOKENS = 512;
-constexpr int MAX_PREDICT_TOKENS = 36;
-constexpr int BATCH_TOKENS = 128;
+constexpr int CONTEXT_TOKENS = 128;
+constexpr int MAX_PROMPT_TOKENS = 40;
+constexpr int MAX_PREDICT_TOKENS = 12;
+constexpr int BATCH_TOKENS = 10;
+constexpr unsigned int CPU_LOAD_LIMIT_PERCENT = 60;
+constexpr unsigned int MAX_CPU_THREADS = 3;
 
 std::mutex g_mutex;
 std::once_flag g_backend_once;
 llama_model * g_model = nullptr;
+llama_context * g_ctx = nullptr;
 std::string g_model_path;
+bool g_accelerator_available = false;
+bool g_model_uses_accelerator = false;
+
+int preferred_thread_count();
+long long elapsed_millis_since(const std::chrono::steady_clock::time_point & start);
+const char * backend_device_type_name(enum ggml_backend_dev_type type);
+bool is_accelerator_device(enum ggml_backend_dev_type type);
+void log_backend_devices();
 
 void init_backend_once() {
     std::call_once(g_backend_once, [] {
         ggml_backend_load_all();
         llama_backend_init();
+        log_backend_devices();
         __android_log_print(ANDROID_LOG_INFO, TAG, "llama.cpp backend initialized");
     });
 }
@@ -43,11 +57,16 @@ jstring make_jstring(JNIEnv * env, const std::string & value) {
 }
 
 void unload_model() {
+    if (g_ctx != nullptr) {
+        llama_free(g_ctx);
+        g_ctx = nullptr;
+    }
     if (g_model != nullptr) {
         llama_model_free(g_model);
         g_model = nullptr;
     }
     g_model_path.clear();
+    g_model_uses_accelerator = false;
 }
 
 bool ensure_model_loaded(const std::string & model_path, std::string & error) {
@@ -64,9 +83,41 @@ bool ensure_model_loaded(const std::string & model_path, std::string & error) {
 
     unload_model();
 
-    llama_model_params model_params = llama_model_default_params();
-    model_params.n_gpu_layers = 0;
+    const auto load_started_at = std::chrono::steady_clock::now();
 
+    llama_model_params model_params = llama_model_default_params();
+    if (g_accelerator_available) {
+        model_params.n_gpu_layers = -1;
+        model_params.split_mode = LLAMA_SPLIT_MODE_LAYER;
+
+        __android_log_print(
+            ANDROID_LOG_INFO,
+            TAG,
+            "model load start mode=gpu_first gpu_layers=all"
+        );
+
+        g_model = llama_model_load_from_file(model_path.c_str(), model_params);
+        if (g_model != nullptr) {
+            g_model_path = model_path;
+            g_model_uses_accelerator = true;
+            __android_log_print(
+                ANDROID_LOG_INFO,
+                TAG,
+                "model load done elapsed_ms=%lld mode=gpu_first",
+                elapsed_millis_since(load_started_at)
+            );
+            return true;
+        }
+
+        __android_log_print(
+            ANDROID_LOG_WARN,
+            TAG,
+            "GPU model load failed; retrying CPU-only fallback"
+        );
+    }
+
+    model_params = llama_model_default_params();
+    model_params.n_gpu_layers = 0;
     g_model = llama_model_load_from_file(model_path.c_str(), model_params);
     if (g_model == nullptr) {
         error = "nao consegui carregar o modelo GGUF.";
@@ -74,13 +125,146 @@ bool ensure_model_loaded(const std::string & model_path, std::string & error) {
     }
 
     g_model_path = model_path;
+    g_model_uses_accelerator = false;
+    __android_log_print(
+        ANDROID_LOG_INFO,
+        TAG,
+        "model load done elapsed_ms=%lld mode=cpu_only",
+        elapsed_millis_since(load_started_at)
+    );
+    return true;
+}
+
+bool ensure_context_ready(std::string & error) {
+    if (g_model == nullptr) {
+        error = "modelo GGUF nao carregado.";
+        return false;
+    }
+    if (g_ctx != nullptr) {
+        const auto clear_started_at = std::chrono::steady_clock::now();
+        const int threads = preferred_thread_count();
+        llama_set_n_threads(g_ctx, threads, threads);
+        llama_memory_clear(llama_get_memory(g_ctx), true);
+        __android_log_print(
+            ANDROID_LOG_INFO,
+            TAG,
+            "context reuse clear elapsed_ms=%lld threads=%d",
+            elapsed_millis_since(clear_started_at),
+            threads
+        );
+        return true;
+    }
+
+    const auto context_started_at = std::chrono::steady_clock::now();
+
+    llama_context_params ctx_params = llama_context_default_params();
+    ctx_params.n_ctx = CONTEXT_TOKENS;
+    ctx_params.n_batch = BATCH_TOKENS;
+    ctx_params.n_ubatch = BATCH_TOKENS;
+    ctx_params.n_threads = preferred_thread_count();
+    ctx_params.n_threads_batch = ctx_params.n_threads;
+    ctx_params.no_perf = true;
+
+    g_ctx = llama_init_from_model(g_model, ctx_params);
+    if (g_ctx == nullptr) {
+        error = "nao consegui criar o contexto do modelo.";
+        return false;
+    }
+    __android_log_print(
+        ANDROID_LOG_INFO,
+        TAG,
+        "context create done elapsed_ms=%lld n_ctx=%d n_batch=%d threads=%d",
+        elapsed_millis_since(context_started_at),
+        CONTEXT_TOKENS,
+        BATCH_TOKENS,
+        ctx_params.n_threads
+    );
     return true;
 }
 
 int preferred_thread_count() {
     const unsigned int available = std::thread::hardware_concurrency();
-    if (available <= 1) return 1;
-    return 2;
+    if (available <= 2) return 1;
+
+    const unsigned int allowed_by_percent = std::max(
+        1u,
+        (available * CPU_LOAD_LIMIT_PERCENT) / 100u
+    );
+    const unsigned int mobile_safe_cap = std::min(allowed_by_percent, MAX_CPU_THREADS);
+    return static_cast<int>(mobile_safe_cap);
+}
+
+long long elapsed_millis_since(const std::chrono::steady_clock::time_point & start) {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - start
+    ).count();
+}
+
+const char * backend_device_type_name(enum ggml_backend_dev_type type) {
+    switch (type) {
+        case GGML_BACKEND_DEVICE_TYPE_CPU:
+            return "cpu";
+        case GGML_BACKEND_DEVICE_TYPE_GPU:
+            return "gpu";
+        case GGML_BACKEND_DEVICE_TYPE_IGPU:
+            return "igpu";
+        case GGML_BACKEND_DEVICE_TYPE_ACCEL:
+            return "accelerator";
+        case GGML_BACKEND_DEVICE_TYPE_META:
+            return "meta";
+    }
+    return "unknown";
+}
+
+bool is_accelerator_device(enum ggml_backend_dev_type type) {
+    return type == GGML_BACKEND_DEVICE_TYPE_GPU ||
+        type == GGML_BACKEND_DEVICE_TYPE_IGPU ||
+        type == GGML_BACKEND_DEVICE_TYPE_ACCEL;
+}
+
+void log_backend_devices() {
+    const size_t count = ggml_backend_dev_count();
+    bool has_accelerator = false;
+
+    for (size_t index = 0; index < count; ++index) {
+        ggml_backend_dev_t device = ggml_backend_dev_get(index);
+        if (device == nullptr) {
+            continue;
+        }
+
+        const enum ggml_backend_dev_type type = ggml_backend_dev_type(device);
+        const char * name = ggml_backend_dev_name(device);
+        const char * description = ggml_backend_dev_description(device);
+        size_t memory_free = 0;
+        size_t memory_total = 0;
+        ggml_backend_dev_memory(device, &memory_free, &memory_total);
+
+        if (is_accelerator_device(type)) {
+            has_accelerator = true;
+        }
+
+        __android_log_print(
+            ANDROID_LOG_INFO,
+            TAG,
+            "backend device index=%zu type=%s name=%s description=%s memory_free_mb=%zu memory_total_mb=%zu",
+            index,
+            backend_device_type_name(type),
+            name != nullptr ? name : "",
+            description != nullptr ? description : "",
+            memory_free / (1024 * 1024),
+            memory_total / (1024 * 1024)
+        );
+    }
+
+    g_accelerator_available = has_accelerator;
+    __android_log_print(
+        ANDROID_LOG_INFO,
+        TAG,
+        "accelerator policy gpu_first=%d cpu_thread_limit_percent=%u cpu_thread_cap=%u",
+        has_accelerator ? 1 : 0,
+        CPU_LOAD_LIMIT_PERCENT,
+        MAX_CPU_THREADS
+    );
 }
 
 std::vector<llama_token> tokenize_prompt(const llama_vocab * vocab, const std::string & prompt, std::string & error) {
@@ -206,6 +390,8 @@ std::string sanitize_reply(std::string output) {
 }
 
 std::string generate_reply_locked(const std::string & model_path, const std::string & user_prompt) {
+    const auto total_started_at = std::chrono::steady_clock::now();
+
     std::string error;
     if (!ensure_model_loaded(model_path, error)) {
         return "Null IA: " + error;
@@ -214,42 +400,79 @@ std::string generate_reply_locked(const std::string & model_path, const std::str
     const std::string prompt = user_prompt;
 
     const llama_vocab * vocab = llama_model_get_vocab(g_model);
+    const auto tokenize_started_at = std::chrono::steady_clock::now();
     std::vector<llama_token> prompt_tokens = tokenize_prompt(vocab, prompt, error);
+    __android_log_print(
+        ANDROID_LOG_INFO,
+        TAG,
+        "tokenize done elapsed_ms=%lld prompt_bytes=%zu tokens=%zu",
+        elapsed_millis_since(tokenize_started_at),
+        prompt.size(),
+        prompt_tokens.size()
+    );
+
     if (!error.empty()) {
         return "Null IA: " + error;
     }
 
-    const int requested_context = static_cast<int>(prompt_tokens.size()) + MAX_PREDICT_TOKENS + 8;
-    const int n_ctx = std::min(MAX_CONTEXT_TOKENS, std::max(256, requested_context));
-    if (static_cast<int>(prompt_tokens.size()) >= n_ctx) {
+    if (prompt_tokens.empty()) {
+        return "Null IA: prompt vazio.";
+    }
+
+    if (static_cast<int>(prompt_tokens.size()) > MAX_PROMPT_TOKENS) {
+        std::vector<llama_token> compact_prompt;
+        compact_prompt.reserve(MAX_PROMPT_TOKENS);
+        compact_prompt.push_back(prompt_tokens.front());
+        compact_prompt.insert(
+            compact_prompt.end(),
+            prompt_tokens.end() - (MAX_PROMPT_TOKENS - 1),
+            prompt_tokens.end()
+        );
+        prompt_tokens.swap(compact_prompt);
+    }
+
+    if (static_cast<int>(prompt_tokens.size()) + MAX_PREDICT_TOKENS + 8 >= CONTEXT_TOKENS) {
         return "Null IA: essa mensagem ficou grande demais para o contexto configurado.";
     }
 
-    llama_context_params ctx_params = llama_context_default_params();
-    ctx_params.n_ctx = static_cast<uint32_t>(n_ctx);
-    ctx_params.n_batch = static_cast<uint32_t>(std::min(BATCH_TOKENS, n_ctx));
-    ctx_params.n_ubatch = ctx_params.n_batch;
-    ctx_params.n_threads = preferred_thread_count();
-    ctx_params.n_threads_batch = ctx_params.n_threads;
-    ctx_params.no_perf = true;
-
-    llama_context * ctx = llama_init_from_model(g_model, ctx_params);
-    if (ctx == nullptr) {
-        return "Null IA: nao consegui criar o contexto do modelo.";
+    if (!ensure_context_ready(error)) {
+        return "Null IA: " + error;
     }
 
-    llama_sampler * sampler = llama_sampler_chain_init(llama_sampler_chain_default_params());
+    llama_sampler * sampler = llama_sampler_chain_init(
+        llama_sampler_chain_default_params()
+    );
+
+    if (sampler == nullptr) {
+        return "Null IA: nao consegui criar o sampler.";
+    }
+
     llama_sampler_chain_add(sampler, llama_sampler_init_greedy());
 
-    llama_batch batch = llama_batch_get_one(
-        prompt_tokens.data(),
-        static_cast<int32_t>(prompt_tokens.size())
+    std::string output;
+    int n_pos = 0;
+    const auto prompt_eval_started_at = std::chrono::steady_clock::now();
+
+    __android_log_print(
+        ANDROID_LOG_INFO,
+        TAG,
+        "generate start prompt_tokens=%zu n_ctx=%d n_batch=%d max_predict=%d threads=%d accelerator=%d",
+        prompt_tokens.size(),
+        CONTEXT_TOKENS,
+        BATCH_TOKENS,
+        MAX_PREDICT_TOKENS,
+        preferred_thread_count(),
+        g_model_uses_accelerator ? 1 : 0
     );
 
     if (llama_model_has_encoder(g_model)) {
-        if (llama_encode(ctx, batch) != 0) {
+        llama_batch encoder_batch = llama_batch_get_one(
+            prompt_tokens.data(),
+            static_cast<int32_t>(prompt_tokens.size())
+        );
+
+        if (llama_encode(g_ctx, encoder_batch) != 0) {
             llama_sampler_free(sampler);
-            llama_free(ctx);
             return "Null IA: falha ao avaliar o prompt.";
         }
 
@@ -257,20 +480,68 @@ std::string generate_reply_locked(const std::string & model_path, const std::str
         if (decoder_start_token_id == LLAMA_TOKEN_NULL) {
             decoder_start_token_id = llama_vocab_bos(vocab);
         }
-        batch = llama_batch_get_one(&decoder_start_token_id, 1);
-    }
 
-    std::string output;
-    int n_pos = 0;
+        llama_batch decoder_batch = llama_batch_get_one(&decoder_start_token_id, 1);
 
-    for (int n_decode = 0; n_decode < MAX_PREDICT_TOKENS; ++n_decode) {
-        if (llama_decode(ctx, batch) != 0) {
-            output = "Null IA: falha durante a geracao.";
-            break;
+        if (llama_decode(g_ctx, decoder_batch) != 0) {
+            llama_sampler_free(sampler);
+            return "Null IA: falha ao iniciar o decoder.";
         }
 
-        n_pos += batch.n_tokens;
-        llama_token next_token = llama_sampler_sample(sampler, ctx, -1);
+        n_pos = 1;
+    } else {
+        int offset = 0;
+        const int total_prompt_tokens = static_cast<int>(prompt_tokens.size());
+        const int max_batch_tokens = BATCH_TOKENS;
+
+        while (offset < total_prompt_tokens) {
+            const int remaining = total_prompt_tokens - offset;
+            const int chunk_size = std::min(max_batch_tokens, remaining);
+
+            __android_log_print(
+                ANDROID_LOG_INFO,
+                TAG,
+                "decode prompt chunk offset=%d chunk_size=%d total=%d",
+                offset,
+                chunk_size,
+                total_prompt_tokens
+            );
+
+            llama_batch prompt_batch = llama_batch_get_one(
+                prompt_tokens.data() + offset,
+                static_cast<int32_t>(chunk_size)
+            );
+
+            if (llama_decode(g_ctx, prompt_batch) != 0) {
+                llama_sampler_free(sampler);
+                return "Null IA: falha ao avaliar o prompt.";
+            }
+
+            offset += chunk_size;
+            n_pos += chunk_size;
+
+            if (n_pos >= CONTEXT_TOKENS - 1) {
+                llama_sampler_free(sampler);
+                return "Null IA: o prompt ocupou todo o contexto do modelo.";
+            }
+        }
+    }
+
+    const long long prompt_eval_ms = elapsed_millis_since(prompt_eval_started_at);
+    __android_log_print(
+        ANDROID_LOG_INFO,
+        TAG,
+        "prompt eval done elapsed_ms=%lld tokens=%zu n_pos=%d",
+        prompt_eval_ms,
+        prompt_tokens.size(),
+        n_pos
+    );
+
+    const auto decode_started_at = std::chrono::steady_clock::now();
+
+    for (int n_decode = 0; n_decode < MAX_PREDICT_TOKENS; ++n_decode) {
+        llama_token next_token = llama_sampler_sample(sampler, g_ctx, -1);
+
         if (llama_vocab_is_eog(vocab, next_token)) {
             break;
         }
@@ -285,22 +556,59 @@ std::string generate_reply_locked(const std::string & model_path, const std::str
             break;
         }
 
-        batch = llama_batch_get_one(&next_token, 1);
-        if (n_pos >= n_ctx - 1) {
+        if (n_pos >= CONTEXT_TOKENS - 1) {
             break;
         }
+
+        llama_batch token_batch = llama_batch_get_one(&next_token, 1);
+
+        if (llama_decode(g_ctx, token_batch) != 0) {
+            output = "Null IA: falha durante a geracao.";
+            break;
+        }
+
+        n_pos += 1;
     }
 
     llama_sampler_free(sampler);
-    llama_free(ctx);
+
+    const long long decode_ms = elapsed_millis_since(decode_started_at);
+    __android_log_print(
+        ANDROID_LOG_INFO,
+        TAG,
+        "decode done elapsed_ms=%lld output_bytes=%zu",
+        decode_ms,
+        output.size()
+    );
 
     output = sanitize_reply(output);
 
     if (output.empty()) {
-        return "Null IA: o modelo nao gerou resposta.";
+        return "Nao consegui responder bem agora. Tente uma mensagem mais curta.";
     }
 
-    return output;
+    const long long total_ms = elapsed_millis_since(total_started_at);
+    const size_t output_bytes = output.size();
+
+    __android_log_print(
+        ANDROID_LOG_INFO,
+        TAG,
+        "generate done total_ms=%lld prompt_eval_ms=%lld decode_ms=%lld output_bytes=%zu",
+        total_ms,
+        prompt_eval_ms,
+        decode_ms,
+        output_bytes
+    );
+
+    return "__NULLAI_METRICS__ total_ms=" + std::to_string(total_ms) +
+        " prompt_eval_ms=" + std::to_string(prompt_eval_ms) +
+        " decode_ms=" + std::to_string(decode_ms) +
+        " prompt_tokens=" + std::to_string(prompt_tokens.size()) +
+        " output_bytes=" + std::to_string(output_bytes) +
+        " gpu=" + std::to_string(g_model_uses_accelerator ? 1 : 0) +
+        " gpu_available=" + std::to_string(g_accelerator_available ? 1 : 0) +
+        " cpu_threads=" + std::to_string(preferred_thread_count()) +
+        "\n" + output;
 }
 
 } // namespace
@@ -317,6 +625,9 @@ Java_com_null0x_chat_ai_LlamaCppEngine_nativePrepare(
 
     std::lock_guard<std::mutex> lock(g_mutex);
     if (!ensure_model_loaded(model_path, error)) {
+        return make_jstring(env, error);
+    }
+    if (!ensure_context_ready(error)) {
         return make_jstring(env, error);
     }
 
@@ -338,6 +649,9 @@ Java_com_null0x_chat_ai_LlamaCppEngine_nativeGenerate(
         return make_jstring(env, "Me manda uma mensagem e eu respondo por aqui.");
     }
 
-    std::lock_guard<std::mutex> lock(g_mutex);
+    std::unique_lock<std::mutex> lock(g_mutex, std::try_to_lock);
+    if (!lock.owns_lock()) {
+        return make_jstring(env, "Ainda estou terminando a resposta anterior. Tente de novo em alguns segundos.");
+    }
     return make_jstring(env, generate_reply_locked(model_path, prompt));
 }
