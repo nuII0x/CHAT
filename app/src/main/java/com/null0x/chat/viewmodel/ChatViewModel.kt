@@ -14,6 +14,7 @@ import com.null0x.chat.AppBranding
 import com.null0x.chat.AppVisibility
 import com.null0x.chat.ai.LlamaCppEngine
 import com.null0x.chat.ai.NullAiModelStore
+import com.null0x.chat.ai.NullAiMemoryStore
 import com.null0x.chat.model.DeliveryState
 import com.null0x.chat.model.Message
 import com.null0x.chat.network.ChatNodeManager
@@ -352,6 +353,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         private set
     var nullAiPreparing by mutableStateOf(false)
         private set
+    var nullAiThinking by mutableStateOf(false)
+        private set
+    var nullAiRenderingReply by mutableStateOf(false)
+        private set
     var nullAiReady by mutableStateOf(false)
         private set
     var nullAiPrepareError by mutableStateOf("")
@@ -585,6 +590,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         if (!enabled) {
             nullAiPrepareJob?.cancel()
             nullAiPreparing = false
+            nullAiThinking = false
+            nullAiRenderingReply = false
             nullAiReady = false
             nullAiPrepareError = ""
             nullAiPreparedModelPath = ""
@@ -1539,54 +1546,63 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         refreshConversationPreviewsAsync()
 
         viewModelScope.launch {
-            val replyPrompt = buildNullAiPrompt(target)
-            val reply = aiEngine.generateReply(replyPrompt).getOrElse { error ->
-                error.message ?: "Nao consegui gerar resposta agora."
-            }.let(::cleanNullAiReply)
-            val incoming = Message(
-                text = reply,
-                isMine = false,
-                delivery = DeliveryState.Delivered
-            )
-            if (appendConversationMessage(target, incoming)) {
-                appendVisibleMessage(incoming)
+            nullAiThinking = true
+            nullAiRenderingReply = false
+            try {
+                val replyPrompt = buildNullAiPrompt(target)
+                val reply = aiEngine.generateReply(replyPrompt).getOrElse { error ->
+                    error.message ?: "Nao consegui gerar resposta agora."
+                }.let(::cleanNullAiReply)
+                nullAiThinking = false
+                nullAiRenderingReply = true
+                val incoming = Message(
+                    text = reply,
+                    isMine = false,
+                    delivery = DeliveryState.Delivered
+                )
+                if (appendConversationMessage(target, incoming)) {
+                    appendVisibleMessage(incoming)
+                }
+                chatStore.upsert(target, incoming)
+                NullAiMemoryStore.update(getApplication(), conversationMessagesFor(target))
+                conversationsVersion++
+                refreshConversationPreviewsAsync()
+                delay(1_200)
+            } finally {
+                nullAiThinking = false
+                nullAiRenderingReply = false
             }
-            chatStore.upsert(target, incoming)
-            conversationsVersion++
-            refreshConversationPreviewsAsync()
         }
     }
 
     private fun buildNullAiPrompt(target: String): String {
-        val history = conversationMessagesFor(target).takeLast(4)
-        val systemInstructions = listOf(
-            "Voce e a Null IA, uma assistente local.",
-            "Responda em portugues, em 1 ou 2 frases curtas.",
-            "Nao cumprimente sem necessidade.",
-            "Nao repita o usuario e nao use rotulos como Usuario:, Null IA:, Assistente: ou AI:.",
-            "Comece direto na resposta e termine sem assinatura."
-        )
+        val memory = NullAiMemoryStore.read(getApplication())
+        val lastUserMessage = conversationMessagesFor(target)
+            .lastOrNull { it.isMine }
+            ?.text
+            ?.trim()
+            ?.replace(Regex("\\s+"), " ")
+            ?.take(220)
+            .orEmpty()
         return buildString {
-            systemInstructions.forEach { line ->
-                append(line).append('\n')
+            append("Voce e a Null IA. Responda em portugues do Brasil, curto e natural.\n")
+            append("Use no maximo duas frases. Nao copie a mensagem. Nao use rotulos.\n")
+            if (memory.isNotBlank()) {
+                append("Memoria recente:\n")
+                append(memory).append('\n')
             }
-            append('\n')
-            history.forEach { item ->
-                val speaker = if (item.isMine) "Usuario" else "Null IA"
-                val content = item.text.trim().replace(Regex("\\s+"), " ").take(180)
-                append(speaker).append(": ").append(content).append('\n')
-            }
-            append("Null IA:")
+            append("Mensagem: ").append(lastUserMessage).append('\n')
+            append("Resposta:")
         }
     }
 
     private fun cleanNullAiReply(rawReply: String): String {
         var reply = rawReply.trim()
         reply = reply
-            .replace(Regex("(?i)\\s*(null ia|assistente|assistant|ai)\\s*:\\s*$"), "")
-            .replace(Regex("(?i)^\\s*(null ia|assistente|assistant|ai)\\s*:\\s*"), "")
-            .replace(Regex("(?m)^\\s*(Usuario|User)\\s*:\\s*.*$"), "")
-            .replace(Regex("(?m)^\\s*(Null IA|Assistente|Assistant|AI)\\s*:\\s*.*$"), "")
+            .replace(Regex("(?i)\\s*(null ia|assistente|assistant|ai|resposta)\\s*:\\s*$"), "")
+            .replace(Regex("(?i)^\\s*(null ia|assistente|assistant|ai|resposta)\\s*:\\s*"), "")
+            .replace(Regex("(?m)^\\s*(Usuario|User|Mensagem)\\s*:\\s*.*$"), "")
+            .replace(Regex("(?m)^\\s*(Null IA|Assistente|Assistant|AI|Resposta)\\s*:\\s*.*$"), "")
             .replace(Regex("\\n{3,}"), "\n\n")
             .trim()
         reply = reply.takeIf { it.isNotBlank() } ?: "Nao consegui gerar resposta agora."
@@ -1644,6 +1660,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     fun nullAiSubtitle(): String {
         return when {
             nullAiPreparing -> "Preparando modelo..."
+            nullAiThinking -> "Pensando..."
             nullAiPrepareError.isNotBlank() -> "IA local indisponivel"
             else -> "IA local • ${aiEngine.activeModel.label}"
         }

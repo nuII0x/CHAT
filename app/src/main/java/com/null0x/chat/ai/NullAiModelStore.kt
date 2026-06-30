@@ -13,6 +13,8 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 object NullAiModelStore {
+    private const val RecommendedModelDownloadUrl =
+        "https://huggingface.co/bartowski/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/Qwen2.5-0.5B-Instruct-Q2_K.gguf"
     private const val PrefsName = "null_ai"
     private const val DownloadWorkName = "null_ai_model_download"
     private const val DefaultModelId = "local-gguf"
@@ -56,7 +58,9 @@ object NullAiModelStore {
     }
 
     fun modelDownloadUrl(context: Context): String {
-        return prefs(context).getString(ModelDownloadUrlKey, "").orEmpty()
+        return prefs(context).getString(ModelDownloadUrlKey, null)
+            ?.takeIf { it.isNotBlank() }
+            ?: RecommendedModelDownloadUrl
     }
 
     fun setModelDownloadUrl(context: Context, url: String) {

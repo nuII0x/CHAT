@@ -293,25 +293,25 @@ internal fun SettingsTab(
             ),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            item { SectionTitle("Conta") }
+            item { SectionTitle("Controle") }
             item {
                 SettingsRow(
-                    title = "Tokens",
-                    subtitle = "Itens para copiar sem bagunçar as ações",
+                    title = "Credenciais",
+                    subtitle = "Tokens e chaves públicas",
                     onClick = { showTokensWindow = true }
                 )
             }
             item {
                 SettingsRow(
                     title = "Conta",
-                    subtitle = "Envio, inbox, rotacao e restauracao",
+                    subtitle = "Recebimento, backup e recuperação",
                     onClick = { showAccountWindow = true }
                 )
             }
             item {
                 SettingsRow(
                     title = "Chats",
-                    subtitle = "Presença, atividade e histórico",
+                    subtitle = "Presença, histórico e captura de tela",
                     onClick = { showChatsWindow = true }
                 )
             }
@@ -319,9 +319,9 @@ internal fun SettingsTab(
                 SettingsRow(
                     title = "Null IA",
                     subtitle = if (nullAiEnabled) {
-                        "IA local ativa"
+                        "Modelo local habilitado"
                     } else {
-                        "IA local oculta"
+                        "Modelo local desabilitado"
                     },
                     onClick = { showNullAiWindow = true }
                 )
@@ -330,7 +330,7 @@ internal fun SettingsTab(
                 SettingsRow(
                     title = "Bloqueados",
                     subtitle = if (blockedContacts.isEmpty()) {
-                        "Nenhum contato bloqueado"
+                        "Lista vazia"
                     } else {
                         "${blockedContacts.size} contatos bloqueados"
                     },
@@ -339,8 +339,8 @@ internal fun SettingsTab(
             }
             item {
                 SettingsRow(
-                    title = "Aparências",
-                    subtitle = "Abas, diálogos e conversas",
+                    title = "Interface",
+                    subtitle = "Tema, aparência e leitura",
                     onClick = { showAppearancesWindow = true }
                 )
             }
@@ -349,9 +349,9 @@ internal fun SettingsTab(
                     SettingsRow(
                         title = "Ativar notificações",
                         subtitle = if (notificationsEnabled) {
-                            "Ajuste útil se o Android limitou os alertas do app"
+                            "Permissão ativa"
                         } else {
-                            "Necessário para receber mensagens no Android 13+"
+                            "Permissão necessária para alertas do Android"
                         },
                         important = true,
                         trailing = if (!notificationsEnabled) {
@@ -363,10 +363,10 @@ internal fun SettingsTab(
                     )
                 }
             }
-            item { SectionTitle("Atualizações") }
+            item { SectionTitle("Sistema") }
             item {
                 SettingsSwitchRow(
-                    title = "Baixar automaticamente",
+                    title = "Atualização automática",
                     subtitle = appUpdateSubtitle(appUpdateState),
                     checked = appUpdateState.autoDownloadEnabled,
                     onCheckedChange = { enabled ->
@@ -409,40 +409,8 @@ internal fun SettingsTab(
                 )
             }
             item {
-                SettingsSwitchRow(
-                    title = "Estado no chat",
-                    subtitle = if (showChatPresenceStatus) "Mostra Disponível ou Indisponível" else "Oculto no subtítulo do chat",
-                    checked = showChatPresenceStatus,
-                    onCheckedChange = onShowChatPresenceStatusChange
-                )
-            }
-            item {
-                SettingsSwitchRow(
-                    title = "Última atividade no chat",
-                    subtitle = if (showChatLastActivity) "Mostra quando houve atividade recente" else "Oculta do subtítulo do chat",
-                    checked = showChatLastActivity,
-                    onCheckedChange = onShowChatLastActivityChange
-                )
-            }
-            item {
-                SettingsSwitchRow(
-                    title = "Manter historico de mensagens",
-                    subtitle = "Padrao para novas conversas",
-                    checked = keepViewedMessages,
-                    onCheckedChange = onKeepViewedMessagesChange
-                )
-            }
-            item {
-                SettingsSwitchRow(
-                    title = "Permitir print da tela",
-                    subtitle = "Padrao para novas conversas",
-                    checked = screenshotsEnabled,
-                    onCheckedChange = onScreenshotsEnabledChange
-                )
-            }
-            item {
                 Text(
-                    text = "Feito com amor e carinho por nuII0x",
+                    text = "NullChat • comunicação privada local",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = TextAlign.Center,
@@ -727,27 +695,27 @@ internal fun AccountTokensScreen(
     onCopyExchangeKey: () -> Unit
 ) {
     SettingsWindowScaffold(
-        title = "Tokens",
-        subtitle = "Itens para copiar",
+        title = "Credenciais",
+        subtitle = "Identidade pública e chaves",
         onBack = onBack,
         onLockApp = onLockApp
     ) {
-        item { SectionTitle("Tokens da rota") }
+        item { SectionTitle("Identidade") }
         item {
             SettingsRow(
-                title = "Seu Token",
+                title = "Token da rota",
                 subtitle = if (tokenLabel == "Aguardando token...") tokenLabel else "Token protegido",
                 onClick = onCopyToken
             )
         }
         item {
             SettingsRow(
-                title = "Token público de envio",
+                title = "Token de recebimento",
                 subtitle = if (sendToken.isBlank()) "Aguardando token..." else "Token protegido",
                 onClick = onCopySendToken
             )
         }
-        item { SectionTitle("Chaves públicas") }
+        item { SectionTitle("Chaves") }
         item {
             SettingsRow(
                 title = "Chave pública do dono",
@@ -784,60 +752,60 @@ internal fun AccountActionsScreen(
     val scope = rememberCoroutineScope()
     SettingsWindowScaffold(
         title = "Conta",
-        subtitle = "Recebimento, backup e segurança",
+        subtitle = "Operações sensíveis",
         onBack = onBack,
         onLockApp = onLockApp
     ) {
-        item { SectionTitle("Recebimento") }
+        item { SectionTitle("Entrada") }
         item {
             SettingsRow(
-                title = "Dados para receber",
-                subtitle = "Copia as informações que permitem enviar mensagens para você",
+                title = "Pacote de recebimento",
+                subtitle = "Copia as informações necessárias para contato",
                 onClick = onCopyPublicSend
             )
         }
         item {
             SettingsRow(
-                title = "Caixa privada",
-                subtitle = "${privateInboxMessages.size} mensagens recebidas fora da lista principal",
+                title = "Entrada reservada",
+                subtitle = "${privateInboxMessages.size} itens fora da lista principal",
                 onClick = onOpenInbox
             )
         }
-        item { SectionTitle("Backup") }
+        item { SectionTitle("Cópia segura") }
         item {
             SettingsRow(
-                title = "Backup de contatos",
-                subtitle = "Salva sua lista de contatos no Drive ou nos arquivos",
+                title = "Exportar contatos",
+                subtitle = "Salva a lista local em arquivo",
                 onClick = onExportContactsBackup
             )
         }
         item {
             SettingsRow(
-                title = "Backup da rota",
-                subtitle = "Guarda sua rota atual para recuperar depois",
+                title = "Exportar rota",
+                subtitle = "Guarda a rota atual para recuperação",
                 onClick = onExportOnionBackup
             )
         }
-        item { SectionTitle("Recuperação") }
+        item { SectionTitle("Restauro") }
         item {
             SettingsRow(
-                title = "Restaurar backup da rota",
-                subtitle = "Recupera uma rota salva anteriormente",
+                title = "Importar rota",
+                subtitle = "Restaura uma rota salva anteriormente",
                 onClick = onImportOnionBackup
             )
         }
         item {
             SettingsRow(
-                title = "Restaurar acesso privado",
-                subtitle = "Use suas 12 palavras e a senha local para recuperar o acesso",
+                title = "Recuperar acesso",
+                subtitle = "Usa as 12 palavras e a senha local",
                 onClick = onRestoreAccess
             )
         }
         item { SectionTitle("Segurança") }
         item {
             SettingsRow(
-                title = "Trocar token público",
-                subtitle = "Cancela o token antigo e cria um novo para receber mensagens",
+                title = "Rotacionar token",
+                subtitle = "Revoga o token atual e cria outro",
                 onClick = onRotateToken
             )
         }
@@ -901,40 +869,40 @@ internal fun ChatsSettingsScreen(
 ) {
     SettingsWindowScaffold(
         title = "Chats",
-        subtitle = "Visibilidade, histórico e captura",
+        subtitle = "Políticas de conversa",
         onBack = onBack,
         onLockApp = onLockApp
     ) {
         item { SectionTitle("Visibilidade") }
         item {
             SettingsSwitchRow(
-                title = "Estado no chat",
-                subtitle = if (showChatPresenceStatus) "Mostra Disponível ou Indisponível" else "Oculto no subtítulo do chat",
+                title = "Presença",
+                subtitle = if (showChatPresenceStatus) "Visível no subtítulo" else "Oculta no subtítulo",
                 checked = showChatPresenceStatus,
                 onCheckedChange = onShowChatPresenceStatusChange
             )
         }
         item {
             SettingsSwitchRow(
-                title = "Última atividade no chat",
-                subtitle = if (showChatLastActivity) "Mostra quando houve atividade recente" else "Oculta do subtítulo do chat",
+                title = "Atividade recente",
+                subtitle = if (showChatLastActivity) "Visível no subtítulo" else "Oculta no subtítulo",
                 checked = showChatLastActivity,
                 onCheckedChange = onShowChatLastActivityChange
             )
         }
-        item { SectionTitle("Conversa") }
+        item { SectionTitle("Retenção") }
         item {
             SettingsSwitchRow(
-                title = "Manter historico de mensagens",
-                subtitle = "Padrao para novas conversas",
+                title = "Histórico local",
+                subtitle = "Padrão para novas conversas",
                 checked = keepViewedMessages,
                 onCheckedChange = onKeepViewedMessagesChange
             )
         }
         item {
             SettingsSwitchRow(
-                title = "Permitir print da tela",
-                subtitle = "Padrao para novas conversas",
+                title = "Captura de tela",
+                subtitle = "Permissão padrão para novas conversas",
                 checked = screenshotsEnabled,
                 onCheckedChange = onScreenshotsEnabledChange
             )
@@ -980,15 +948,15 @@ internal fun NullAiSettingsScreen(
 
     SettingsWindowScaffold(
         title = "Null IA",
-        subtitle = "Modelo, URL e download",
+        subtitle = "Modelo local e memória",
         onBack = onBack,
         onLockApp = onLockApp
     ) {
-        item { SectionTitle("Ativação") }
+        item { SectionTitle("Estado") }
         item {
             SettingsSwitchRow(
-                title = "Null IA",
-                subtitle = if (nullAiEnabled) "Chat local fixado na aba Chats" else "Oculta o chat da IA local",
+                title = "Chat local",
+                subtitle = if (nullAiEnabled) "Disponível na lista de conversas" else "Oculto da lista de conversas",
                 checked = nullAiEnabled,
                 onCheckedChange = onNullAiEnabledChange
             )
@@ -996,7 +964,7 @@ internal fun NullAiSettingsScreen(
         item { SectionTitle("Modelo") }
         item {
             SettingsRow(
-                title = "Modelo da Null IA",
+                title = "Arquivo GGUF",
                 subtitle = modelLabel,
                 onClick = onModelPicked
             )
@@ -1016,7 +984,7 @@ internal fun NullAiSettingsScreen(
                     singleLine = true,
                     enabled = editingUrl,
                     readOnly = !editingUrl,
-                    label = { Text("URL do modelo GGUF") },
+                    label = { Text("URL do GGUF") },
                     placeholder = { Text("https://.../modelo.gguf") },
                     shape = RoundedCornerShape(16.dp),
                     keyboardOptions = KeyboardOptions(
@@ -1050,9 +1018,9 @@ internal fun NullAiSettingsScreen(
                 )
                 Text(
                     text = if (editingUrl || modelUrl.isBlank()) {
-                        "Use um link direto para um arquivo .gguf. O download roda fora do Tor."
+                        "Use um link direto para um arquivo .gguf. O download não usa Tor."
                     } else {
-                        "URL salva. Toque em Mudar URL para editar. O download roda fora do Tor."
+                        "URL salva. Toque em Mudar URL para editar."
                     },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -1079,7 +1047,7 @@ internal fun NullAiSettingsScreen(
             SettingsSwitchRow(
                 title = "Baixar automaticamente",
                 subtitle = if (autoDownloadEnabled) {
-                    "Baixa o modelo quando o Wi-Fi estiver disponível"
+                    "Baixa o modelo quando houver Wi-Fi"
                 } else {
                     "Desligado"
                 },
@@ -1093,7 +1061,7 @@ internal fun NullAiSettingsScreen(
                 subtitle = if (modelUrl.isBlank()) {
                     "Salve uma URL primeiro"
                 } else {
-                    "Baixa usando a rede disponível, fora de Tor"
+                    "Baixa usando a rede disponível, sem Tor"
                 },
                 onClick = onDownloadNow
             )

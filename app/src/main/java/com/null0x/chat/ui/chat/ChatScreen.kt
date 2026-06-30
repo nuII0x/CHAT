@@ -30,6 +30,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.lazy.LazyColumn
@@ -157,6 +159,10 @@ private val MessageBodyInset = 4.dp
 private const val ChatSettingsRoute = "chat_settings"
 private const val BlockDecisionHelpRoute = "block_decision_help"
 private const val ChatMessagePrefix = "CHAT_MSG|"
+private const val NullAiEmptyNotice =
+    "Aviso: Esse chat aqui é só um experimento, feito mais pra brincar e testar umas coisas. " +
+        "A IA pode dar umas viajadas, entender meio errado, responder de um jeito confuso ou até mandar informação errada. " +
+        "Então, não leva tudo tão a sério, beleza? Se for algo importante, melhor dar uma conferida em fontes confiáveis antes de tomar qualquer decisão."
 
 @Composable
 fun ChatScreen(vm: ChatViewModel, themeMode: ThemeMode, onBack: () -> Unit, onLockApp: () -> Unit) {
@@ -403,6 +409,12 @@ fun ChatScreen(vm: ChatViewModel, themeMode: ThemeMode, onBack: () -> Unit, onLo
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val density = LocalDensity.current
         val scope = rememberCoroutineScope()
+        val imeBottomPadding = WindowInsets.ime.getBottom(density).let { with(density) { it.toDp() } }
+        val visibleBottomPadding = if (imeBottomPadding > 0.dp) {
+            imeBottomPadding + 112.dp
+        } else {
+            170.dp
+        }
         val screenWidthPx = with(density) { maxWidth.toPx() }.coerceAtLeast(1f)
         val closeThreshold = screenWidthPx * 0.18f
         val flingThreshold = 700f
@@ -510,13 +522,14 @@ fun ChatScreen(vm: ChatViewModel, themeMode: ThemeMode, onBack: () -> Unit, onLo
                             messages = if (user == vm.targetUsername) displayedMessages else vm.messagesFor(user),
                             privacyNotices = vm.privacyNotices(),
                             loaded = currentChatLoaded && user == vm.targetUsername,
+                            emptyStateText = if (vm.isNullAiConversation(user)) NullAiEmptyNotice else "Sem mensagens ainda",
                             unreadHintCount = unreadHintCount,
                             selectableMessageIds = selectableMessageIds,
                             onMessageClick = { selectedMessage = it },
                             themeMode = themeMode,
                             appearance = appearance,
                             modifier = Modifier.fillMaxSize(),
-                            bottomContentPadding = 170.dp,
+                            bottomContentPadding = visibleBottomPadding,
                             composerExpanded = showTextInput
                         )
                     }
@@ -529,12 +542,21 @@ fun ChatScreen(vm: ChatViewModel, themeMode: ThemeMode, onBack: () -> Unit, onLo
                     .navigationBarsPadding()
                     .imePadding()
             ) {
-                val marker = vm.emojiForRoute(headerUser)
-                    .ifBlank { compactOnionRoute(vm.chatTitleFor(headerUser)).take(1).ifBlank { "?" }.uppercase() }
-                if (!isNullAiChat && marker.isNotBlank() && vm.isPartnerChatOpen(headerUser)) {
+                val marker = if (isNullAiChat) {
+                    "IA"
+                } else {
+                    vm.emojiForRoute(headerUser)
+                        .ifBlank { compactOnionRoute(vm.chatTitleFor(headerUser)).take(1).ifBlank { "?" }.uppercase() }
+                }
+                val showTypingBadge = if (isNullAiChat) {
+                    vm.nullAiRenderingReply
+                } else {
+                    vm.isPartnerChatOpen(headerUser)
+                }
+                if (marker.isNotBlank() && showTypingBadge) {
                     PartnerMarkerBadge(
                         marker = marker,
-                        typing = vm.isPartnerTyping(headerUser),
+                        typing = if (isNullAiChat) vm.nullAiRenderingReply else vm.isPartnerTyping(headerUser),
                         modifier = Modifier
                             .align(Alignment.BottomStart)
                             .padding(
@@ -1276,6 +1298,7 @@ private fun MessageList(
     messages: List<Message>,
     privacyNotices: List<ChatViewModel.PrivacyNotice>,
     loaded: Boolean,
+    emptyStateText: String,
     unreadHintCount: Int,
     selectableMessageIds: Set<String>,
     onMessageClick: (Message) -> Unit,
@@ -1419,7 +1442,7 @@ private fun MessageList(
                 tonalElevation = 0.dp
             ) {
                 Text(
-                    text = "Sem mensagens ainda",
+                    text = emptyStateText,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.padding(horizontal = 18.dp, vertical = 14.dp)

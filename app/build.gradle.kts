@@ -1,5 +1,11 @@
 import java.util.Properties
 import org.gradle.api.GradleException
+import org.gradle.api.DefaultTask
+import org.gradle.api.file.RegularFileProperty
+import org.gradle.api.provider.Property
+import org.gradle.api.tasks.Input
+import org.gradle.api.tasks.OutputFile
+import org.gradle.api.tasks.TaskAction
 
 plugins {
     alias(libs.plugins.android.application)
@@ -50,23 +56,40 @@ fun loadSemanticVersion(file: java.io.File): SemanticVersion {
     return SemanticVersion(major, minor, patch)
 }
 
-fun storeSemanticVersion(file: java.io.File, version: SemanticVersion) {
-    file.parentFile?.mkdirs()
-    file.writeText(
-        """
-        major=${version.major}
-        minor=${version.minor}
-        patch=${version.patch}
-        """.trimIndent() + "\n"
-    )
-}
-
 fun parseReleaseType(raw: String): ReleaseType? {
     return when (raw.trim().lowercase()) {
         "major" -> ReleaseType.MAJOR
         "minor" -> ReleaseType.MINOR
         "security" -> ReleaseType.SECURITY
         else -> null
+    }
+}
+
+abstract class PersistReleaseVersionTask : DefaultTask() {
+    @get:OutputFile
+    abstract val versionFile: RegularFileProperty
+
+    @get:Input
+    abstract val major: Property<Int>
+
+    @get:Input
+    abstract val minor: Property<Int>
+
+    @get:Input
+    abstract val patch: Property<Int>
+
+    @TaskAction
+    fun persist() {
+        val target = versionFile.get().asFile
+        target.parentFile?.mkdirs()
+        target.writeText(
+            """
+            major=${major.get()}
+            minor=${minor.get()}
+            patch=${patch.get()}
+            """.trimIndent() + "\n"
+        )
+        println("Versao atualizada para ${major.get()}.${minor.get()}.${patch.get()}")
     }
 }
 
@@ -164,13 +187,13 @@ android {
 }
 
 if (requestedReleaseType != null) {
-    val persistVersion = tasks.register("persistReleaseVersion") {
+    val persistVersion = tasks.register<PersistReleaseVersionTask>("persistReleaseVersion") {
         group = "versioning"
         description = "Persiste a nova versao semanticamente versionada no arquivo do projeto."
-        doLast {
-            storeSemanticVersion(versionFile, versionForThisBuild)
-            println("Versao atualizada para ${versionForThisBuild.versionName()}")
-        }
+        versionFile.set(layout.projectDirectory.file("../version.properties"))
+        major.set(versionForThisBuild.major)
+        minor.set(versionForThisBuild.minor)
+        patch.set(versionForThisBuild.patch)
     }
 
     tasks.named("preBuild") {

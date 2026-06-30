@@ -1,6 +1,6 @@
 {
-  "versionCode": 1000000,
-  "versionName": "1.0.0",
-  "apkUrl": "https://raw.githubusercontent.com/nuII0x/Chat/main/releases/NoChat-1.0.0.apk",
-  "releaseNotes": "Primeira versão pública com atualizador automático."
+  "versionCode": 1000002,
+  "versionName": "1.0.2",
+  "apkUrl": "https://github.com/nuII0x/Chat/releases/download/v1.0.2/NoChat-1.0.2.apk",
+  "releaseNotes": "Atualização 1.0.2 com ajustes em Ajustes, mapa, Null IA e versionamento."
 }

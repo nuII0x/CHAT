@@ -12,9 +12,9 @@
 namespace {
 
 constexpr const char * TAG = "NullAi";
-constexpr int MAX_CONTEXT_TOKENS = 1024;
-constexpr int MAX_PREDICT_TOKENS = 80;
-constexpr int BATCH_TOKENS = 256;
+constexpr int MAX_CONTEXT_TOKENS = 512;
+constexpr int MAX_PREDICT_TOKENS = 36;
+constexpr int BATCH_TOKENS = 128;
 
 std::mutex g_mutex;
 std::once_flag g_backend_once;
@@ -79,8 +79,8 @@ bool ensure_model_loaded(const std::string & model_path, std::string & error) {
 
 int preferred_thread_count() {
     const unsigned int available = std::thread::hardware_concurrency();
-    if (available <= 2) return 2;
-    return std::max(2, std::min(4, static_cast<int>(available) - 1));
+    if (available <= 1) return 1;
+    return 2;
 }
 
 std::vector<llama_token> tokenize_prompt(const llama_vocab * vocab, const std::string & prompt, std::string & error) {
@@ -146,18 +146,35 @@ void cut_at_marker(std::string & value, const std::string & marker) {
 }
 
 std::string sanitize_reply(std::string output) {
-    const std::vector<std::string> markers = {
-        "Usuario:",
-        "\nUsuario:",
-        "User:",
-        "\nUser:",
+    trim_whitespace_inplace(output);
+
+    const std::vector<std::string> leading_labels = {
         "Null IA:",
-        "\nNull IA:",
+        "Resposta:",
         "Assistente:",
-        "\nAssistente:",
         "Assistant:",
+        "AI:"
+    };
+    bool stripped_label = true;
+    while (stripped_label) {
+        stripped_label = false;
+        for (const auto & label : leading_labels) {
+            if (output.rfind(label, 0) == 0) {
+                output.erase(0, label.size());
+                trim_whitespace_inplace(output);
+                stripped_label = true;
+            }
+        }
+    }
+
+    const std::vector<std::string> markers = {
+        "\nUsuario:",
+        "\nUser:",
+        "\nNull IA:",
+        "\nResposta:",
+        "\nMensagem:",
+        "\nAssistente:",
         "\nAssistant:",
-        "AI:",
         "\nAI:"
     };
 
@@ -203,7 +220,7 @@ std::string generate_reply_locked(const std::string & model_path, const std::str
     }
 
     const int requested_context = static_cast<int>(prompt_tokens.size()) + MAX_PREDICT_TOKENS + 8;
-    const int n_ctx = std::min(MAX_CONTEXT_TOKENS, std::max(512, requested_context));
+    const int n_ctx = std::min(MAX_CONTEXT_TOKENS, std::max(256, requested_context));
     if (static_cast<int>(prompt_tokens.size()) >= n_ctx) {
         return "Null IA: essa mensagem ficou grande demais para o contexto configurado.";
     }
@@ -262,7 +279,9 @@ std::string generate_reply_locked(const std::string & model_path, const std::str
         output += piece;
 
         if (output.find("\nUsuario:") != std::string::npos ||
-            output.find("\nNull IA:") != std::string::npos) {
+            output.find("\nNull IA:") != std::string::npos ||
+            output.find("\nMensagem:") != std::string::npos ||
+            output.find("\nResposta:") != std::string::npos) {
             break;
         }
 
