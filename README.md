@@ -35,7 +35,7 @@ Para gerar release e atualizar a versao ao mesmo tempo:
 ./gradlew assembleRelease -PreleaseType=minor
 ./gradlew assembleRelease -PreleaseType=security
 ```
-
+O versionamento segue o modelo x.y.z
 `major` aumenta `x` e zera `y` e `z`, `minor` aumenta `y` e zera `z`, e `security` aumenta apenas `z`.
 
 ---
