@@ -9,6 +9,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 set(LLAMA_CPP_DIR ${CMAKE_CURRENT_LIST_DIR}/../../../../external/llama.cpp)
+set(VULKAN_HEADERS_DIR ${CMAKE_CURRENT_LIST_DIR}/../../../../external/Vulkan-Headers)
 
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_COMMON OFF CACHE BOOL "" FORCE)
@@ -26,6 +27,10 @@ set(GGML_VULKAN_MEMORY_DEBUG OFF CACHE BOOL "" FORCE)
 set(GGML_VULKAN_SHADER_DEBUG_INFO OFF CACHE BOOL "" FORCE)
 set(GGML_VULKAN_VALIDATE OFF CACHE BOOL "" FORCE)
 set(GGML_VULKAN_RUN_TESTS OFF CACHE BOOL "" FORCE)
+
+if(EXISTS "${VULKAN_HEADERS_DIR}/include/vulkan/vulkan.hpp")
+    include_directories(SYSTEM "${VULKAN_HEADERS_DIR}/include")
+endif()
 
 set(NULLAI_NDK_SPIRV_HEADERS_DIR "")
 if(DEFINED ANDROID_NDK)
@@ -69,6 +74,7 @@ add_subdirectory(${LLAMA_CPP_DIR} llama-build)
 
 add_library(llama_jni SHARED
     llama_jni.cpp
+    vulkan_android_compat.cpp
 )
 
 target_include_directories(llama_jni PRIVATE
