@@ -27,7 +27,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.null0x.chat.ui.theme.readableContentColor
 
 @Composable
@@ -42,12 +46,31 @@ internal fun WindowDispositionScaffold(
     content: @Composable ColumnScope.() -> Unit
 ) {
     val keyboardController = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     val contentColor = readableContentColor(windowColor)
     DisposableEffect(hideKeyboard) {
         if (hideKeyboard) {
+            focusManager.clearFocus(force = true)
             keyboardController?.hide()
         }
         onDispose { }
+    }
+    DisposableEffect(lifecycleOwner, hideKeyboard) {
+        if (!hideKeyboard) {
+            onDispose { }
+        } else {
+            val observer = LifecycleEventObserver { _, event ->
+                if (event == Lifecycle.Event.ON_RESUME) {
+                    focusManager.clearFocus(force = true)
+                    keyboardController?.hide()
+                }
+            }
+            lifecycleOwner.lifecycle.addObserver(observer)
+            onDispose {
+                lifecycleOwner.lifecycle.removeObserver(observer)
+            }
+        }
     }
     Dialog(
         onDismissRequest = onBack,

@@ -38,6 +38,20 @@
 
 static llama_model * llama_model_mapping(llm_arch arch, const llama_model_params & params) {
     switch (arch) {
+        case LLM_ARCH_QWEN:
+            return new llama_model_qwen(params);
+        case LLM_ARCH_QWEN2:
+            return new llama_model_qwen2(params);
+        default:
+            throw std::runtime_error(
+                std::string("Null IA build supports only Qwen/Qwen2 GGUF models; unsupported architecture: '") +
+                llm_arch_name(arch) +
+                "'"
+            );
+    }
+
+#if 0
+    switch (arch) {
         case LLM_ARCH_LLAMA:
             return new llama_model_llama(params);
         case LLM_ARCH_LLAMA4:
@@ -306,6 +320,7 @@ static llama_model * llama_model_mapping(llm_arch arch, const llama_model_params
             throw std::runtime_error(std::string("unsupported model architecture: '") + llm_arch_name(arch) + "'");
     }
 
+#endif
 }
 
 llama_model * llama_model_create(llm_arch arch, const llama_model_params & params) {

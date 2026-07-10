@@ -11,18 +11,16 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.LocalOverscrollConfiguration
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.border
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.VpnKey
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.CompositionLocalProvider
@@ -51,9 +49,6 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import com.null0x.chat.ai.NullAiModelStore
-import com.null0x.chat.model.DeliveryState
-import com.null0x.chat.model.Message
 import com.null0x.chat.network.TorManager
 import com.null0x.chat.security.AppSecurityManager
 import com.null0x.chat.security.SensitiveClipboard
@@ -64,14 +59,12 @@ import com.null0x.chat.security.identity.OnionInboxStore
 import com.null0x.chat.security.identity.RouteIdentityRegistry
 import com.null0x.chat.ui.common.CursorAwareOutlinedTextField
 import com.null0x.chat.ui.common.MnemonicLanguagePicker
+import com.null0x.chat.ui.common.PrimalisAlertDialog
 import com.null0x.chat.ui.common.SystemBarsColorEffect
 import com.null0x.chat.ui.common.SwipeToCloseContainer
 import com.null0x.chat.ui.common.WindowDispositionScaffold
-import com.null0x.chat.ui.chat.ChatMessageBubble
+import com.null0x.chat.ui.common.primalisBareOutlinedTextFieldColors
 import com.null0x.chat.ui.maskedRouteLabel
-import com.null0x.chat.ui.theme.AppearanceSettings
-import com.null0x.chat.ui.theme.AppearancePreference
-import com.null0x.chat.ui.theme.AppearanceSection
 import com.null0x.chat.ui.theme.ThemeMode
 import com.null0x.chat.ui.theme.ThemePreference
 import com.null0x.chat.ui.theme.readableContentColor
@@ -83,9 +76,6 @@ import com.null0x.chat.viewmodel.ChatViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import org.json.JSONObject
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 @Composable
 internal fun SettingsTab(
@@ -103,6 +93,7 @@ internal fun SettingsTab(
     showChatLastActivity: Boolean,
     onShowChatLastActivityChange: (Boolean) -> Unit,
     nullAiEnabled: Boolean,
+    nullAiUnavailableReason: String,
     onNullAiEnabledChange: (Boolean) -> Unit,
     contacts: List<ChatViewModel.ContactPreview>,
     locationSharingMode: ChatViewModel.LocationSharingMode,
@@ -115,26 +106,19 @@ internal fun SettingsTab(
     blockedContacts: List<ChatViewModel.ContactPreview>,
     onUnblockContact: (String) -> Unit,
     onContactsBackupRequested: () -> String,
-    onLockApp: () -> Unit,
     onSignOut: () -> Unit
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val tokenLabel = publicRouteToken.ifBlank { "Aguardando token..." }
     var identityVersion by rememberSaveable { mutableStateOf(0) }
-    var nullAiModelLabel by remember { mutableStateOf(NullAiModelStore.currentModel(context).label) }
-    var nullAiModelUrl by rememberSaveable { mutableStateOf(NullAiModelStore.modelDownloadUrl(context)) }
-    var nullAiAutoDownload by rememberSaveable { mutableStateOf(NullAiModelStore.isAutoDownloadEnabled(context)) }
     val collectedAppUpdateState by AppUpdateManager.state.collectAsState()
     val appUpdateState = collectedAppUpdateState ?: remember(context) { AppUpdateManager.refreshState(context) }
-    var showUpdatePrompt by rememberSaveable { mutableStateOf(false) }
-    var showInstallPrompt by rememberSaveable { mutableStateOf(false) }
     var showTokensWindow by rememberSaveable { mutableStateOf(false) }
     var showAccountWindow by rememberSaveable { mutableStateOf(false) }
     var showChatsWindow by rememberSaveable { mutableStateOf(false) }
-    var showNullAiWindow by rememberSaveable { mutableStateOf(false) }
     var showBlockedWindow by rememberSaveable { mutableStateOf(false) }
-    var showAppearancesWindow by rememberSaveable { mutableStateOf(false) }
+    var showAppearancesSheet by rememberSaveable { mutableStateOf(false) }
     var showLocationWindow by rememberSaveable { mutableStateOf(false) }
     var showRestoreIdentity by rememberSaveable { mutableStateOf(false) }
     var showPrivateInbox by rememberSaveable { mutableStateOf(false) }
@@ -224,60 +208,17 @@ internal fun SettingsTab(
             Toast.LENGTH_SHORT
         ).show()
     }
-    val nullAiModelPickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument()
-    ) { source ->
-        if (source == null) return@rememberLauncherForActivityResult
-        scope.launch {
-            val result = NullAiModelStore.importModel(context, source)
-            result
-                .onSuccess { model ->
-                    nullAiModelLabel = model.label
-                    onNullAiEnabledChange(true)
-                    Toast.makeText(context, "Modelo da Null IA importado", Toast.LENGTH_SHORT).show()
-                }
-                .onFailure { error ->
-                    Toast.makeText(
-                        context,
-                        error.message ?: "Falha ao importar modelo GGUF",
-                        Toast.LENGTH_SHORT
-                    ).show()
-                }
-        }
-    }
-    fun refreshNullAiDownloadUrl(url: String) {
-        nullAiModelUrl = url
-        NullAiModelStore.setModelDownloadUrl(context, url)
-    }
-    fun refreshNullAiAutoDownload(enabled: Boolean) {
-        nullAiAutoDownload = enabled
-        NullAiModelStore.setAutoDownloadEnabled(context, enabled)
-    }
-    LaunchedEffect(appUpdateState.availableVersionCode, appUpdateState.status) {
-        if (appUpdateState.hasNewVersion && !appUpdateState.isDownloading && !appUpdateState.isDownloaded) {
-            showUpdatePrompt = true
-        }
-        if (appUpdateState.isDownloaded) {
-            showInstallPrompt = true
-        }
-    }
     BackHandler(enabled = showTokensWindow && !showRestoreIdentity && !showPrivateInbox) {
         showTokensWindow = false
     }
     BackHandler(enabled = showChatsWindow && !showRestoreIdentity && !showPrivateInbox) {
         showChatsWindow = false
     }
-    BackHandler(enabled = showNullAiWindow && !showRestoreIdentity && !showPrivateInbox) {
-        showNullAiWindow = false
-    }
     BackHandler(enabled = showBlockedWindow && !showRestoreIdentity && !showPrivateInbox) {
         showBlockedWindow = false
     }
     BackHandler(enabled = showAccountWindow && !showRestoreIdentity && !showPrivateInbox) {
         showAccountWindow = false
-    }
-    BackHandler(enabled = showAppearancesWindow && !showRestoreIdentity && !showPrivateInbox) {
-        showAppearancesWindow = false
     }
     BackHandler(enabled = showLocationWindow && !showRestoreIdentity && !showPrivateInbox) {
         showLocationWindow = false
@@ -316,14 +257,13 @@ internal fun SettingsTab(
                 )
             }
             item {
-                SettingsRow(
+                val nullAiAvailable = nullAiUnavailableReason.isBlank()
+                SettingsSwitchRow(
                     title = "Null IA",
-                    subtitle = if (nullAiEnabled) {
-                        "Modelo local habilitado"
-                    } else {
-                        "Modelo local desabilitado"
-                    },
-                    onClick = { showNullAiWindow = true }
+                    subtitle = nullAiUnavailableReason.ifBlank { "Disponível na lista de conversas" },
+                    checked = nullAiEnabled && nullAiAvailable,
+                    enabled = nullAiAvailable,
+                    onCheckedChange = onNullAiEnabledChange
                 )
             }
             item {
@@ -339,9 +279,9 @@ internal fun SettingsTab(
             }
             item {
                 SettingsRow(
-                    title = "Interface",
-                    subtitle = "Tema, aparência e leitura",
-                    onClick = { showAppearancesWindow = true }
+                    title = "Aparências",
+                    subtitle = themeModeLabel(themeMode),
+                    onClick = { showAppearancesSheet = true }
                 )
             }
             if (!notificationsEnabled) {
@@ -367,7 +307,6 @@ internal fun SettingsTab(
             item {
                 SettingsSwitchRow(
                     title = "Atualização automática",
-                    subtitle = appUpdateSubtitle(appUpdateState),
                     checked = appUpdateState.autoDownloadEnabled,
                     onCheckedChange = { enabled ->
                         AppUpdateManager.setAutoDownloadEnabled(context, enabled)
@@ -431,7 +370,6 @@ internal fun SettingsTab(
                 signingPublicKey = signingPublicKey,
                 exchangePublicKey = exchangePublicKey,
                 onBack = { showTokensWindow = false },
-                onLockApp = onLockApp,
                 onCopyToken = {
                     val token = publicRouteToken.trim()
                     if (token.isNotBlank()) {
@@ -465,7 +403,6 @@ internal fun SettingsTab(
         AccountActionsScreen(
             privateInboxMessages = privateInboxMessages,
             onBack = { showAccountWindow = false },
-                onLockApp = onLockApp,
                 onCopyPublicSend = {
                     SensitiveClipboard.copy(context, "Envio publico NoChat", publicSendPackage)
                     Toast.makeText(context, "Dados de envio copiados por 60 segundos", Toast.LENGTH_SHORT).show()
@@ -509,52 +446,7 @@ internal fun SettingsTab(
             onShowChatPresenceStatusChange = onShowChatPresenceStatusChange,
             showChatLastActivity = showChatLastActivity,
             onShowChatLastActivityChange = onShowChatLastActivityChange,
-            onBack = { showChatsWindow = false },
-            onLockApp = onLockApp
-        )
-    }
-
-    androidx.compose.animation.AnimatedVisibility(
-        visible = showNullAiWindow,
-        modifier = Modifier.fillMaxSize(),
-        enter = androidx.compose.animation.slideInHorizontally(initialOffsetX = { fullWidth -> fullWidth }) + androidx.compose.animation.fadeIn(),
-        exit = androidx.compose.animation.slideOutHorizontally(targetOffsetX = { fullWidth -> fullWidth }) + androidx.compose.animation.fadeOut()
-    ) {
-        NullAiSettingsScreen(
-            modelLabel = nullAiModelLabel,
-            modelUrl = nullAiModelUrl,
-            autoDownloadEnabled = nullAiAutoDownload,
-            nullAiEnabled = nullAiEnabled,
-            onNullAiEnabledChange = onNullAiEnabledChange,
-            onModelPicked = {
-                nullAiModelPickerLauncher.launch(arrayOf("*/*"))
-            },
-            onModelUrlChange = { refreshNullAiDownloadUrl(it) },
-            onAutoDownloadChange = { refreshNullAiAutoDownload(it) },
-            onDownloadNow = {
-                if (nullAiModelUrl.isBlank()) {
-                    Toast.makeText(context, "Informe a URL do modelo", Toast.LENGTH_SHORT).show()
-                } else {
-                    NullAiModelStore.enqueueModelDownloadNow(context)
-                    Toast.makeText(context, "Download iniciado fora do Tor", Toast.LENGTH_SHORT).show()
-                }
-            },
-            onBack = { showNullAiWindow = false },
-            onLockApp = onLockApp
-        )
-    }
-
-    androidx.compose.animation.AnimatedVisibility(
-        visible = showAppearancesWindow,
-        modifier = Modifier.fillMaxSize(),
-        enter = androidx.compose.animation.slideInHorizontally(initialOffsetX = { fullWidth -> fullWidth }) + androidx.compose.animation.fadeIn(),
-        exit = androidx.compose.animation.slideOutHorizontally(targetOffsetX = { fullWidth -> fullWidth }) + androidx.compose.animation.fadeOut()
-    ) {
-        AppearancesScreen(
-            currentThemeMode = themeMode,
-            onThemeModeChange = onThemeModeChange,
-            onBack = { showAppearancesWindow = false },
-            onLockApp = onLockApp
+            onBack = { showChatsWindow = false }
         )
     }
 
@@ -570,7 +462,6 @@ internal fun SettingsTab(
             selectedRoutes = locationSharingAllowedRoutes,
             emergencyRoutes = locationEmergencyAllowedRoutes,
             onBack = { showLocationWindow = false },
-            onLockApp = onLockApp,
             onShareAll = onShareLocationWithAll,
             onShareSelected = onShareLocationWithSelected,
             onShareEmergency = onShareLocationInEmergency,
@@ -587,7 +478,6 @@ internal fun SettingsTab(
         BlockedContactsScreen(
             blockedContacts = blockedContacts,
             onBack = { showBlockedWindow = false },
-            onLockApp = onLockApp,
             onUnblockContact = onUnblockContact
         )
     }
@@ -600,7 +490,6 @@ internal fun SettingsTab(
     ) {
         RestoreIdentityScreen(
             onBack = { showRestoreIdentity = false },
-            onLockApp = onLockApp,
             onRestored = {
                 identityVersion++
                 showRestoreIdentity = false
@@ -616,68 +505,117 @@ internal fun SettingsTab(
             PrivateInboxScreen(
                 messages = privateInboxMessages,
                 onBack = { showPrivateInbox = false },
-                onLockApp = onLockApp,
                 onDelete = { message ->
                 onionInboxStore.delete(message.id)
                 identityVersion++
             }
         )
     }
-    if (showUpdatePrompt) {
-        AlertDialog(
-            onDismissRequest = { showUpdatePrompt = false },
-            title = { Text("Há uma nova versão, baixar?") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Versão atual: ${appUpdateState.currentVersionName}")
-                    Text("Nova versão: ${appUpdateState.availableVersionName}")
-                    if (appUpdateState.releaseNotes.isNotBlank()) {
-                        Text(appUpdateState.releaseNotes)
-                    }
-                }
+
+    if (showAppearancesSheet) {
+        AppearanceBottomSheet(
+            currentThemeMode = themeMode,
+            onThemeModeChange = { selected ->
+                onThemeModeChange(selected)
             },
-            confirmButton = {
-                TextButton(onClick = {
-                    showUpdatePrompt = false
-                    AppUpdateManager.enqueueDownload(context)
-                    Toast.makeText(context, "Download da atualização iniciado", Toast.LENGTH_SHORT).show()
-                }) {
-                    Text("Baixar")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showUpdatePrompt = false }) {
-                    Text("Agora não")
-                }
-            }
+            onDismiss = { showAppearancesSheet = false }
         )
     }
-    if (showInstallPrompt) {
-        AlertDialog(
-            onDismissRequest = { showInstallPrompt = false },
-            title = { Text("Atualização pronta") },
-            text = { Text("A versão ${appUpdateState.availableVersionName} já foi baixada.") },
-            confirmButton = {
-                TextButton(onClick = {
-                    showInstallPrompt = false
-                    AppUpdateManager.installDownloadedUpdate(context)
-                        .onFailure { error ->
-                            Toast.makeText(
-                                context,
-                                error.message ?: "Não foi possível instalar",
-                                Toast.LENGTH_LONG
-                            ).show()
-                        }
-                }) {
-                    Text("Instalar")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showInstallPrompt = false }) {
-                    Text("Depois")
-                }
-            }
-        )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AppearanceBottomSheet(
+    currentThemeMode: ThemeMode,
+    onThemeModeChange: (ThemeMode) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = MaterialTheme.colorScheme.surface,
+        tonalElevation = 0.dp
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 18.dp, end = 18.dp, bottom = 28.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(
+                text = "Aparências",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Text(
+                text = "Escolha como o app deve seguir o tema.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            ThemeModeSheetOption(
+                title = "Claro",
+                selected = currentThemeMode == ThemeMode.LIGHT,
+                onClick = { onThemeModeChange(ThemeMode.LIGHT) }
+            )
+            ThemeModeSheetOption(
+                title = "Escuro",
+                selected = currentThemeMode == ThemeMode.DARK,
+                onClick = { onThemeModeChange(ThemeMode.DARK) }
+            )
+            ThemeModeSheetOption(
+                title = "Sistema",
+                selected = currentThemeMode == ThemeMode.SYSTEM,
+                onClick = { onThemeModeChange(ThemeMode.SYSTEM) }
+            )
+        }
+    }
+}
+
+@Composable
+private fun ThemeModeSheetOption(
+    title: String,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(14.dp),
+        color = if (selected) {
+            MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
+        } else {
+            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.42f)
+        },
+        tonalElevation = 0.dp
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            RadioButton(
+                selected = selected,
+                onClick = onClick
+            )
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+        }
+    }
+}
+
+private fun themeModeLabel(mode: ThemeMode): String {
+    return when (mode) {
+        ThemeMode.LIGHT -> "Claro"
+        ThemeMode.DARK -> "Escuro"
+        ThemeMode.SYSTEM -> "Sistema"
     }
 }
 
@@ -688,7 +626,6 @@ internal fun AccountTokensScreen(
     signingPublicKey: String,
     exchangePublicKey: String,
     onBack: () -> Unit,
-    onLockApp: () -> Unit,
     onCopyToken: () -> Unit,
     onCopySendToken: () -> Unit,
     onCopySigningKey: () -> Unit,
@@ -697,8 +634,7 @@ internal fun AccountTokensScreen(
     SettingsWindowScaffold(
         title = "Credenciais",
         subtitle = "Identidade pública e chaves",
-        onBack = onBack,
-        onLockApp = onLockApp
+        onBack = onBack
     ) {
         item { SectionTitle("Identidade") }
         item {
@@ -737,7 +673,6 @@ internal fun AccountTokensScreen(
 internal fun AccountActionsScreen(
     privateInboxMessages: List<OnionInboxMessage>,
     onBack: () -> Unit,
-    onLockApp: () -> Unit,
     onCopyPublicSend: () -> Unit,
     onOpenInbox: () -> Unit,
     onRotateToken: () -> Unit,
@@ -753,8 +688,7 @@ internal fun AccountActionsScreen(
     SettingsWindowScaffold(
         title = "Conta",
         subtitle = "Operações sensíveis",
-        onBack = onBack,
-        onLockApp = onLockApp
+        onBack = onBack
     ) {
         item { SectionTitle("Entrada") }
         item {
@@ -819,36 +753,23 @@ internal fun AccountActionsScreen(
         }
     }
     if (confirmSignOut) {
-        AlertDialog(
-            onDismissRequest = {
+        PrimalisAlertDialog(
+            title = "Sair e apagar dados locais?",
+            message = "Este aparelho perderá as conversas, contatos e a rota salva localmente. Para voltar depois, será preciso criar uma nova conta ou restaurar um backup.",
+            icon = Icons.Filled.Delete,
+            confirmLabel = if (wipingData) "Saindo..." else "Sair",
+            dismissLabel = "Cancelar",
+            confirmEnabled = !wipingData,
+            dismissEnabled = !wipingData,
+            destructive = true,
+            onConfirm = {
+                wipingData = true
+                scope.launch(Dispatchers.IO) {
+                    onSignOut()
+                }
+            },
+            onDismiss = {
                 if (!wipingData) confirmSignOut = false
-            },
-            title = { Text("Sair desta conta?") },
-            text = {
-                Text(
-                    "Isso apaga os dados locais do app neste aparelho. Depois será preciso criar ou restaurar uma conta."
-                )
-            },
-            confirmButton = {
-                TextButton(
-                    enabled = !wipingData,
-                    onClick = {
-                        wipingData = true
-                        scope.launch(Dispatchers.IO) {
-                            onSignOut()
-                        }
-                    }
-                ) {
-                    Text(if (wipingData) "Saindo..." else "Sair")
-                }
-            },
-            dismissButton = {
-                TextButton(
-                    enabled = !wipingData,
-                    onClick = { confirmSignOut = false }
-                ) {
-                    Text("Cancelar")
-                }
             }
         )
     }
@@ -864,14 +785,12 @@ internal fun ChatsSettingsScreen(
     onShowChatPresenceStatusChange: (Boolean) -> Unit,
     showChatLastActivity: Boolean,
     onShowChatLastActivityChange: (Boolean) -> Unit,
-    onBack: () -> Unit,
-    onLockApp: () -> Unit
+    onBack: () -> Unit
 ) {
     SettingsWindowScaffold(
         title = "Chats",
         subtitle = "Políticas de conversa",
-        onBack = onBack,
-        onLockApp = onLockApp
+        onBack = onBack
     ) {
         item { SectionTitle("Visibilidade") }
         item {
@@ -910,172 +829,12 @@ internal fun ChatsSettingsScreen(
     }
 }
 
-@Composable
-internal fun NullAiSettingsScreen(
-    modelLabel: String,
-    modelUrl: String,
-    autoDownloadEnabled: Boolean,
-    nullAiEnabled: Boolean,
-    onNullAiEnabledChange: (Boolean) -> Unit,
-    onModelPicked: () -> Unit,
-    onModelUrlChange: (String) -> Unit,
-    onAutoDownloadChange: (Boolean) -> Unit,
-    onDownloadNow: () -> Unit,
-    onBack: () -> Unit,
-    onLockApp: () -> Unit
-) {
-    val context = LocalContext.current
-    var urlDraft by rememberSaveable(modelUrl) { mutableStateOf(modelUrl) }
-    var editingUrl by rememberSaveable { mutableStateOf(modelUrl.isBlank()) }
-    val focusRequester = remember { FocusRequester() }
-    val focusManager = LocalFocusManager.current
-    val keyboardController = LocalSoftwareKeyboardController.current
-
-    LaunchedEffect(modelUrl) {
-        if (!editingUrl) {
-            urlDraft = modelUrl
-        }
-        if (modelUrl.isBlank()) {
-            editingUrl = true
-        }
-    }
-
-    LaunchedEffect(editingUrl) {
-        if (editingUrl) {
-            focusRequester.requestFocus()
-        }
-    }
-
-    SettingsWindowScaffold(
-        title = "Null IA",
-        subtitle = "Modelo local e memória",
-        onBack = onBack,
-        onLockApp = onLockApp
-    ) {
-        item { SectionTitle("Estado") }
-        item {
-            SettingsSwitchRow(
-                title = "Chat local",
-                subtitle = if (nullAiEnabled) "Disponível na lista de conversas" else "Oculto da lista de conversas",
-                checked = nullAiEnabled,
-                onCheckedChange = onNullAiEnabledChange
-            )
-        }
-        item { SectionTitle("Modelo") }
-        item {
-            SettingsRow(
-                title = "Arquivo GGUF",
-                subtitle = modelLabel,
-                onClick = onModelPicked
-            )
-        }
-        item {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(
-                    value = urlDraft,
-                    onValueChange = {
-                        if (editingUrl) {
-                            urlDraft = it.take(512)
-                        }
-                    },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .focusRequester(focusRequester),
-                    singleLine = true,
-                    enabled = editingUrl,
-                    readOnly = !editingUrl,
-                    label = { Text("URL do GGUF") },
-                    placeholder = { Text("https://.../modelo.gguf") },
-                    shape = RoundedCornerShape(16.dp),
-                    keyboardOptions = KeyboardOptions(
-                        capitalization = KeyboardCapitalization.None,
-                        autoCorrectEnabled = false,
-                        keyboardType = KeyboardType.Uri,
-                        imeAction = ImeAction.Done
-                    ),
-                    keyboardActions = KeyboardActions(
-                        onDone = {
-                            val cleaned = urlDraft.trim().take(512)
-                            if (cleaned.isNotBlank()) {
-                                onModelUrlChange(cleaned)
-                                editingUrl = false
-                                focusManager.clearFocus()
-                                keyboardController?.hide()
-                            }
-                        }
-                    ),
-                    trailingIcon = if (modelUrl.isNotBlank() && !editingUrl) {
-                        {
-                            TextButton(onClick = {
-                                editingUrl = true
-                                urlDraft = modelUrl
-                                focusRequester.requestFocus()
-                            }) {
-                                Text("Mudar URL")
-                            }
-                        }
-                    } else null
-                )
-                Text(
-                    text = if (editingUrl || modelUrl.isBlank()) {
-                        "Use um link direto para um arquivo .gguf. O download não usa Tor."
-                    } else {
-                        "URL salva. Toque em Mudar URL para editar."
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                if (editingUrl) {
-                    TextButton(onClick = {
-                        val cleaned = urlDraft.trim().take(512)
-                        if (cleaned.isBlank()) {
-                            Toast.makeText(context, "Informe a URL do modelo", Toast.LENGTH_SHORT).show()
-                        } else {
-                            onModelUrlChange(cleaned)
-                            editingUrl = false
-                            focusManager.clearFocus()
-                            keyboardController?.hide()
-                        }
-                    }) {
-                        Text("Salvar URL")
-                    }
-                }
-            }
-        }
-        item { SectionTitle("Download") }
-        item {
-            SettingsSwitchRow(
-                title = "Baixar automaticamente",
-                subtitle = if (autoDownloadEnabled) {
-                    "Baixa o modelo quando houver Wi-Fi"
-                } else {
-                    "Desligado"
-                },
-                checked = autoDownloadEnabled,
-                onCheckedChange = onAutoDownloadChange
-            )
-        }
-        item {
-            SettingsRow(
-                title = "Baixar agora",
-                subtitle = if (modelUrl.isBlank()) {
-                    "Salve uma URL primeiro"
-                } else {
-                    "Baixa usando a rede disponível, sem Tor"
-                },
-                onClick = onDownloadNow
-            )
-        }
-    }
-}
-
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 internal fun SettingsWindowScaffold(
     title: String,
     subtitle: String,
     onBack: () -> Unit,
-    onLockApp: () -> Unit,
     hideKeyboard: Boolean = true,
     content: androidx.compose.foundation.lazy.LazyListScope.() -> Unit
 ) {
@@ -1087,16 +846,7 @@ internal fun SettingsWindowScaffold(
         subtitle = subtitle,
         onBack = onBack,
         windowColor = resolvedWindowColor,
-        hideKeyboard = hideKeyboard,
-        bottomActions = {
-            IconButton(onClick = onLockApp) {
-                Icon(
-                    imageVector = Icons.Filled.VpnKey,
-                    contentDescription = "Trancar app",
-                    tint = readableContentColor(resolvedWindowColor)
-                )
-            }
-        }
+        hideKeyboard = hideKeyboard
     ) {
         CompositionLocalProvider(LocalOverscrollConfiguration provides null) {
             LazyColumn(
@@ -1110,55 +860,19 @@ internal fun SettingsWindowScaffold(
 }
 
 @Composable
-internal fun AppearancesScreen(
-    currentThemeMode: ThemeMode,
-    onThemeModeChange: (ThemeMode) -> Unit,
-    onBack: () -> Unit,
-    onLockApp: () -> Unit
-) {
-    val context = LocalContext.current
-    val appearance by AppearancePreference.appearance.collectAsState()
-    SettingsWindowScaffold(
-        title = "Aparências",
-        subtitle = "Ajustes mínimos por área visual",
-        onBack = onBack,
-        onLockApp = onLockApp
-    ) {
-        item { SectionTitle("Conversas") }
-        item {
-            ThemeModeOptions(
-                currentMode = appearance.conversations,
-                onModeSelected = { AppearancePreference.setSectionMode(context, AppearanceSection.CONVERSATIONS, it) }
-            )
-        }
-        item {
-            ConversationAppearancePreview(appearance = appearance)
-        }
-        item { SectionTitle("Base") }
-        item {
-            ThemeModeOptions(
-                currentMode = currentThemeMode,
-                onModeSelected = onThemeModeChange
-            )
-        }
-    }
-}
-
-@Composable
 internal fun PrivateInboxScreen(
     messages: List<OnionInboxMessage>,
     onBack: () -> Unit,
-    onLockApp: () -> Unit,
     onDelete: (OnionInboxMessage) -> Unit
 ) {
     val exchangePrivateKey = remember {
         runCatching { RouteIdentityRegistry.identityManager().getExchangePrivateKeyB64() }.getOrDefault("")
     }
+    var pendingDeleteMessageId by rememberSaveable { mutableStateOf<String?>(null) }
     SettingsWindowScaffold(
         title = "Inbox privada",
         subtitle = "Mensagens recebidas por /send",
-        onBack = onBack,
-        onLockApp = onLockApp
+        onBack = onBack
     ) {
         if (messages.isEmpty()) {
             item {
@@ -1195,7 +909,7 @@ internal fun PrivateInboxScreen(
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                        TextButton(onClick = { onDelete(message) }) {
+                        TextButton(onClick = { pendingDeleteMessageId = message.id }) {
                             Text("Excluir")
                         }
                         ListSeparator()
@@ -1204,12 +918,30 @@ internal fun PrivateInboxScreen(
             }
         }
     }
+    pendingDeleteMessageId
+        ?.let { messageId -> messages.firstOrNull { it.id == messageId } }
+        ?.let { message ->
+            PrimalisAlertDialog(
+                title = "Excluir mensagem privada?",
+                message = "Essa cópia recebida por /send será removida deste aparelho. A ação não desfaz o envio original.",
+                icon = Icons.Filled.Delete,
+                confirmLabel = "Excluir",
+                dismissLabel = "Manter",
+                destructive = true,
+                onConfirm = {
+                    pendingDeleteMessageId = null
+                    onDelete(message)
+                },
+                onDismiss = {
+                    pendingDeleteMessageId = null
+                }
+            )
+        }
 }
 
 @Composable
 internal fun RestoreIdentityScreen(
     onBack: () -> Unit,
-    onLockApp: () -> Unit,
     onRestored: () -> Unit
 ) {
     val context = LocalContext.current
@@ -1222,7 +954,6 @@ internal fun RestoreIdentityScreen(
         title = "Restaurar acesso privado",
         subtitle = "Escolha o idioma certo, use suas 12 palavras e a senha local",
         onBack = onBack,
-        onLockApp = onLockApp,
         hideKeyboard = false
     ) {
         item {
@@ -1312,14 +1043,12 @@ internal fun publicSendEndpoint(route: String): String {
 internal fun BlockedContactsScreen(
     blockedContacts: List<ChatViewModel.ContactPreview>,
     onBack: () -> Unit,
-    onLockApp: () -> Unit,
     onUnblockContact: (String) -> Unit
 ) {
     SettingsWindowScaffold(
         title = "Bloqueados",
         subtitle = "A lista e as ações de bloqueio",
-        onBack = onBack,
-        onLockApp = onLockApp
+        onBack = onBack
     ) {
         item { SectionTitle("Contatos bloqueados") }
         if (blockedContacts.isEmpty()) {
@@ -1341,154 +1070,6 @@ internal fun BlockedContactsScreen(
                             Text("Desbloquear")
                         }
                     }
-                )
-            }
-        }
-    }
-}
-
-data class ThemeOption(
-    val mode: ThemeMode,
-    val title: String
-)
-
-@Composable
-internal fun ThemeModeOptions(
-    currentMode: ThemeMode,
-    onModeSelected: (ThemeMode) -> Unit
-) {
-    val options = remember {
-        listOf(
-            ThemeOption(ThemeMode.BLUE, "Azul"),
-            ThemeOption(ThemeMode.LIGHT, "Claro"),
-            ThemeOption(ThemeMode.DARK, "Escuro"),
-            ThemeOption(ThemeMode.PINK, "Rosa"),
-            ThemeOption(ThemeMode.SYSTEM, "Sistema")
-        )
-    }
-    val selectedOption = remember(currentMode, options) {
-        options.firstOrNull { it.mode == currentMode } ?: options.first()
-    }
-    val systemDarkTheme = androidx.compose.foundation.isSystemInDarkTheme()
-    val topRow = remember { listOf(options[0], options[1], options[3]) }
-    val bottomRow = remember { listOf(options[4], options[2]) }
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        ThemeModeOptionsRow(
-            options = topRow,
-            selectedOption = selectedOption,
-            systemDarkTheme = systemDarkTheme,
-            onModeSelected = onModeSelected
-        )
-        ThemeModeOptionsRow(
-            options = bottomRow,
-            selectedOption = selectedOption,
-            systemDarkTheme = systemDarkTheme,
-            onModeSelected = onModeSelected
-        )
-    }
-}
-
-@Composable
-private fun ThemeModeOptionsRow(
-    options: List<ThemeOption>,
-    selectedOption: ThemeOption,
-    systemDarkTheme: Boolean,
-    onModeSelected: (ThemeMode) -> Unit
-) {
-    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        options.forEach { option ->
-            val isSelected = selectedOption.mode == option.mode
-            val previewColor = themeModePreviewColor(option.mode, systemDarkTheme)
-            Surface(
-                modifier = Modifier
-                    .weight(1f)
-                    .border(
-                        width = if (isSelected) 1.25.dp else 1.dp,
-                        color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.32f),
-                        shape = RoundedCornerShape(8.dp)
-                    )
-                    .clickable { onModeSelected(option.mode) },
-                shape = RoundedCornerShape(8.dp),
-                color = if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.08f) else Color.Transparent,
-                tonalElevation = 0.dp
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 8.dp, vertical = 5.dp),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(10.dp)
-                            .background(previewColor, CircleShape)
-                    )
-                    Text(
-                        text = option.title,
-                        modifier = Modifier.weight(1f),
-                        fontWeight = FontWeight.SemiBold,
-                        color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                        style = MaterialTheme.typography.labelLarge
-                    )
-                    RadioButton(
-                        selected = isSelected,
-                        onClick = { onModeSelected(option.mode) },
-                        modifier = Modifier.size(26.dp)
-                    )
-                }
-            }
-        }
-    }
-}
-
-private fun themeModePreviewColor(mode: ThemeMode, systemDarkTheme: Boolean): Color {
-    return when (mode) {
-        ThemeMode.BLUE -> Color(0xFF1976D2)
-        ThemeMode.LIGHT -> Color(0xFFE8E8E8)
-        ThemeMode.DARK -> Color(0xFF202020)
-        ThemeMode.PINK -> Color(0xFFD81B60)
-        ThemeMode.SYSTEM -> if (systemDarkTheme) Color(0xFF202020) else Color(0xFFE8E8E8)
-    }
-}
-
-@Composable
-private fun ConversationAppearancePreview(appearance: AppearanceSettings) {
-    val previewMessages = remember {
-        listOf(
-            Message(
-                id = "appearance-preview-mine",
-                text = "Oi, ficou assim",
-                isMine = true,
-                timestamp = 1_735_737_600_000L,
-                delivery = DeliveryState.Delivered
-            ),
-            Message(
-                id = "appearance-preview-peer",
-                text = "Visualizei",
-                isMine = false,
-                timestamp = 1_735_737_660_000L
-            )
-        )
-    }
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.surface,
-        tonalElevation = 0.dp
-    ) {
-        Column(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            previewMessages.forEach { message ->
-                ChatMessageBubble(
-                    msg = message,
-                    allowTextSelection = false,
-                    appearance = appearance,
-                    animateIn = false,
-                    onEntranceAnimationFinished = {},
-                    onClick = {}
                 )
             }
         }
@@ -1520,7 +1101,6 @@ private fun LocationSharingSettingsWindow(
     selectedRoutes: Set<String>,
     emergencyRoutes: Set<String>,
     onBack: () -> Unit,
-    onLockApp: () -> Unit,
     onShareAll: () -> Unit,
     onShareSelected: (Set<String>) -> Unit,
     onShareEmergency: (Set<String>) -> Unit,
@@ -1543,16 +1123,7 @@ private fun LocationSharingSettingsWindow(
             if (mode == ChatViewModel.LocationSharingMode.EMERGENCY) emergencyRoutes.size else selectedRoutes.size
         ),
         onBack = onBack,
-        windowColor = MaterialTheme.colorScheme.background,
-        bottomActions = {
-            IconButton(onClick = onLockApp) {
-                Icon(
-                    Icons.Filled.VpnKey,
-                    contentDescription = "Trancar app",
-                    tint = MaterialTheme.colorScheme.onBackground
-                )
-            }
-        }
+        windowColor = MaterialTheme.colorScheme.background
     ) {
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
@@ -1631,7 +1202,6 @@ private fun LocationSharingSettingsWindow(
             contacts = contacts,
             selectedRoutes = emergencyRoutes,
             onBack = { showEmergencyWindow = false },
-            onLockApp = onLockApp,
             onShareEmergency = onShareEmergency
         )
     }
@@ -1642,7 +1212,6 @@ private fun EmergencyTrustedContactsWindow(
     contacts: List<ChatViewModel.ContactPreview>,
     selectedRoutes: Set<String>,
     onBack: () -> Unit,
-    onLockApp: () -> Unit,
     onShareEmergency: (Set<String>) -> Unit
 ) {
     val context = LocalContext.current
@@ -1679,15 +1248,6 @@ private fun EmergencyTrustedContactsWindow(
                 }
             ) {
                 Text("Feito")
-            }
-        },
-        bottomActions = {
-            IconButton(onClick = onLockApp) {
-                Icon(
-                    Icons.Filled.VpnKey,
-                    contentDescription = "Trancar app",
-                    tint = MaterialTheme.colorScheme.onBackground
-                )
             }
         }
     ) {
@@ -1830,30 +1390,10 @@ internal fun SettingsRow(
     }
 }
 
-private fun appUpdateSubtitle(state: AppUpdateState): String {
-    val checked = if (state.lastCheckedAt > 0L) {
-        "Última checagem: ${formatUpdateCheckTime(state.lastCheckedAt)}"
-    } else {
-        "Ainda não checou versões"
-    }
-    return when {
-        state.isDownloading -> "Baixando atualização..."
-        state.isDownloaded -> "Versão ${state.availableVersionName} pronta para instalar"
-        state.hasNewVersion -> "Nova versão ${state.availableVersionName} disponível"
-        state.hasError -> "Erro: ${state.error}"
-        state.autoDownloadEnabled -> "Checa no Wi-Fi. $checked"
-        else -> "Desligado. Versão atual ${state.currentVersionName}"
-    }
-}
-
-private fun formatUpdateCheckTime(timestamp: Long): String {
-    return SimpleDateFormat("dd/MM HH:mm", Locale.getDefault()).format(Date(timestamp))
-}
-
 @Composable
 internal fun SettingsSwitchRow(
     title: String,
-    subtitle: String,
+    subtitle: String? = null,
     checked: Boolean,
     enabled: Boolean = true,
     onCheckedChange: (Boolean) -> Unit
@@ -1879,11 +1419,13 @@ internal fun SettingsSwitchRow(
                         fontWeight = FontWeight.SemiBold,
                         color = if (enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f)
                     )
-                    Text(
-                        text = subtitle,
-                        style = MaterialTheme.typography.bodyMedium.copy(fontSize = 12.sp),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (enabled) 1f else 0.5f)
-                    )
+                    if (!subtitle.isNullOrBlank()) {
+                        Text(
+                            text = subtitle,
+                            style = MaterialTheme.typography.bodyMedium.copy(fontSize = 12.sp),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (enabled) 1f else 0.5f)
+                        )
+                    }
                 }
                 Switch(
                     checked = checked,
@@ -1932,90 +1474,59 @@ internal fun PasswordConfirmDialog(
     val systemDarkTheme = androidx.compose.foundation.isSystemInDarkTheme()
     val dialogColor = themeDialogColor(baseThemeMode, systemDarkTheme)
     val dialogContentColor = readableContentColor(dialogColor)
-    val outlineColor = dialogContentColor.copy(alpha = 0.36f)
     var password by rememberSaveable { mutableStateOf("") }
     val submit = {
         if (password.isNotBlank()) {
             onConfirm(password)
         }
     }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        shape = RoundedCornerShape(24.dp),
-        title = {
-            Text(
-                text = title,
-                color = dialogContentColor,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold
-            )
-        },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    PrimalisAlertDialog(
+        title = title,
+        message = message,
+        icon = Icons.Filled.Lock,
+        confirmLabel = "Confirmar",
+        dismissLabel = "Cancelar",
+        onConfirm = submit,
+        onDismiss = onDismiss
+    ) {
+        CursorAwareOutlinedTextField(
+            value = password,
+            onValueChange = { password = it },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            label = { Text("Senha do app") },
+            visualTransformation = PasswordVisualTransformation(),
+            keyboardOptions = KeyboardOptions(
+                capitalization = KeyboardCapitalization.None,
+                autoCorrectEnabled = false,
+                keyboardType = KeyboardType.Password,
+                imeAction = ImeAction.Done
+            ),
+            keyboardActions = KeyboardActions(onDone = { submit() }),
+            supportingText = {
                 Text(
-                    text = message,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = dialogContentColor
+                    text = "Campo protegido: sem sugestões do teclado.",
+                    color = dialogContentColor.copy(alpha = 0.72f)
                 )
-                CursorAwareOutlinedTextField(
-                    value = password,
-                    onValueChange = { password = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    label = { Text("Senha") },
-                    visualTransformation = PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(
-                        capitalization = KeyboardCapitalization.None,
-                        autoCorrectEnabled = false,
-                        keyboardType = KeyboardType.Password,
-                        imeAction = ImeAction.Done
-                    ),
-                    keyboardActions = KeyboardActions(onDone = { submit() }),
-                    supportingText = {
-                        Text(
-                            text = "Entrada privada: sem sugestões do teclado.",
-                            color = dialogContentColor.copy(alpha = 0.72f)
-                        )
-                    },
-                    shape = RoundedCornerShape(14.dp),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = dialogContentColor,
-                        unfocusedTextColor = dialogContentColor,
-                        focusedLabelColor = dialogContentColor,
-                        unfocusedLabelColor = dialogContentColor.copy(alpha = 0.74f),
-                        cursorColor = dialogContentColor,
-                        focusedBorderColor = dialogContentColor,
-                        unfocusedBorderColor = outlineColor,
-                        focusedContainerColor = Color.Transparent,
-                        unfocusedContainerColor = Color.Transparent
-                    ),
-                    textStyle = MaterialTheme.typography.bodyMedium.copy(color = dialogContentColor)
-                )
-                if (error.isNotBlank()) {
-                    Text(
-                        text = error,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
-                        fontWeight = FontWeight.Medium
-                    )
-                }
-            }
-        },
-        containerColor = dialogColor,
-        tonalElevation = 0.dp,
-        confirmButton = {
-            TextButton(
-                onClick = submit,
-                colors = ButtonDefaults.textButtonColors(contentColor = dialogContentColor)
-            ) { Text("Confirmar") }
-        },
-        dismissButton = {
-            TextButton(
-                onClick = onDismiss,
-                colors = ButtonDefaults.textButtonColors(contentColor = dialogContentColor)
-            ) { Text("Cancelar") }
+            },
+            shape = RoundedCornerShape(14.dp),
+            colors = primalisBareOutlinedTextFieldColors(
+                textColor = dialogContentColor,
+                placeholderColor = dialogContentColor.copy(alpha = 0.74f),
+                supportingTextColor = dialogContentColor.copy(alpha = 0.72f),
+                cursorColor = dialogContentColor
+            ),
+            textStyle = MaterialTheme.typography.bodyMedium.copy(color = dialogContentColor)
+        )
+        if (error.isNotBlank()) {
+            Text(
+                text = error,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+                fontWeight = FontWeight.Medium
+            )
         }
-    )
+    }
 }
 
 internal fun openNotificationSettings(context: Context) {

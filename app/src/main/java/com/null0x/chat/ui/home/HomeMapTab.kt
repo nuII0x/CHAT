@@ -43,13 +43,11 @@ import androidx.compose.material.icons.filled.GpsFixed
 import androidx.compose.material.icons.filled.LocationOff
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Videocam
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -84,8 +82,8 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.null0x.chat.ui.common.PrimalisAlertDialog
 import com.null0x.chat.viewmodel.ChatViewModel
-import com.null0x.chat.util.normalizeProfileEmojiInput
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.Locale
@@ -112,8 +110,6 @@ internal fun MapTab(
     locationSharingMode: ChatViewModel.LocationSharingMode,
     locationSharingAllowedRoutes: Set<String>,
     sharedLocationForRoute: (String) -> ChatViewModel.SharedRouteLocation?,
-    onProfileEmojiChange: (String) -> Unit,
-    onProfileMapColorChange: (Int) -> Unit,
     onShareLocationWithAll: (Location?) -> Unit,
     onShareLocationWithSelected: (Set<String>, Location?) -> Unit,
     onDisableLocationSharing: () -> Unit,
@@ -221,8 +217,6 @@ internal fun MapTab(
             locationSharingMode = locationSharingMode,
             locationSharingAllowedRoutes = locationSharingAllowedRoutes,
             sharedLocationForRoute = sharedLocationForRoute,
-            onProfileEmojiChange = onProfileEmojiChange,
-            onProfileMapColorChange = onProfileMapColorChange,
             onShareLocationWithSelected = { routes -> onShareLocationWithSelected(routes, currentLocation) },
             onDisableLocationSharing = onDisableLocationSharing,
             onMapTitleChange = onMapTitleChange,
@@ -309,83 +303,82 @@ private fun LocationSharingDialog(
     var selectedRoutes by remember {
         mutableStateOf(initiallySelected.ifEmpty { contacts.map { it.username }.toSet() })
     }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Compartilhar localização?") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text(
-                    text = "Para mostrar distâncias reais, sua localização será compartilhada apenas com quem você permitir.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                if (selecting) {
-                    LazyColumn(
-                        modifier = Modifier.height(220.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        items(contacts, key = { it.username }) { contact ->
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable {
-                                        selectedRoutes = if (selectedRoutes.contains(contact.username)) {
-                                            selectedRoutes - contact.username
-                                        } else {
-                                            selectedRoutes + contact.username
-                                        }
-                                        if (selectedRoutes.isNotEmpty()) {
-                                            onShareSelected(selectedRoutes)
-                                        }
-                                    }
-                                    .padding(vertical = 4.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Checkbox(
-                                    checked = selectedRoutes.contains(contact.username),
-                                    onCheckedChange = { checked ->
-                                        selectedRoutes = if (checked) {
-                                            selectedRoutes + contact.username
-                                        } else {
-                                            selectedRoutes - contact.username
-                                        }
-                                        if (selectedRoutes.isNotEmpty()) {
-                                            onShareSelected(selectedRoutes)
-                                        }
-                                    }
-                                )
-                                Spacer(Modifier.width(8.dp))
-                                Text(
-                                    text = contact.displayName,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
+    PrimalisAlertDialog(
+        title = if (selecting) "Escolher contatos" else "Compartilhar localização?",
+        message = if (selecting) {
+            "Marque quem pode ver sua posição para calcular distâncias no mapa."
+        } else {
+            "Sua localização só será compartilhada com quem você permitir. Você pode pausar isso depois nos ajustes."
+        },
+        icon = Icons.Filled.MyLocation,
+        confirmLabel = if (selecting) "Salvar seleção" else "Com todos",
+        dismissLabel = if (selecting) "Cancelar" else "Não compartilhar",
+        neutralLabel = if (selecting) "Todos" else "Selecionar",
+        confirmEnabled = !selecting || selectedRoutes.isNotEmpty(),
+        onNeutral = {
+            if (selecting) {
+                onShareAll()
+            } else {
+                selecting = true
+            }
+        },
+        onConfirm = {
+            if (selecting) {
+                if (selectedRoutes.isNotEmpty()) {
+                    onShareSelected(selectedRoutes)
+                }
+            } else {
+                onShareAll()
+            }
+        },
+        onDismiss = onDismiss
+    ) {
+        if (selecting) {
+            LazyColumn(
+                modifier = Modifier.height(220.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                items(contacts, key = { it.username }) { contact ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                selectedRoutes = if (selectedRoutes.contains(contact.username)) {
+                                    selectedRoutes - contact.username
+                                } else {
+                                    selectedRoutes + contact.username
+                                }
+                                if (selectedRoutes.isNotEmpty()) {
+                                    onShareSelected(selectedRoutes)
+                                }
                             }
-                        }
+                            .padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Checkbox(
+                            checked = selectedRoutes.contains(contact.username),
+                            onCheckedChange = { checked ->
+                                selectedRoutes = if (checked) {
+                                    selectedRoutes + contact.username
+                                } else {
+                                    selectedRoutes - contact.username
+                                }
+                                if (selectedRoutes.isNotEmpty()) {
+                                    onShareSelected(selectedRoutes)
+                                }
+                            }
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            text = contact.displayName,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     }
                 }
             }
-        },
-        confirmButton = {
-            TextButton(
-                onClick = {
-                    onShareAll()
-                }
-            ) {
-                Text("Com todos")
-            }
-        },
-        dismissButton = {
-            Row {
-                TextButton(onClick = onDismiss) {
-                    Text("Não compartilhar")
-                }
-                TextButton(onClick = { selecting = true }) {
-                    Text("Selecionar")
-                }
-            }
         }
-    )
+    }
 }
 
 @Composable
@@ -405,8 +398,6 @@ private fun OrbitMapContent(
     locationSharingMode: ChatViewModel.LocationSharingMode,
     locationSharingAllowedRoutes: Set<String>,
     sharedLocationForRoute: (String) -> ChatViewModel.SharedRouteLocation?,
-    onProfileEmojiChange: (String) -> Unit,
-    onProfileMapColorChange: (Int) -> Unit,
     onShareLocationWithSelected: (Set<String>) -> Unit,
     onDisableLocationSharing: () -> Unit,
     onMapTitleChange: (String) -> Unit,
@@ -460,14 +451,17 @@ private fun OrbitMapContent(
     var zoom by remember { mutableStateOf(1f) }
     var pan by remember { mutableStateOf(Offset.Zero) }
     var initializedMapView by remember { mutableStateOf(false) }
-    fun focusUserOnMap(user: OrbitUser) {
-        val focusMetersPerPixel = 10f / 72f
+    fun focusUserOnMap(user: OrbitUser, selectUser: Boolean = true) {
+        val focusMetersPerPixel = focusedProfilePrecisionMeters / focusedProfilePrecisionPixels
         zoom = baseMetersPerPixel / focusMetersPerPixel
         pan = Offset(
             x = -user.xMeters / focusMetersPerPixel,
             y = user.yMeters / focusMetersPerPixel
-            )
-        selectedUser = user
+        )
+        selectedUser = if (selectUser) user else null
+        if (selectUser) {
+            showSelfSheet = false
+        }
     }
     Box(
         modifier = Modifier.fillMaxSize()
@@ -524,10 +518,22 @@ private fun OrbitMapContent(
                 width = widthPx,
                 height = heightPx
             )
-            val dynamicMapTitle = remember(centerGeoPoint, viewportGeoBounds, metersPerPixel, countryLabels, cityPoints, adminRegions, brazilPlaces) {
+            val dynamicMapTitle = remember(
+                centerGeoPoint,
+                viewportGeoBounds,
+                widthPx,
+                heightPx,
+                metersPerPixel,
+                countryLabels,
+                cityPoints,
+                adminRegions,
+                brazilPlaces
+            ) {
                 titleForMapCenter(
                     center = centerGeoPoint,
                     viewport = viewportGeoBounds,
+                    viewportWidthPx = widthPx,
+                    viewportHeightPx = heightPx,
                     metersPerPixel = metersPerPixel,
                     countryLabels = countryLabels,
                     cityPoints = cityPoints,
@@ -713,7 +719,7 @@ private fun OrbitMapContent(
                         backgroundColor = Color(positionedUser.user.mapColorArgb),
                         showLabel = positionedUser.label != null,
                         onClick = {
-                            selectedUser = null
+                            focusUserOnMap(positionedUser.user, selectUser = false)
                             showSelfSheet = true
                         },
                         modifier = Modifier.offset {
@@ -727,7 +733,7 @@ private fun OrbitMapContent(
                     OrbitUserAvatar(
                         user = positionedUser.user,
                         label = positionedUser.label,
-                        onClick = { selectedUser = positionedUser.user },
+                        onClick = { focusUserOnMap(positionedUser.user) },
                         modifier = Modifier.offset {
                             IntOffset(
                                 x = (positionedUser.display.x - 38.dp.toPx()).roundToInt(),
@@ -774,8 +780,6 @@ private fun OrbitMapContent(
                     contacts = contacts.filter { it.username.normalizedRouteKey() != selfRouteKey },
                     locationSharingMode = locationSharingMode,
                     locationSharingAllowedRoutes = locationSharingAllowedRoutes,
-                    onEmojiChange = onProfileEmojiChange,
-                    onColorChange = onProfileMapColorChange,
                     onSelectionChange = onShareLocationWithSelected,
                     onDisableLocationSharing = onDisableLocationSharing,
                     onDismiss = { showSelfSheet = false },
@@ -1041,14 +1045,11 @@ private fun SelfMapQuickSettingsSheet(
     contacts: List<ChatViewModel.ContactPreview>,
     locationSharingMode: ChatViewModel.LocationSharingMode,
     locationSharingAllowedRoutes: Set<String>,
-    onEmojiChange: (String) -> Unit,
-    onColorChange: (Int) -> Unit,
     onSelectionChange: (Set<String>) -> Unit,
     onDisableLocationSharing: () -> Unit,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    var emojiDraft by remember { mutableStateOf(emoji) }
     var expandedContacts by remember { mutableStateOf(false) }
     val cleanAllowedRoutes = locationSharingAllowedRoutes.map { it.normalizedRouteKey() }.toSet()
     val contactRoutes = contacts.map { it.username.normalizedRouteKey() }.filter { it.isNotBlank() }.toSet()
@@ -1060,9 +1061,6 @@ private fun SelfMapQuickSettingsSheet(
         ChatViewModel.LocationSharingMode.UNSET -> emptySet()
     }
     val visibleContacts = if (expandedContacts) contacts else contacts.take(5)
-    LaunchedEffect(emoji) {
-        emojiDraft = emoji
-    }
 
     Surface(
         modifier = modifier.fillMaxWidth(),
@@ -1088,14 +1086,14 @@ private fun SelfMapQuickSettingsSheet(
             ) {
                 Surface(
                     shape = CircleShape,
-                    color = profileMapColor,
+                    color = MaterialTheme.colorScheme.surfaceVariant,
                     modifier = Modifier.size(58.dp)
                 ) {
                     Box(contentAlignment = Alignment.Center) {
-                        Text(
-                            text = emoji.ifBlank { "🙂" },
-                            style = MaterialTheme.typography.titleLarge,
-                            color = readableOnColor(profileMapColor)
+                        Icon(
+                            imageVector = Icons.Filled.MyLocation,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
@@ -1115,42 +1113,6 @@ private fun SelfMapQuickSettingsSheet(
                 }
                 IconButton(onClick = onDismiss) {
                     Icon(imageVector = Icons.Filled.Close, contentDescription = "Fechar")
-                }
-            }
-            OutlinedTextField(
-                value = emojiDraft,
-                onValueChange = { value ->
-                    val clean = normalizeProfileEmojiInput(value).ifBlank { "🙂" }
-                    emojiDraft = clean
-                    onEmojiChange(clean)
-                },
-                singleLine = true,
-                label = { Text("Emoji") },
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp)
-            )
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    text = "Cor do fundo",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    mapProfileColorOptions.forEach { option ->
-                        val selected = option.toArgb() == profileMapColor.toArgb()
-                        Surface(
-                            modifier = Modifier
-                                .size(if (selected) 38.dp else 34.dp)
-                                .clickable { onColorChange(option.toArgb()) },
-                            shape = CircleShape,
-                            color = option,
-                            border = if (selected) {
-                                androidx.compose.foundation.BorderStroke(2.dp, MaterialTheme.colorScheme.onSurface)
-                            } else {
-                                null
-                            }
-                        ) {}
-                    }
                 }
             }
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -1288,7 +1250,7 @@ private fun rememberBrazilStateBoundaries(): List<BoundaryRing> {
 private fun rememberCountryBoundaries(): List<BoundaryRing> {
     val context = LocalContext.current
     return remember(context) {
-        loadBoundaryRings(context, "map/ne_country_boundaries_110m.json")
+        loadBoundaryRings(context, "map/ne_country_boundaries_50m.json")
     }
 }
 
@@ -1552,11 +1514,11 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawOfflineMapLabel
     occupiedBoxes: List<LabelBox>,
     showContinentOverview: Boolean
 ) {
-    if (countryLabels.isEmpty() && cityPoints.isEmpty()) return
+    if (countryLabels.isEmpty() && adminRegions.isEmpty() && cityPoints.isEmpty()) return
     val labelZoom = mapLabelZoom(metersPerPixel)
     val crowdedCountryLimit = ((size.width * size.height) / 32_000f).roundToInt().coerceIn(8, 42)
     val crowdedAdminLimit = ((size.width * size.height) / 34_000f).roundToInt().coerceIn(8, 38)
-    val crowdedCityLimit = ((size.width * size.height) / 18_000f).roundToInt().coerceIn(14, 96)
+    val crowdedCityLimit = crowdedCityLimitForViewport(size.width, size.height)
     val continentPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = labelColor.copy(alpha = 0.72f).toArgb()
         textSize = 15.sp.toPx()
@@ -1597,7 +1559,7 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawOfflineMapLabel
     }
 
     if (metersPerPixel <= adminLabelMetersPerPixel && metersPerPixel > cityLabelMetersPerPixel) {
-        drawAdminRegionLabels(
+        val placedAdminLabels = drawAdminRegionLabels(
             adminRegions = adminRegions,
             origin = origin,
             center = center,
@@ -1609,6 +1571,22 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawOfflineMapLabel
             occupiedBoxes = occupiedBoxes,
             renderPadding = labelRenderPadding,
             labelLimit = crowdedAdminLimit
+        )
+        drawCountryLabelsWithoutAdminRegions(
+            countryLabels = countryLabels,
+            administeredCountryKeys = adminRegions.mapNotNull { it.country.mapLabelKey().takeIf { key -> key.isNotBlank() } }.toSet(),
+            origin = origin,
+            center = center,
+            pan = pan,
+            metersPerPixel = metersPerPixel,
+            lonScale = lonScale,
+            latScale = latScale,
+            paint = countryPaint,
+            occupiedBoxes = occupiedBoxes,
+            existingLabels = placedAdminLabels,
+            renderPadding = labelRenderPadding,
+            labelZoom = labelZoom,
+            labelLimit = crowdedCountryLimit
         )
         return
     }
@@ -1683,8 +1661,8 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAdminRegionLabe
     occupiedBoxes: List<LabelBox>,
     renderPadding: Float,
     labelLimit: Int
-) {
-    if (adminRegions.isEmpty()) return
+): List<LabelBox> {
+    if (adminRegions.isEmpty()) return emptyList()
     val placedLabels = mutableListOf<LabelBox>()
     adminRegions
         .asSequence()
@@ -1713,6 +1691,60 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAdminRegionLabe
                 isLabelPlaceable(box, placedLabels, occupiedBoxes, padding = 8f)
             ) {
                 drawContext.canvas.nativeCanvas.drawText(region.name, box.textX, box.textY, paint)
+                placedLabels += box
+            }
+        }
+    return placedLabels
+}
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawCountryLabelsWithoutAdminRegions(
+    countryLabels: List<CountryLabel>,
+    administeredCountryKeys: Set<String>,
+    origin: Location,
+    center: Offset,
+    pan: Offset,
+    metersPerPixel: Float,
+    lonScale: Double,
+    latScale: Double,
+    paint: Paint,
+    occupiedBoxes: List<LabelBox>,
+    existingLabels: List<LabelBox>,
+    renderPadding: Float,
+    labelZoom: Float,
+    labelLimit: Int
+) {
+    if (countryLabels.isEmpty()) return
+    val placedLabels = existingLabels.toMutableList()
+    countryLabels
+        .asSequence()
+        .filter { country -> country.name.mapLabelKey() !in administeredCountryKeys }
+        .filter { country -> labelZoom >= country.minZoom - 0.35f }
+        .mapNotNull { country ->
+            val point = mapLabelPoint(
+                longitude = country.longitude,
+                latitude = country.latitude,
+                origin = origin,
+                center = center,
+                pan = pan,
+                metersPerPixel = metersPerPixel,
+                lonScale = lonScale,
+                latScale = latScale
+            )
+            if (point.isNearViewport(size.width, size.height, renderPadding)) country to point else null
+        }
+        .sortedWith(
+            compareBy<Pair<CountryLabel, Offset>> { it.second.viewportGridIndex(size.width, size.height) }
+                .thenBy { it.first.rank }
+                .thenByDescending { it.first.population }
+        )
+        .forEach { (country, point) ->
+            if (placedLabels.count { it.kind == LabelKind.Country } >= labelLimit) return@forEach
+            val box = labelBox(country.name, point, paint, LabelKind.Country, xOffset = 0f, yOffset = -7.dp.toPx())
+            if (
+                box.isInsideRenderBand(size.width, size.height, renderPadding) &&
+                isLabelPlaceable(box, placedLabels, occupiedBoxes, padding = 8f)
+            ) {
+                drawContext.canvas.nativeCanvas.drawText(country.name, box.textX, box.textY, paint)
                 placedLabels += box
             }
         }
@@ -1764,8 +1796,11 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawCityLabels(
     visibleCityLabels
         .asSequence()
         .filter { (city, _) -> cityStep == 1 || city.importanceRank <= 1 || city.stableSampleIndex() % cityStep == 0 }
-        .sortedWith(
-            compareBy<Pair<CityPoint, Offset>> { it.first.importanceRank }
+        .toList()
+        .distributedAcrossViewport(
+            width = size.width,
+            height = size.height,
+            comparator = compareBy<Pair<CityPoint, Offset>> { it.first.importanceRank }
                 .thenBy { it.first.stableSampleIndex() }
         )
         .forEach { (city, point) ->
@@ -1918,7 +1953,6 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawBrazilPlaceLabe
     val latScale = 111_320.0
     val lonScale = (111_320.0 * cos(Math.toRadians(origin.latitude))).coerceAtLeast(1e-6)
     val renderPadding = 140f
-    val labelRadius = minOf(size.width, size.height) * 0.42f
     val placePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = labelColor.toArgb()
         textSize = when {
@@ -1958,10 +1992,10 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawBrazilPlaceLabe
     val labelLimit = brazilLabelLimit(metersPerPixel, size.width, size.height)
     val placedLabels = mutableListOf<LabelBox>()
     visible
-        .asSequence()
-        .filter { (_, point) -> point.distanceTo(center) <= labelRadius }
-        .sortedWith(
-            compareBy<Pair<BrazilPlacePoint, Offset>> { it.first.rank }
+        .distributedAcrossViewport(
+            width = size.width,
+            height = size.height,
+            comparator = compareBy<Pair<BrazilPlacePoint, Offset>> { it.first.rank }
                 .thenBy { it.first.kind.ordinal }
                 .thenBy { it.first.name }
         )
@@ -2092,22 +2126,80 @@ private fun BrazilPlacePoint.dotAlpha(): Float {
 }
 
 private fun brazilLabelLimit(metersPerPixel: Float, width: Float, height: Float): Int {
-    val base = ((width * height) / 18_500f).roundToInt().coerceIn(12, 82)
+    val base = ((width * height) / 14_000f).roundToInt().coerceIn(16, 126)
     return when {
-        metersPerPixel > 460f -> 18
-        metersPerPixel > 260f -> base.coerceAtMost(34)
-        metersPerPixel > 120f -> base.coerceAtMost(56)
+        metersPerPixel > 460f -> base.coerceAtMost(34)
+        metersPerPixel > 260f -> base.coerceAtMost(52)
+        metersPerPixel > 120f -> base.coerceAtMost(82)
         else -> base
     }
 }
 
 private fun cityLimitForZoom(metersPerPixel: Float, crowdedCityLimit: Int): Int {
     return when {
-        metersPerPixel > 420f -> 12
-        metersPerPixel > 260f -> 24
-        metersPerPixel > 160f -> crowdedCityLimit.coerceAtMost(42)
+        metersPerPixel > 600f -> 18
+        metersPerPixel > 420f -> 28
+        metersPerPixel > 260f -> 44
+        metersPerPixel > 160f -> crowdedCityLimit.coerceAtMost(64)
         else -> crowdedCityLimit
     }
+}
+
+private fun crowdedCityLimitForViewport(width: Float, height: Float): Int {
+    return ((width * height) / 14_000f).roundToInt().coerceIn(18, 130)
+}
+
+private fun GeoBounds.offsetFor(longitude: Double, latitude: Double, width: Float, height: Float): Offset {
+    val safeLongitudeSpan = longitudeSpan().coerceAtLeast(1e-6)
+    val safeLatitudeSpan = latitudeSpan().coerceAtLeast(1e-6)
+    return Offset(
+        x = (((longitude - minLongitude) / safeLongitudeSpan) * width).toFloat(),
+        y = (((maxLatitude - latitude) / safeLatitudeSpan) * height).toFloat()
+    )
+}
+
+private fun Offset.viewportGridIndex(width: Float, height: Float, columns: Int = 4, rows: Int = 4): Int {
+    val safeWidth = width.coerceAtLeast(1f)
+    val safeHeight = height.coerceAtLeast(1f)
+    val column = ((x / safeWidth) * columns).toInt().coerceIn(0, columns - 1)
+    val row = ((y / safeHeight) * rows).toInt().coerceIn(0, rows - 1)
+    return row * columns + column
+}
+
+private fun <T> List<Pair<T, Offset>>.distributedAcrossViewport(
+    width: Float,
+    height: Float,
+    comparator: Comparator<Pair<T, Offset>>,
+    columns: Int = 4,
+    rows: Int = 4
+): List<Pair<T, Offset>> {
+    if (isEmpty()) return emptyList()
+    val cellCount = (columns * rows).coerceAtLeast(1)
+    val cells = List(cellCount) { mutableListOf<Pair<T, Offset>>() }
+    forEach { item ->
+        cells[item.second.viewportGridIndex(width, height, columns, rows)] += item
+    }
+    cells.forEach { it.sortWith(comparator) }
+    return buildList(size) {
+        var depth = 0
+        while (size < this@distributedAcrossViewport.size) {
+            var addedAtThisDepth = false
+            cells.forEach { cell ->
+                if (depth < cell.size) {
+                    add(cell[depth])
+                    addedAtThisDepth = true
+                }
+            }
+            if (!addedAtThisDepth) break
+            depth++
+        }
+    }
+}
+
+private fun String.mapLabelKey(): String {
+    return trim()
+        .lowercase(Locale.ROOT)
+        .filter { it.isLetterOrDigit() }
 }
 
 private fun mapLabelZoom(metersPerPixel: Float): Float {
@@ -2116,7 +2208,7 @@ private fun mapLabelZoom(metersPerPixel: Float): Float {
 
 private fun citySampleStep(metersPerPixel: Float): Int {
     return when {
-        metersPerPixel > 420f -> 8
+        metersPerPixel > 420f -> 6
         metersPerPixel > 260f -> 5
         metersPerPixel > 160f -> 3
         else -> 1
@@ -2125,7 +2217,7 @@ private fun citySampleStep(metersPerPixel: Float): Int {
 
 private fun preProjectionCitySampleStep(metersPerPixel: Float): Int {
     return when {
-        metersPerPixel > 420f -> 5
+        metersPerPixel > 420f -> 4
         metersPerPixel > 260f -> 3
         metersPerPixel > 160f -> 2
         else -> 1
@@ -2229,6 +2321,8 @@ private fun mapGeoBoundsForViewport(
 private fun titleForMapCenter(
     center: GeoPoint,
     viewport: GeoBounds,
+    viewportWidthPx: Float,
+    viewportHeightPx: Float,
     metersPerPixel: Float,
     countryLabels: List<CountryLabel>,
     cityPoints: List<CityPoint>,
@@ -2247,13 +2341,39 @@ private fun titleForMapCenter(
         return dominantContinentName(viewport, center) ?: nearestContinentName(center) ?: "Terra"
     }
     if (metersPerPixel <= brazilSubdistrictTitleMetersPerPixel) {
-        nearestBrazilPlaceName(center, brazilPlaces, maxDegrees = 0.08, includeDistricts = true)?.let { return it }
+        nearestBrazilPlaceTitleName(
+            center = center,
+            viewport = viewport,
+            viewportWidthPx = viewportWidthPx,
+            viewportHeightPx = viewportHeightPx,
+            metersPerPixel = metersPerPixel,
+            places = brazilPlaces,
+            maxDegrees = 0.08,
+            includeDistricts = true
+        )?.let { return it }
     }
     if (metersPerPixel <= cityTitleMetersPerPixel) {
-        nearestBrazilPlaceName(center, brazilPlaces, maxDegrees = 0.32, includeDistricts = true)?.let { return it }
+        nearestBrazilPlaceTitleName(
+            center = center,
+            viewport = viewport,
+            viewportWidthPx = viewportWidthPx,
+            viewportHeightPx = viewportHeightPx,
+            metersPerPixel = metersPerPixel,
+            places = brazilPlaces,
+            maxDegrees = 0.32,
+            includeDistricts = true
+        )?.let { return it }
     }
     if (metersPerPixel <= cityTitleMetersPerPixel) {
-        nearestCityName(center, cityPoints, maxDegrees = 2.8)?.let { return it }
+        nearestCityTitleName(
+            center = center,
+            viewport = viewport,
+            viewportWidthPx = viewportWidthPx,
+            viewportHeightPx = viewportHeightPx,
+            metersPerPixel = metersPerPixel,
+            cityPoints = cityPoints,
+            maxDegrees = 2.8
+        )?.let { return it }
     }
     if (metersPerPixel <= cityLabelMetersPerPixel) {
         dominantRegion?.let { return it }
@@ -2266,6 +2386,7 @@ private fun titleForMapCenter(
             regions = adminRegions
         )?.let { return it }
         return nearestAdminCountryName(center, adminRegions)
+            ?: dominantCountryName(center, viewport, countryLabels)
             ?: nearestCountryName(center, countryLabels)
             ?: nearestContinentName(center)
             ?: "Terra"
@@ -2275,21 +2396,26 @@ private fun titleForMapCenter(
         ?: "Terra"
 }
 
-private fun nearestBrazilPlaceName(
+private fun nearestBrazilPlaceTitleName(
     center: GeoPoint,
+    viewport: GeoBounds,
+    viewportWidthPx: Float,
+    viewportHeightPx: Float,
+    metersPerPixel: Float,
     places: List<BrazilPlacePoint>,
     maxDegrees: Double,
     includeDistricts: Boolean
 ): String? {
-    if (places.isEmpty()) return null
+    if (places.isEmpty() || viewportWidthPx <= 0f || viewportHeightPx <= 0f) return null
     val allowedKinds = if (includeDistricts) {
         setOf(BrazilPlaceKind.Municipality, BrazilPlaceKind.District, BrazilPlaceKind.Subdistrict)
     } else {
         setOf(BrazilPlaceKind.Municipality)
     }
-    return places
+    val nearestPlace = places
         .asSequence()
         .filter { it.kind in allowedKinds }
+        .filter { viewport.contains(it.longitude, it.latitude) }
         .map { place ->
             place to approximateGeoDistanceScore(center.longitude, center.latitude, place.longitude, place.latitude)
         }
@@ -2300,7 +2426,48 @@ private fun nearestBrazilPlaceName(
                 .thenBy { it.first.kind.ordinal }
         )
         ?.first
-        ?.name
+        ?: return null
+    return if (
+        isBrazilPlaceNameVisibleOnMap(
+            place = nearestPlace,
+            places = places,
+            viewport = viewport,
+            viewportWidthPx = viewportWidthPx,
+            viewportHeightPx = viewportHeightPx,
+            metersPerPixel = metersPerPixel
+        )
+    ) {
+        null
+    } else {
+        nearestPlace.name
+    }
+}
+
+private fun isBrazilPlaceNameVisibleOnMap(
+    place: BrazilPlacePoint,
+    places: List<BrazilPlacePoint>,
+    viewport: GeoBounds,
+    viewportWidthPx: Float,
+    viewportHeightPx: Float,
+    metersPerPixel: Float
+): Boolean {
+    if (!place.isVisibleAtBrazilZoom(metersPerPixel)) return false
+    val labelLimit = brazilLabelLimit(metersPerPixel, viewportWidthPx, viewportHeightPx)
+    return places
+        .asSequence()
+        .filter { it.isVisibleAtBrazilZoom(metersPerPixel) }
+        .filter { viewport.contains(it.longitude, it.latitude, paddingDegrees = 0.8) }
+        .map { it to viewport.offsetFor(it.longitude, it.latitude, viewportWidthPx, viewportHeightPx) }
+        .toList()
+        .distributedAcrossViewport(
+            width = viewportWidthPx,
+            height = viewportHeightPx,
+            comparator = compareBy<Pair<BrazilPlacePoint, Offset>> { it.first.rank }
+                .thenBy { it.first.kind.ordinal }
+                .thenBy { it.first.name }
+        )
+        .take(labelLimit)
+        .any { it.first == place }
 }
 
 private fun dominantAdminRegionName(
@@ -2349,33 +2516,20 @@ private fun dominantAdminCountryName(
 }
 
 private fun nearestAdminCountryName(center: GeoPoint, regions: List<AdminRegion>): String? {
-    val containingRegion = regions
+    return regions
         .filter { it.contains(center) && it.country.isNotBlank() }
         .minWithOrNull(compareBy<AdminRegion> { it.rank }.thenBy {
             approximateGeoDistanceScore(center.longitude, center.latitude, it.longitude, it.latitude)
         })
-    if (containingRegion != null) return containingRegion.country
-    return regions
-        .filter { it.country.isNotBlank() }
-        .minByOrNull {
-            approximateGeoDistanceScore(center.longitude, center.latitude, it.longitude, it.latitude) *
-                it.rank.coerceAtLeast(1)
-        }
         ?.country
 }
 
 private fun nearestAdminRegionName(center: GeoPoint, regions: List<AdminRegion>): String? {
-    val containingRegion = regions
+    return regions
         .filter { it.contains(center) }
         .minWithOrNull(compareBy<AdminRegion> { it.rank }.thenBy {
             approximateGeoDistanceScore(center.longitude, center.latitude, it.longitude, it.latitude)
         })
-    if (containingRegion != null) return containingRegion.name
-    return regions
-        .minByOrNull {
-            approximateGeoDistanceScore(center.longitude, center.latitude, it.longitude, it.latitude) *
-                it.rank.coerceAtLeast(1)
-        }
         ?.name
 }
 
@@ -2399,6 +2553,42 @@ private fun nearestContinentName(center: GeoPoint): String? {
     }?.name
 }
 
+private fun dominantCountryName(
+    center: GeoPoint,
+    viewport: GeoBounds,
+    countryLabels: List<CountryLabel>
+): String? {
+    val viewportPadding = (maxOf(viewport.longitudeSpan(), viewport.latitudeSpan()) * 0.28)
+        .coerceIn(0.8, 8.0)
+    return countryLabels
+        .asSequence()
+        .mapNotNull { country ->
+            val isInsideViewport = viewport.contains(country.longitude, country.latitude)
+            val isNearViewport = viewport.contains(
+                longitude = country.longitude,
+                latitude = country.latitude,
+                paddingDegrees = viewportPadding
+            )
+            if (!isInsideViewport && !isNearViewport) return@mapNotNull null
+            country to if (isInsideViewport) 0 else 1
+        }
+        .minWithOrNull(
+            compareBy<Pair<CountryLabel, Int>> { it.second }
+                .thenBy {
+                    approximateGeoDistanceScore(
+                        center.longitude,
+                        center.latitude,
+                        it.first.longitude,
+                        it.first.latitude
+                    )
+                }
+                .thenBy { it.first.rank }
+                .thenByDescending { it.first.population }
+        )
+        ?.first
+        ?.name
+}
+
 private fun nearestCountryName(center: GeoPoint, countryLabels: List<CountryLabel>): String? {
     return countryLabels.minByOrNull { country ->
         approximateGeoDistanceScore(
@@ -2410,23 +2600,86 @@ private fun nearestCountryName(center: GeoPoint, countryLabels: List<CountryLabe
     }?.name
 }
 
-private fun nearestCityName(
+private fun nearestCityTitleName(
     center: GeoPoint,
+    viewport: GeoBounds,
+    viewportWidthPx: Float,
+    viewportHeightPx: Float,
+    metersPerPixel: Float,
     cityPoints: List<CityPoint>,
     maxDegrees: Double
 ): String? {
-    return cityPoints
+    if (cityPoints.isEmpty() || viewportWidthPx <= 0f || viewportHeightPx <= 0f) return null
+    val nearestCity = cityPoints
         .asSequence()
+        .filter { city -> viewport.contains(city.longitude, city.latitude) }
         .map { city ->
             city to approximateGeoDistanceScore(center.longitude, center.latitude, city.longitude, city.latitude)
         }
         .filter { (_, score) -> score <= maxDegrees * maxDegrees }
         .minWithOrNull(
-            compareBy<Pair<CityPoint, Double>> { it.first.importanceRank }
-                .thenBy { it.second }
+            compareBy<Pair<CityPoint, Double>> { it.second }
+                .thenBy { it.first.importanceRank }
         )
         ?.first
-        ?.name
+        ?: return null
+    return if (
+        isCityNameVisibleOnMap(
+            city = nearestCity,
+            cityPoints = cityPoints,
+            viewport = viewport,
+            viewportWidthPx = viewportWidthPx,
+            viewportHeightPx = viewportHeightPx,
+            metersPerPixel = metersPerPixel
+        )
+    ) {
+        null
+    } else {
+        nearestCity.name
+    }
+}
+
+private fun isCityNameVisibleOnMap(
+    city: CityPoint,
+    cityPoints: List<CityPoint>,
+    viewport: GeoBounds,
+    viewportWidthPx: Float,
+    viewportHeightPx: Float,
+    metersPerPixel: Float
+): Boolean {
+    if (!city.isVisibleAt(metersPerPixel) || !city.preProjectionSampledAt(metersPerPixel)) return false
+    val crowdedCityLimit = crowdedCityLimitForViewport(viewportWidthPx, viewportHeightPx)
+    val visibleCityLabels = cityPoints
+        .asSequence()
+        .filter { it.isVisibleAt(metersPerPixel) }
+        .filter { it.preProjectionSampledAt(metersPerPixel) }
+        .filter { viewport.contains(it.longitude, it.latitude, paddingDegrees = 0.8) }
+        .map { it to viewport.offsetFor(it.longitude, it.latitude, viewportWidthPx, viewportHeightPx) }
+        .toList()
+    val cityStep = if (visibleCityLabels.size <= crowdedCityLimit * 2) {
+        1
+    } else {
+        citySampleStep(metersPerPixel)
+    }
+    val cityLimit = if (visibleCityLabels.size <= crowdedCityLimit * 2 || metersPerPixel <= 240f) {
+        Int.MAX_VALUE
+    } else {
+        cityLimitForZoom(metersPerPixel, crowdedCityLimit)
+    }
+    return visibleCityLabels
+        .asSequence()
+        .filter { (visibleCity, _) ->
+            cityStep == 1 || visibleCity.importanceRank <= 1 || visibleCity.stableSampleIndex() % cityStep == 0
+        }
+        .toList()
+        .distributedAcrossViewport(
+            width = viewportWidthPx,
+            height = viewportHeightPx,
+            comparator = compareBy<Pair<CityPoint, Offset>> { it.first.importanceRank }
+                .thenBy { it.first.stableSampleIndex() }
+        )
+        .take(cityLimit)
+        .any { it.first == city }
 }
 
 private fun approximateGeoDistanceScore(
@@ -3017,21 +3270,14 @@ private data class OfflineMapPalette(
     val pointer: Color
 )
 
-private val mapProfileColorOptions = listOf(
-    Color(0xFF6750A4),
-    Color(0xFF006A6A),
-    Color(0xFFB3261E),
-    Color(0xFF386A20),
-    Color(0xFF7D5260),
-    Color(0xFF005FAF)
-)
-
 private fun readableOnColor(color: Color): Color {
     return if (color.luminance() > 0.5f) Color.Black else Color.White
 }
 
 private const val worldCircumferenceMeters = 40_075_000f
 private const val worldHeightMeters = 20_037_500f
+private const val focusedProfilePrecisionMeters = 20f
+private const val focusedProfilePrecisionPixels = 72f
 private const val continentOnlyMetersPerPixel = 12_500f
 private const val countryBoundaryMetersPerPixel = 16_000f
 private const val stateBoundaryMetersPerPixel = 3_600f
@@ -3040,7 +3286,7 @@ private const val brazilMunicipalityMetersPerPixel = 720f
 private const val brazilDistrictMetersPerPixel = 220f
 private const val brazilSubdistrictMetersPerPixel = 110f
 private const val brazilSubdistrictTitleMetersPerPixel = 90f
-private const val cityLabelMetersPerPixel = 540f
+private const val cityLabelMetersPerPixel = 720f
 private const val cityTitleMetersPerPixel = 180f
 
 private val continentLabels = listOf(

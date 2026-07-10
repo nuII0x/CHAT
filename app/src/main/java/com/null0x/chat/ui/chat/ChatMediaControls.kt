@@ -60,7 +60,6 @@ import androidx.compose.material.icons.filled.Done
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material.icons.filled.VpnKey
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -98,8 +97,6 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.core.graphics.drawable.toBitmap
 import com.null0x.chat.R
-import com.null0x.chat.ui.common.navigationBarsBottomPadding
-import com.null0x.chat.ui.theme.AppBluePrimary
 import com.null0x.chat.ui.theme.readableContentColor
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeoutOrNull
@@ -142,7 +139,7 @@ internal fun FloatingMediaButtonOverlay(
     var audioIsOverTrash by remember { mutableStateOf(false) }
 
     val mediaButtonColor by animateColorAsState(
-        targetValue = AppBluePrimary,
+        targetValue = Color(0xFF1976D2),
         label = "mediaButtonColor"
     )
 
@@ -444,14 +441,12 @@ internal fun FloatingMediaButtonOverlay(
 @Composable
 internal fun EphemeralCameraOverlay(
     onDismiss: () -> Unit,
-    onLockApp: () -> Unit,
     onReviewSend: (Boolean) -> Unit
 ) {
     val context = LocalContext.current
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
     val colorScheme = MaterialTheme.colorScheme
     val swipeDismissThreshold = with(LocalDensity.current) { 92.dp.toPx() }
-    val controlsBottomPadding = navigationBarsBottomPadding(extraTouchSpace = 22.dp)
     var imageCapture by remember { mutableStateOf<ImageCapture?>(null) }
     var videoCapture by remember { mutableStateOf<VideoCapture<Recorder>?>(null) }
     var activeRecording by remember { mutableStateOf<Recording?>(null) }
@@ -687,249 +682,237 @@ internal fun EphemeralCameraOverlay(
                     )
                 }
             }
-            Surface(
-                shape = CircleShape,
-                color = colorScheme.surface.copy(alpha = 0.66f),
+            Box(
                 modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .padding(18.dp)
-                    .size(44.dp)
+                    .align(Alignment.Center)
+                    .fillMaxWidth()
+                    .aspectRatio(CameraFrameAspectRatio)
             ) {
-                IconButton(
-                    onClick = onDismiss,
-                    modifier = Modifier.fillMaxSize()
-                ) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = "Voltar",
-                        tint = readableContentColor(colorScheme.surface)
-                    )
-                }
-            }
-            Surface(
-                shape = CircleShape,
-                color = colorScheme.surface.copy(alpha = 0.66f),
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(18.dp)
-                    .size(44.dp)
-            ) {
-                IconButton(
-                    onClick = onLockApp,
-                    modifier = Modifier.fillMaxSize()
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.VpnKey,
-                        contentDescription = "Trancar app",
-                        tint = readableContentColor(colorScheme.surface)
-                    )
-                }
-            }
-            if (reviewMode) {
-                Row(
+                Surface(
+                    shape = CircleShape,
+                    color = colorScheme.surface.copy(alpha = 0.66f),
                     modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(bottom = controlsBottomPadding),
-                    horizontalArrangement = Arrangement.spacedBy(18.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                        .align(Alignment.TopStart)
+                        .padding(18.dp)
+                        .size(44.dp)
                 ) {
-                    Surface(
-                        shape = CircleShape,
-                        color = colorScheme.surface.copy(alpha = 0.66f),
-                        modifier = Modifier.size(56.dp)
+                    IconButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.fillMaxSize()
                     ) {
-                        IconButton(
-                            onClick = {
-                                reviewVideoView?.stopPlayback()
-                                reviewVideoPlaying = false
-                                reviewMediaFile?.delete()
-                                reviewMediaFile = null
-                                reviewMediaIsVideo = false
-                                reviewVideoView = null
-                            },
-                            modifier = Modifier.fillMaxSize()
-                        ) {
-                            Icon(
-                                imageVector = Icons.Filled.Refresh,
-                                contentDescription = "Refazer",
-                                tint = readableContentColor(colorScheme.surface)
-                            )
-                        }
-                    }
-                    Surface(
-                        shape = CircleShape,
-                        color = colorScheme.primary,
-                        modifier = Modifier.size(56.dp)
-                    ) {
-                        IconButton(
-                            onClick = {
-                                reviewVideoView?.stopPlayback()
-                                reviewVideoPlaying = false
-                                onReviewSend(reviewMediaIsVideo)
-                                reviewMediaFile = null
-                                reviewMediaIsVideo = false
-                                reviewVideoView = null
-                            },
-                            modifier = Modifier.fillMaxSize()
-                        ) {
-                            Icon(
-                                imageVector = Icons.Filled.Done,
-                                contentDescription = "Enviar",
-                                tint = readableContentColor(colorScheme.primary)
-                            )
-                        }
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Voltar",
+                            tint = readableContentColor(colorScheme.surface)
+                        )
                     }
                 }
-            } else {
-                Row(
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(bottom = controlsBottomPadding)
-                        .fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Spacer(modifier = Modifier.weight(1f))
-                    Surface(
-                        shape = CircleShape,
-                        color = captureButtonColor,
+                if (reviewMode) {
+                    Row(
                         modifier = Modifier
-                            .size(if (recordingVideo) 84.dp else 76.dp)
-                            .scale(captureButtonScale * if (recordingVideo) videoPulse else 1f)
-                            .pointerInput(imageCapture, videoCapture, activeRecording) {
-                                awaitEachGesture {
-                                    awaitFirstDown()
-                                    val recordingInProgress = activeRecording
-                                    if (recordingInProgress != null) {
-                                        val file = activeVideoFile
-                                        activeRecording = null
-                                        activeVideoFile = null
-                                        runCatching { recordingInProgress.stop() }
-                                            .onFailure { file?.delete() }
-                                        return@awaitEachGesture
-                                    }
-                                    val quickRelease = withTimeoutOrNull(VideoQuickReleaseMillis) {
-                                        waitForUpOrCancellation()
-                                    }
-                                    if (quickRelease != null) {
-                                        imageCapture?.let { capture ->
-                                            val file = ephemeralMediaFile(context, "photo", "jpg")
-                                            val output = ImageCapture.OutputFileOptions.Builder(file).build()
-                                            capture.takePicture(
-                                                output,
-                                                ContextCompat.getMainExecutor(context),
-                                                object : ImageCapture.OnImageSavedCallback {
-                                                    override fun onImageSaved(outputFileResults: ImageCapture.OutputFileResults) {
-                                                        if (file.exists() && file.length() > 0L) {
-                                                            reviewMediaFile = file
-                                                            reviewMediaIsVideo = false
-                                                            reviewVideoPlaying = false
-                                                        } else {
+                            .align(Alignment.BottomCenter)
+                            .padding(bottom = 18.dp),
+                        horizontalArrangement = Arrangement.spacedBy(18.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Surface(
+                            shape = CircleShape,
+                            color = colorScheme.surface.copy(alpha = 0.66f),
+                            modifier = Modifier.size(56.dp)
+                        ) {
+                            IconButton(
+                                onClick = {
+                                    reviewVideoView?.stopPlayback()
+                                    reviewVideoPlaying = false
+                                    reviewMediaFile?.delete()
+                                    reviewMediaFile = null
+                                    reviewMediaIsVideo = false
+                                    reviewVideoView = null
+                                },
+                                modifier = Modifier.fillMaxSize()
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.Refresh,
+                                    contentDescription = "Refazer",
+                                    tint = readableContentColor(colorScheme.surface)
+                                )
+                            }
+                        }
+                        Surface(
+                            shape = CircleShape,
+                            color = colorScheme.primary,
+                            modifier = Modifier.size(56.dp)
+                        ) {
+                            IconButton(
+                                onClick = {
+                                    reviewVideoView?.stopPlayback()
+                                    reviewVideoPlaying = false
+                                    onReviewSend(reviewMediaIsVideo)
+                                    reviewMediaFile = null
+                                    reviewMediaIsVideo = false
+                                    reviewVideoView = null
+                                },
+                                modifier = Modifier.fillMaxSize()
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.Done,
+                                    contentDescription = "Enviar",
+                                    tint = readableContentColor(colorScheme.primary)
+                                )
+                            }
+                        }
+                    }
+                } else {
+                    Row(
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(bottom = 18.dp)
+                            .fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Spacer(modifier = Modifier.weight(1f))
+                        Surface(
+                            shape = CircleShape,
+                            color = captureButtonColor,
+                            modifier = Modifier
+                                .size(if (recordingVideo) 84.dp else 76.dp)
+                                .scale(captureButtonScale * if (recordingVideo) videoPulse else 1f)
+                                .pointerInput(imageCapture, videoCapture, activeRecording) {
+                                    awaitEachGesture {
+                                        awaitFirstDown()
+                                        val recordingInProgress = activeRecording
+                                        if (recordingInProgress != null) {
+                                            val file = activeVideoFile
+                                            activeRecording = null
+                                            activeVideoFile = null
+                                            runCatching { recordingInProgress.stop() }
+                                                .onFailure { file?.delete() }
+                                            return@awaitEachGesture
+                                        }
+                                        val quickRelease = withTimeoutOrNull(VideoQuickReleaseMillis) {
+                                            waitForUpOrCancellation()
+                                        }
+                                        if (quickRelease != null) {
+                                            imageCapture?.let { capture ->
+                                                val file = ephemeralMediaFile(context, "photo", "jpg")
+                                                val output = ImageCapture.OutputFileOptions.Builder(file).build()
+                                                capture.takePicture(
+                                                    output,
+                                                    ContextCompat.getMainExecutor(context),
+                                                    object : ImageCapture.OnImageSavedCallback {
+                                                        override fun onImageSaved(outputFileResults: ImageCapture.OutputFileResults) {
+                                                            if (file.exists() && file.length() > 0L) {
+                                                                reviewMediaFile = file
+                                                                reviewMediaIsVideo = false
+                                                                reviewVideoPlaying = false
+                                                            } else {
+                                                                file.delete()
+                                                            }
+                                                        }
+
+                                                        override fun onError(exception: ImageCaptureException) {
                                                             file.delete()
                                                         }
                                                     }
-
-                                                    override fun onError(exception: ImageCaptureException) {
+                                                )
+                                            }
+                                            return@awaitEachGesture
+                                        }
+                                        val capture = videoCapture ?: return@awaitEachGesture
+                                        val file = ephemeralMediaFile(context, "video", "mp4")
+                                        val output = FileOutputOptions.Builder(file).build()
+                                        var recording: Recording? = null
+                                        activeVideoFile = file
+                                        recording = capture.output
+                                            .prepareRecording(context, output)
+                                            .apply {
+                                                if (
+                                                    ContextCompat.checkSelfPermission(
+                                                        context,
+                                                        Manifest.permission.RECORD_AUDIO
+                                                    ) == PackageManager.PERMISSION_GRANTED
+                                                ) {
+                                                    withAudioEnabled()
+                                                }
+                                            }
+                                            .asPersistentRecording()
+                                            .start(ContextCompat.getMainExecutor(context)) { event ->
+                                                if (event is VideoRecordEvent.Finalize) {
+                                                    activeRecording = null
+                                                    activeVideoFile = null
+                                                    if (!event.hasError() && file.exists() && file.length() > VideoMinBytes) {
+                                                        reviewMediaFile = file
+                                                        reviewMediaIsVideo = true
+                                                        reviewVideoPlaying = false
+                                                    } else {
                                                         file.delete()
                                                     }
                                                 }
-                                            )
-                                        }
+                                            }
+                                        activeRecording = recording
                                         return@awaitEachGesture
                                     }
-                                    val capture = videoCapture ?: return@awaitEachGesture
-                                    val file = ephemeralMediaFile(context, "video", "mp4")
-                                    val output = FileOutputOptions.Builder(file).build()
-                                    var recording: Recording? = null
-                                    activeVideoFile = file
-                                    recording = capture.output
-                                        .prepareRecording(context, output)
-                                        .apply {
-                                            if (
-                                                ContextCompat.checkSelfPermission(
-                                                    context,
-                                                    Manifest.permission.RECORD_AUDIO
-                                                ) == PackageManager.PERMISSION_GRANTED
-                                            ) {
-                                                withAudioEnabled()
-                                            }
-                                        }
-                                        .asPersistentRecording()
-                                        .start(ContextCompat.getMainExecutor(context)) { event ->
-                                            if (event is VideoRecordEvent.Finalize) {
-                                                activeRecording = null
-                                                activeVideoFile = null
-                                                if (!event.hasError() && file.exists() && file.length() > VideoMinBytes) {
-                                                    reviewMediaFile = file
-                                                    reviewMediaIsVideo = true
-                                                    reviewVideoPlaying = false
-                                                } else {
-                                                    file.delete()
-                                                }
-                                            }
-                                        }
-                                    activeRecording = recording
-                                    return@awaitEachGesture
                                 }
-                            }
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .border(
-                                        width = if (recordingVideo) 3.dp else 2.dp,
-                                        color = if (recordingVideo) {
-                                            colorScheme.onSurface.copy(alpha = captureRingAlpha)
-                                        } else {
-                                            colorScheme.primary.copy(alpha = captureRingAlpha)
-                                        },
-                                        shape = CircleShape
-                                    )
-                            )
-                            if (recordingVideo) {
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
                                 Box(
                                     modifier = Modifier
                                         .fillMaxSize()
-                                        .scale(1.04f)
                                         .border(
-                                            width = 2.dp,
-                                            color = colorScheme.error.copy(alpha = 0.22f + (videoPulse * 0.24f)),
+                                            width = if (recordingVideo) 3.dp else 2.dp,
+                                            color = if (recordingVideo) {
+                                                colorScheme.onSurface.copy(alpha = captureRingAlpha)
+                                            } else {
+                                                colorScheme.primary.copy(alpha = captureRingAlpha)
+                                            },
                                             shape = CircleShape
                                         )
                                 )
-                            }
-                            Icon(
-                                imageVector = if (recordingVideo) Icons.Filled.Stop else Icons.Filled.FiberManualRecord,
-                                contentDescription = "Capturar",
-                                tint = captureIconColor,
-                                modifier = Modifier.size(if (recordingVideo) 40.dp else 34.dp)
-                            )
-                        }
-                    }
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Surface(
-                        shape = CircleShape,
-                        color = colorScheme.surface.copy(alpha = 0.66f),
-                        modifier = Modifier.size(40.dp)
-                    ) {
-                        IconButton(
-                            onClick = {
-                                lensFacing = if (lensFacing == CameraSelector.LENS_FACING_BACK) {
-                                    CameraSelector.LENS_FACING_FRONT
-                                } else {
-                                    CameraSelector.LENS_FACING_BACK
+                                if (recordingVideo) {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .scale(1.04f)
+                                            .border(
+                                                width = 2.dp,
+                                                color = colorScheme.error.copy(alpha = 0.22f + (videoPulse * 0.24f)),
+                                                shape = CircleShape
+                                            )
+                                    )
                                 }
-                            },
-                            modifier = Modifier.fillMaxSize()
-                        ) {
-                            Icon(
-                                imageVector = Icons.Filled.Cameraswitch,
-                                contentDescription = "Alternar câmera",
-                                tint = readableContentColor(colorScheme.surface)
-                            )
+                                Icon(
+                                    imageVector = if (recordingVideo) Icons.Filled.Stop else Icons.Filled.FiberManualRecord,
+                                    contentDescription = "Capturar",
+                                    tint = captureIconColor,
+                                    modifier = Modifier.size(if (recordingVideo) 40.dp else 34.dp)
+                                )
+                            }
                         }
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Surface(
+                            shape = CircleShape,
+                            color = colorScheme.surface.copy(alpha = 0.66f),
+                            modifier = Modifier.size(40.dp)
+                        ) {
+                            IconButton(
+                                onClick = {
+                                    lensFacing = if (lensFacing == CameraSelector.LENS_FACING_BACK) {
+                                        CameraSelector.LENS_FACING_FRONT
+                                    } else {
+                                        CameraSelector.LENS_FACING_BACK
+                                    }
+                                },
+                                modifier = Modifier.fillMaxSize()
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.Cameraswitch,
+                                    contentDescription = "Alternar câmera",
+                                    tint = readableContentColor(colorScheme.surface)
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.weight(1f))
                     }
-                    Spacer(modifier = Modifier.weight(1f))
                 }
             }
         }

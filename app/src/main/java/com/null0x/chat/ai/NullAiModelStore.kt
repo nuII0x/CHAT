@@ -7,6 +7,7 @@ import androidx.work.Constraints
 import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -24,6 +25,7 @@ object NullAiModelStore {
     private const val ModelPathKey = "model_path"
     private const val AutoDownloadEnabledKey = "auto_download_enabled"
     private const val ModelDownloadUrlKey = "model_download_url"
+    private const val ModelDownloadSourceUrlKey = "model_download_source_url"
 
     fun currentModel(context: Context): AiModel {
         val appContext = context.applicationContext
@@ -54,7 +56,7 @@ object NullAiModelStore {
     }
 
     fun hasUsableModel(context: Context): Boolean {
-        return File(currentModel(context).path).isFile
+        return isUsableGgufFile(File(currentModel(context).path))
     }
 
     fun modelDownloadUrl(context: Context): String {
@@ -88,6 +90,7 @@ object NullAiModelStore {
         val appContext = context.applicationContext
         if (!isAutoDownloadEnabled(appContext)) return
         if (!canDownloadFromUrl(modelDownloadUrl(appContext))) return
+        if (!shouldDownloadConfiguredModel(appContext)) return
 
         enqueueModelDownloadInternal(appContext, NetworkType.UNMETERED)
     }
@@ -100,9 +103,24 @@ object NullAiModelStore {
         enqueueModelDownloadInternal(context.applicationContext, NetworkType.CONNECTED)
     }
 
+    fun shouldDownloadCurrentUrl(context: Context): Boolean {
+        val appContext = context.applicationContext
+        return canDownloadFromUrl(modelDownloadUrl(appContext)) && shouldDownloadConfiguredModel(appContext)
+    }
+
+    suspend fun isDownloadRunning(context: Context): Boolean = withContext(Dispatchers.IO) {
+        runCatching {
+            WorkManager.getInstance(context.applicationContext)
+                .getWorkInfosForUniqueWork(DownloadWorkName)
+                .get()
+                .any { it.state == WorkInfo.State.RUNNING }
+        }.getOrDefault(false)
+    }
+
     private fun enqueueModelDownloadInternal(appContext: Context, networkType: NetworkType) {
         val url = modelDownloadUrl(appContext)
         if (!canDownloadFromUrl(url)) return
+        if (!shouldDownloadConfiguredModel(appContext)) return
 
         val request = OneTimeWorkRequestBuilder<NullAiDownloadWorker>()
             .setConstraints(
@@ -128,11 +146,12 @@ object NullAiModelStore {
         val prefs = prefs(appContext)
         val defaultFile = defaultModelFile(appContext)
         val activePath = prefs.getString(ModelPathKey, null).orEmpty()
-        if (activePath.isBlank() || activePath == defaultFile.absolutePath) {
+        if (isUsableGgufFile(file) && (activePath.isBlank() || activePath == defaultFile.absolutePath)) {
             prefs.edit()
                 .putString(ModelIdKey, DefaultModelId)
                 .putString(ModelLabelKey, "Modelo GGUF local")
                 .putString(ModelPathKey, file.absolutePath)
+                .putString(ModelDownloadSourceUrlKey, modelDownloadUrl(appContext))
                 .apply()
         }
     }
@@ -164,6 +183,10 @@ object NullAiModelStore {
                 temp.copyTo(destination, overwrite = true)
                 temp.delete()
             }
+            if (!isUsableGgufFile(destination)) {
+                destination.delete()
+                error("O arquivo GGUF selecionado nao parece valido.")
+            }
 
             val model = AiModel(
                 id = CustomModelId,
@@ -176,6 +199,7 @@ object NullAiModelStore {
                 .putString(ModelIdKey, model.id)
                 .putString(ModelLabelKey, model.label)
                 .putString(ModelPathKey, model.path)
+                .putString(ModelDownloadSourceUrlKey, "")
                 .apply()
 
             model
@@ -216,10 +240,26 @@ object NullAiModelStore {
         return clean
     }
 
+    private fun isUsableGgufFile(file: File): Boolean {
+        return file.isFile &&
+            file.length() > 0L &&
+            file.name.endsWith(".gguf", ignoreCase = true)
+    }
+
     private fun canDownloadFromUrl(url: String): Boolean {
         val clean = url.trim()
         return (clean.startsWith("http://", ignoreCase = true) ||
             clean.startsWith("https://", ignoreCase = true)) &&
             clean.contains(".gguf", ignoreCase = true)
+    }
+
+    private fun shouldDownloadConfiguredModel(context: Context): Boolean {
+        val prefs = prefs(context)
+        val configuredUrl = modelDownloadUrl(context).trim()
+        val model = currentModel(context)
+        if (!isUsableGgufFile(File(model.path))) return true
+        if (model.id != DefaultModelId) return false
+        val downloadedFrom = prefs.getString(ModelDownloadSourceUrlKey, "").orEmpty().trim()
+        return downloadedFrom.isNotBlank() && !downloadedFrom.equals(configuredUrl, ignoreCase = true)
     }
 }

@@ -2,7 +2,12 @@ package com.null0x.chat.viewmodel
 
 import android.app.Application
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.location.Location
+import android.net.Uri
+import android.os.SystemClock
+import android.os.BatteryManager
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -19,6 +24,8 @@ import com.null0x.chat.ai.NullAiMemoryStore
 import com.null0x.chat.model.DeliveryState
 import com.null0x.chat.model.Message
 import com.null0x.chat.network.ChatNodeManager
+import com.null0x.chat.notification.MessageNotifier
+import com.null0x.chat.profile.ProfileImageCache
 import com.null0x.chat.security.identity.RouteIdentityRegistry
 import com.null0x.chat.storage.ChatStore
 import com.null0x.chat.util.normalizeProfileEmojiInput
@@ -30,7 +37,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 import java.security.MessageDigest
+import kotlin.random.Random
 import kotlin.math.cos
 import kotlin.math.round
 
@@ -44,15 +53,18 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         private const val CONTACT_ACCEPT_NOTICE_PREFIX = "accepted_notice"
         const val NULL_AI_CONVERSATION = "null-ai"
         const val NULL_AI_TIMING_NOTICE_PREFIX = "[NullIA:timing]"
+        private const val MAX_PROFILE_IMAGE_BYTES = 6L * 1024L * 1024L
     }
 
     data class ConversationPreview(
         val username: String,
         val displayName: String,
         val emoji: String,
+        val mapColorArgb: Int,
         val lastTimestamp: Long,
         val unreadCount: Int,
         val previewLine: String,
+        val locked: Boolean = false,
         val isAi: Boolean = false
     )
 
@@ -67,6 +79,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val username: String,
         val displayName: String,
         val emoji: String,
+        val mapColorArgb: Int,
         val isLocalOwner: Boolean,
         val source: String
     )
@@ -78,6 +91,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val localName: String,
         val emoji: String,
         val bio: String,
+        val imageUrl: String,
         val mapColorArgb: Int
     )
 
@@ -106,6 +120,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val username: String,
         val displayName: String,
         val emoji: String,
+        val mapColorArgb: Int,
         val accepted: Boolean
     )
 
@@ -124,9 +139,35 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val updatedAt: Long
     )
 
+    private data class NullAiQueuedRequest(
+        val target: String,
+        val message: String,
+        val revision: Int
+    )
+
+    private data class NullAiQueuedReply(
+        val target: String,
+        val reply: String,
+        val preRevealDelayMs: Long,
+        val lineDelaysMs: List<Long>,
+        val revision: Int
+    )
+
+    private data class NullAiTypingProfile(
+        val preRevealDelayMs: Long,
+        val lineDelaysMs: List<Long>
+    )
+
+    private data class CpuSample(
+        val idle: Long,
+        val total: Long,
+        val sampledAt: Long
+    )
+
     private val nodeManager = ChatNodeManager
     private val chatStore = ChatStore(application.applicationContext)
     private val aiEngine = LlamaCppEngine(application.applicationContext)
+    private val messageNotifier = MessageNotifier(application.applicationContext)
     private val profilePrefs = application.applicationContext.getSharedPreferences("profile", Context.MODE_PRIVATE)
     private val contactsPrefs = application.applicationContext.getSharedPreferences("contacts", Context.MODE_PRIVATE)
     private val routeNamesPrefs = application.applicationContext.getSharedPreferences("route_names", Context.MODE_PRIVATE)
@@ -141,6 +182,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val locationSharingModeKey = "location_sharing_mode"
     private val locationSharingRoutesKey = "location_sharing_routes"
     private val locationEmergencyRoutesKey = "location_emergency_routes"
+    private val profileImageUrlKey = "profile_image_url"
+    private val profileImagePathKey = "profile_image_path"
     private val profileMapColorKey = "profile_map_color"
     private val locationGridSizeMeters = 500f
     private val locationUpdateThresholdMeters = 250f
@@ -306,6 +349,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     cleanRoute,
                     publicDisplayNameForRoute(cleanRoute).ifBlank { routeTokenString(cleanRoute) }
                 )
+                refreshProfileImageCache(cleanRoute)
                 conversationsVersion++
                 routeNamesVersion++
                 if (cleanRoute == targetUsername) {
@@ -359,9 +403,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         private set
     var nullAiRenderingReply by mutableStateOf(false)
         private set
+    var nullAiRevealPending by mutableStateOf(false)
+        private set
+    var nullAiHasPendingWork by mutableStateOf(false)
+        private set
     var nullAiReady by mutableStateOf(false)
         private set
     var nullAiPrepareError by mutableStateOf("")
+        private set
+    var nullAiModelDownloading by mutableStateOf(false)
         private set
     private var profileEmoji by mutableStateOf("🙂")
     private var profileBio by mutableStateOf("")
@@ -370,11 +420,20 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private var cleanupChatJob: Job? = null
     private var previewsJob: Job? = null
     private var nullAiPrepareJob: Job? = null
-    private var nullAiPreparedModelPath: String = ""
+    private var nullAiQueueJob: Job? = null
+    private var nullAiRevealJob: Job? = null
+    private var nullAiIdleReleaseJob: Job? = null
+    private var nullAiPreparedModelSignature: String = ""
+    private val nullAiRequestQueue = ArrayDeque<NullAiQueuedRequest>()
+    private val nullAiReplyQueue = ArrayDeque<NullAiQueuedReply>()
+    private var nullAiCpuSample: CpuSample? = null
+    private var nullAiConsecutiveHighCost = 0
+    private var nullAiLastGenerationMs = 0L
     @Volatile
     private var nullAiConversationRevision: Int = 0
     private var warmCacheJob: Job? = null
     private var conversationPreviewCache by mutableStateOf<List<ConversationPreview>>(emptyList())
+    private val profileImagePaths = mutableStateMapOf<String, String>()
     private val conversationHistoryLock = Any()
     private val conversationHistoryCache = mutableMapOf<String, MutableList<Message>>()
     private var currentChatLoaded by mutableStateOf(false)
@@ -396,6 +455,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     var profileEmojiSymbol by mutableStateOf("🙂")
         private set
     var profileBioText by mutableStateOf("")
+        private set
+    var profileImageUrl by mutableStateOf("")
+        private set
+    var profileImagePath by mutableStateOf("")
         private set
     var profileMapColorArgb by mutableStateOf(0xFF6750A4.toInt())
         private set
@@ -435,6 +498,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         profileEmojiSymbol = profileEmoji
         profileBio = profilePrefs.getString("profile_bio", "")?.orEmpty() ?: ""
         profileBioText = profileBio
+        profileImageUrl = profilePrefs.getString(profileImageUrlKey, "")?.orEmpty() ?: ""
+        profileImagePath = profilePrefs.getString(profileImagePathKey, "")?.orEmpty() ?: ""
         profileMapColorArgb = profilePrefs.getInt(profileMapColorKey, profileMapColorArgb)
         locationSharingMode = loadLocationSharingMode()
         locationSharingAllowedRoutes = loadLocationSharingRoutes()
@@ -447,6 +512,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         nodeManager.start(application.applicationContext, autoStartTor = true)
         nodeManager.setProfileEmoji(application.applicationContext, profileEmoji)
         nodeManager.setProfileBio(application.applicationContext, profileBio)
+        nodeManager.setProfileImageUrl(application.applicationContext, profileImageUrl)
         nodeManager.setProfileMapColor(application.applicationContext, profileMapColorArgb)
         nodeManager.setProfilePolicy(defaultKeepViewedMessages, defaultAllowScreenshots)
         nodeManager.setLocationSharingPolicy(
@@ -460,11 +526,17 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         val current = canonicalConversationKey(targetUsername)
-        if (current.isNotBlank() && !isNullAiConversation(current)) {
+        if (current.isNotBlank()) {
             AppVisibility.markChatClosed(current)
+        }
+        if (current.isNotBlank() && !isNullAiConversation(current)) {
             sendChatPresence(current, "idle")
             sendChatPresence(current, "closed")
         }
+        nullAiIdleReleaseJob?.cancel()
+        nullAiQueueJob?.cancel()
+        nullAiRevealJob?.cancel()
+        nullAiPrepareJob?.cancel()
         nodeManager.removeListener(listener)
         nodeManager.setChatMessageAuthorization(null)
         partnerPresenceExpiryJobs.values.forEach { it.cancel() }
@@ -472,11 +544,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         super.onCleared()
     }
 
-    fun selectTarget(username: String) {
+    fun selectTarget(username: String, fromNotification: Boolean = false) {
         val cleanTarget = canonicalConversationKey(username)
         if (isNullAiConversation(cleanTarget) && !nullAiEnabled) return
         val previousTarget = canonicalConversationKey(targetUsername)
         if (cleanTarget.isNotBlank() && cleanTarget == previousTarget && inChat && currentChatLoaded) {
+            if (fromNotification) {
+                markConversationReadFromNotification(cleanTarget)
+            }
             return
         }
         openChatJob?.cancel()
@@ -499,15 +574,22 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             chatStore.rememberPeer(cleanTarget, nullAiDisplayName())
             messages.addAll(conversationMessagesFor(cleanTarget))
             currentChatLoaded = true
+            AppVisibility.markChatOpen(cleanTarget)
+            messageNotifier.cancelMessage(cleanTarget)
             if (!startedConversations.contains(cleanTarget)) {
                 startedConversations.add(0, cleanTarget)
+            }
+            val unreadBeforeOpen = unreadByPeer[cleanTarget] ?: 0
+            if (fromNotification || unreadBeforeOpen <= 0) {
+                unreadEntryCountByPeer.remove(cleanTarget)
+            } else {
+                unreadEntryCountByPeer[cleanTarget] = unreadBeforeOpen
             }
             unreadByPeer[cleanTarget] = 0
             seenButNotClearedByPeer[cleanTarget] = true
             inChat = true
             conversationsVersion++
             refreshConversationPreviewsAsync()
-            prepareNullAi()
             return
         }
 
@@ -525,7 +607,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
         nodeManager.requestPublicProfile(cleanTarget)
         val unreadBeforeOpen = unreadByPeer[cleanTarget] ?: 0
-        unreadEntryCountByPeer[cleanTarget] = unreadBeforeOpen
+        if (fromNotification || unreadBeforeOpen <= 0) {
+            unreadEntryCountByPeer.remove(cleanTarget)
+        } else {
+            unreadEntryCountByPeer[cleanTarget] = unreadBeforeOpen
+        }
         unreadByPeer[cleanTarget] = 0
         seenButNotClearedByPeer[cleanTarget] = true
         inChat = true
@@ -534,12 +620,25 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         refreshConversationPreviewsAsync()
     }
 
+    private fun markConversationReadFromNotification(route: String) {
+        val clean = canonicalConversationKey(route)
+        if (clean.isBlank()) return
+        unreadByPeer[clean] = 0
+        unreadEntryCountByPeer.remove(clean)
+        messageNotifier.cancelMessage(clean)
+        nodeManager.cancelNotification(clean)
+        conversationsVersion++
+        refreshConversationPreviewsAsync()
+    }
+
     fun openHome() {
         val previous = targetUsername
         openChatJob?.cancel()
         openChatJob = null
-        if (previous.isNotBlank() && !isNullAiConversation(previous)) {
+        if (previous.isNotBlank()) {
             AppVisibility.markChatClosed(previous)
+        }
+        if (previous.isNotBlank() && !isNullAiConversation(previous)) {
             sendChatPresence(previous, "idle")
             sendChatPresence(previous, "closed")
             localTypingByPeer[previous] = false
@@ -593,18 +692,23 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         setConversationHidden(NULL_AI_CONVERSATION, !enabled)
         if (!enabled) {
             nullAiPrepareJob?.cancel()
+            nullAiQueueJob?.cancel()
+            nullAiRevealJob?.cancel()
+            nullAiIdleReleaseJob?.cancel()
+            nullAiRequestQueue.clear()
+            nullAiReplyQueue.clear()
+            aiEngine.shutdown()
             nullAiPreparing = false
             nullAiThinking = false
             nullAiRenderingReply = false
+            nullAiRevealPending = false
+            nullAiHasPendingWork = false
             nullAiReady = false
             nullAiPrepareError = ""
-            nullAiPreparedModelPath = ""
+            nullAiPreparedModelSignature = ""
         }
         if (!enabled && isNullAiConversation(targetUsername)) {
             openHome()
-        }
-        if (enabled && isNullAiConversation(targetUsername)) {
-            prepareNullAi()
         }
         conversationsVersion++
         refreshConversationPreviewsAsync()
@@ -673,6 +777,83 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         routeNamesVersion++
         refreshRouteLookup()
         refreshConversationPreviewsAsync()
+    }
+
+    fun updateProfileImageUrl(imageUrl: String) {
+        val cleanUrl = imageUrl.trim().take(2048)
+        if (profileImageUrl == cleanUrl) return
+        profileImageUrl = cleanUrl
+        profilePrefs.edit().putString(profileImageUrlKey, cleanUrl).apply()
+        nodeManager.setProfileImageUrl(getApplication(), cleanUrl)
+        refreshProfileImageCache(currentPublicRoute())
+        conversationsVersion++
+        routeNamesVersion++
+        refreshRouteLookup()
+        refreshConversationPreviewsAsync()
+    }
+
+    suspend fun importProfileImageFromGallery(uri: Uri): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val appContext = getApplication<Application>().applicationContext
+            val dir = File(appContext.filesDir, "profile-images").apply { mkdirs() }
+            val extension = profileImageExtension(appContext, uri)
+            val destination = File(dir, "profile-image-${System.currentTimeMillis()}.$extension")
+            val partial = File(dir, "${destination.name}.part")
+            partial.delete()
+
+            var copiedBytes = 0L
+            appContext.contentResolver.openInputStream(uri)?.use { input ->
+                partial.outputStream().use { output ->
+                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                    while (true) {
+                        val read = input.read(buffer)
+                        if (read < 0) break
+                        copiedBytes += read
+                        if (copiedBytes > MAX_PROFILE_IMAGE_BYTES) {
+                            error("Imagem maior que 6 MB.")
+                        }
+                        output.write(buffer, 0, read)
+                    }
+                }
+            } ?: error("Nao consegui abrir a imagem selecionada.")
+
+            if (partial.length() <= 0L) {
+                error("A imagem selecionada esta vazia.")
+            }
+            if (!partial.renameTo(destination)) {
+                partial.copyTo(destination, overwrite = true)
+                partial.delete()
+            }
+
+            withContext(Dispatchers.Main.immediate) {
+                updateLocalProfileImagePath(destination.absolutePath)
+            }
+            dir.listFiles()
+                ?.filter { it.isFile && it != destination && it.name.startsWith("profile-image-") }
+                ?.forEach { it.delete() }
+            Unit
+        }
+    }
+
+    fun profileImagePathFor(route: String): String {
+        val clean = canonicalConversationKey(route)
+        if (clean.isBlank()) return ""
+        if (isLocalRoute(clean)) {
+            return profileImagePath.takeIf { File(it).isFile }.orEmpty()
+        }
+        return profileImagePaths[clean].orEmpty()
+            .ifBlank {
+                ProfileImageCache.cachedPath(getApplication(), clean, publicImageUrlForRoute(clean))
+            }
+    }
+
+    fun refreshProfileImagesInForeground() {
+        val routes = buildSet {
+            currentPublicRoute().takeIf { it.isNotBlank() }?.let(::add)
+            conversationPreviewCache.forEach { add(it.username) }
+            contactPreviews().forEach { add(it.username) }
+        }
+        routes.forEach(::refreshProfileImageCache)
     }
 
     fun updateContactRouteInput(route: String) {
@@ -799,6 +980,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     username = route,
                     displayName = chatTitleFor(route),
                     emoji = publicEmojiForRoute(route),
+                    mapColorArgb = publicMapColorForRoute(route),
                     lastTimestamp = 0L,
                     unreadCount = 0,
                     previewLine = "Solicitou contato"
@@ -940,6 +1122,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 username = route,
                 displayName = chatTitleFor(route),
                 emoji = publicEmojiForRoute(route),
+                mapColorArgb = publicMapColorForRoute(route),
                 accepted = isContactAccepted(route)
             )
         }
@@ -957,6 +1140,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     username = route,
                     displayName = chatTitleFor(route),
                     emoji = publicEmojiForRoute(route),
+                    mapColorArgb = publicMapColorForRoute(route),
                     accepted = false
                 )
             }
@@ -1065,6 +1249,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             localName = localName,
             emoji = publicEmojiForRoute(route),
             bio = publicBioForRoute(route),
+            imageUrl = publicImageUrlForRoute(route),
             mapColorArgb = publicMapColorForRoute(route)
         )
     }
@@ -1264,6 +1449,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             username = clean,
             displayName = displayLabel,
             emoji = publicEmojiForRoute(clean),
+            mapColorArgb = publicMapColorForRoute(clean),
             isLocalOwner = isLocalOwnerRoute(clean),
             source = "Rede"
         )
@@ -1530,10 +1716,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun sendToNullAi(target: String, message: String) {
         if (!nullAiEnabled) return
-        if (nullAiThinking) return
         if (!isNullAiConversationAvailable()) {
             prepareNullAi()
-            return
         }
         val localId = java.util.UUID.randomUUID().toString()
         val outgoing = Message(
@@ -1552,95 +1736,275 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         conversationsVersion++
         refreshConversationPreviewsAsync()
 
-        viewModelScope.launch {
-            val generationRevision = nullAiConversationRevision
-            nullAiThinking = true
-            nullAiRenderingReply = false
-            try {
-                val kotlinResult = NullAiKotlinTools.analyze(message)
-                val replyPrompt = withContext(Dispatchers.IO) {
-                    buildNullAiPrompt(
-                        target = target,
-                        toolContext = kotlinResult?.context,
-                        toolAnswer = kotlinResult?.answer
-                    )
-                }
-                val generation = aiEngine.generateReplyWithStats(replyPrompt).getOrElse { error ->
-                    com.null0x.chat.ai.AiGeneration(
-                        text = error.message ?: "Nao consegui gerar resposta agora."
-                    )
-                }
-                val reply = generation.text
-                    .let(::cleanNullAiReply)
-                    .let { enforceToolAnswer(it, kotlinResult?.answer) }
-                if (generationRevision != nullAiConversationRevision) {
-                    return@launch
-                }
-                nullAiThinking = false
-                nullAiRenderingReply = true
-                val incoming = Message(
-                    text = reply,
-                    isMine = false,
-                    delivery = DeliveryState.Delivered
-                )
-                if (appendConversationMessage(target, incoming)) {
-                    appendVisibleMessage(incoming)
-                }
-                generation.timingNotice()?.let { notice ->
-                    appendVisibleMessage(
-                        Message(
-                            text = "$NULL_AI_TIMING_NOTICE_PREFIX $notice",
-                            isMine = false,
-                            delivery = DeliveryState.Delivered
-                        )
-                    )
-                }
-                chatStore.upsert(target, incoming)
-                val memoryMessages = conversationMessagesFor(target).takeLast(6)
-                viewModelScope.launch(Dispatchers.IO) {
-                    NullAiMemoryStore.update(getApplication(), target, memoryMessages)
-                }
-                conversationsVersion++
-                refreshConversationPreviewsAsync()
-                delay(1_200)
-            } finally {
-                nullAiThinking = false
-                nullAiRenderingReply = false
-            }
-        }
+        enqueueNullAiRequest(target, message)
     }
 
     private fun buildNullAiPrompt(
         target: String,
+        message: String,
         toolContext: String?,
         toolAnswer: String?
     ): String {
-        val lastUserMessage = conversationMessagesFor(target)
-            .lastOrNull { it.isMine }
-            ?.text
-            ?.trim()
-            ?.replace(Regex("\\s+"), " ")
-            ?.take(90)
-            .orEmpty()
+        val lastUserMessage = message
+            .trim()
+            .replace(Regex("\\s+"), " ")
+            .take(800)
         val memory = if (shouldUseNullAiMemory(lastUserMessage)) {
             NullAiMemoryStore.snapshot(getApplication(), target, lastUserMessage).toPromptMemory()
         } else {
             ""
         }
         return buildString {
-            append("PT-BR.\n")
+            append("Responda em portugues do Brasil, de forma direta e coerente.\n")
+            append("Se houver Resultado exato, use esse valor e nao invente outro.\n")
             if (memory.isNotBlank()) {
-                append("Memoria: ").append(memory.take(120)).append('\n')
+                append("Memoria: ").append(memory.take(320)).append('\n')
             }
             if (!toolAnswer.isNullOrBlank()) {
-                append("Resultado exato: ").append(toolAnswer.take(60)).append('\n')
+                append("Resultado exato: ").append(toolAnswer.take(160)).append('\n')
                 if (!toolContext.isNullOrBlank()) {
-                    append("Contexto: ").append(toolContext.take(80)).append('\n')
+                    append("Contexto: ").append(toolContext.take(240)).append('\n')
                 }
             }
-            append("Usuario: ").append(lastUserMessage).append('\n')
-            append("Resposta:")
+            append("Mensagem do usuario: ").append(lastUserMessage)
         }
+    }
+
+    private fun enqueueNullAiRequest(target: String, message: String) {
+        nullAiRequestQueue.addLast(
+            NullAiQueuedRequest(
+                target = target,
+                message = message,
+                revision = nullAiConversationRevision
+            )
+        )
+        refreshNullAiPendingWorkState()
+        if (nullAiQueueJob?.isActive == true) return
+        nullAiQueueJob = viewModelScope.launch {
+            while (nullAiRequestQueue.isNotEmpty()) {
+                val request = nullAiRequestQueue.removeFirst()
+                refreshNullAiPendingWorkState()
+                if (request.revision != nullAiConversationRevision) continue
+                waitForNullAiReadiness()
+                if (!isNullAiConversationAvailable()) {
+                    val fallbackReply = nullAiPrepareError.ifBlank { "Nao consegui preparar a Null IA agora." }
+                    enqueueNullAiReply(
+                        NullAiQueuedReply(
+                            target = request.target,
+                            reply = fallbackReply,
+                            preRevealDelayMs = 0L,
+                            lineDelaysMs = listOf(Random.nextLong(2_000L, 5_001L)),
+                            revision = request.revision
+                        )
+                    )
+                    continue
+                }
+
+                val throttleDelayMs = nullAiProcessingDelayMs()
+                if (throttleDelayMs > 0L) {
+                    delay(throttleDelayMs)
+                }
+
+                nullAiThinking = true
+                nullAiRenderingReply = false
+                refreshNullAiPendingWorkState()
+                val startedAt = SystemClock.elapsedRealtime()
+                try {
+                    val kotlinResult = NullAiKotlinTools.analyze(request.message)
+                    val replyPrompt = withContext(Dispatchers.IO) {
+                        buildNullAiPrompt(
+                            target = request.target,
+                            message = request.message,
+                            toolContext = kotlinResult?.context,
+                            toolAnswer = kotlinResult?.answer
+                        )
+                    }
+                    val generation = aiEngine.generateReplyWithStats(replyPrompt).getOrElse { error ->
+                        com.null0x.chat.ai.AiGeneration(
+                            text = error.message ?: "Nao consegui gerar resposta agora."
+                        )
+                    }
+                    recordNullAiProcessingCost(SystemClock.elapsedRealtime() - startedAt)
+                    val reply = generation.text
+                        .let(::cleanNullAiReply)
+                        .let { enforceToolAnswer(it, kotlinResult?.answer) }
+                    if (request.revision == nullAiConversationRevision) {
+                        val typingProfile = nullAiTypingProfile(reply)
+                        enqueueNullAiReply(
+                            NullAiQueuedReply(
+                                target = request.target,
+                                reply = reply,
+                                preRevealDelayMs = typingProfile.preRevealDelayMs,
+                                lineDelaysMs = typingProfile.lineDelaysMs,
+                                revision = request.revision
+                            )
+                        )
+                    }
+                } finally {
+                    nullAiThinking = false
+                    refreshNullAiPendingWorkState()
+                }
+            }
+            refreshNullAiPendingWorkState()
+        }
+    }
+
+    private suspend fun waitForNullAiReadiness() {
+        if (!isNullAiConversationAvailable()) {
+            prepareNullAi()
+        }
+        repeat(60) {
+            if (isNullAiConversationAvailable() || nullAiPrepareError.isNotBlank()) {
+                return
+            }
+            delay(250)
+        }
+    }
+
+    private fun enqueueNullAiReply(reply: NullAiQueuedReply) {
+        nullAiReplyQueue.addLast(reply)
+        refreshNullAiPendingWorkState()
+        if (nullAiRevealJob?.isActive == true) return
+        nullAiRevealJob = viewModelScope.launch {
+            while (nullAiReplyQueue.isNotEmpty()) {
+                val queuedReply = nullAiReplyQueue.removeFirst()
+                refreshNullAiPendingWorkState()
+                if (queuedReply.revision != nullAiConversationRevision) continue
+                nullAiRevealPending = true
+                refreshNullAiPendingWorkState()
+                delay(queuedReply.preRevealDelayMs)
+                nullAiRevealPending = false
+                nullAiRenderingReply = true
+                refreshNullAiPendingWorkState()
+                queuedReply.lineDelaysMs.forEach { delay(it) }
+                nullAiRenderingReply = false
+                refreshNullAiPendingWorkState()
+                if (queuedReply.revision != nullAiConversationRevision) continue
+                appendNullAiReply(queuedReply)
+            }
+            nullAiRenderingReply = false
+            refreshNullAiPendingWorkState()
+            scheduleNullAiIdleRelease()
+        }
+    }
+
+    private fun appendNullAiReply(queuedReply: NullAiQueuedReply) {
+        val incoming = Message(
+            text = queuedReply.reply,
+            isMine = false,
+            delivery = DeliveryState.Delivered
+        )
+        val target = canonicalConversationKey(queuedReply.target)
+        val currentTarget = canonicalConversationKey(targetUsername)
+        val appended = appendConversationMessage(target, incoming)
+        if (!appended) return
+        if (target == currentTarget) {
+            appendVisibleMessage(incoming)
+        }
+        chatStore.upsert(target, incoming)
+        if (!AppVisibility.isChatOpen(target)) {
+            unreadByPeer[target] = (unreadByPeer[target] ?: 0) + 1
+            messageNotifier.showMessage(target, nullAiDisplayName(), incoming.text)
+        } else {
+            messageNotifier.cancelMessage(target)
+        }
+        val memoryMessages = conversationMessagesFor(target).takeLast(6)
+        viewModelScope.launch(Dispatchers.IO) {
+            NullAiMemoryStore.update(getApplication(), target, memoryMessages)
+        }
+        conversationsVersion++
+        refreshConversationPreviewsAsync()
+        scheduleNullAiIdleRelease()
+    }
+
+    private fun refreshNullAiPendingWorkState() {
+        nullAiHasPendingWork = nullAiRequestQueue.isNotEmpty() ||
+            nullAiReplyQueue.isNotEmpty() ||
+            nullAiThinking ||
+            nullAiRevealPending ||
+            nullAiRenderingReply
+    }
+
+    private fun nullAiTypingProfile(reply: String): NullAiTypingProfile {
+        val lineCount = reply
+            .lines()
+            .count { it.isNotBlank() }
+            .coerceAtLeast(1)
+            .coerceAtMost(8)
+        return NullAiTypingProfile(
+            preRevealDelayMs = Random.nextLong(2_000L, 5_001L),
+            lineDelaysMs = List(lineCount) { Random.nextLong(2_000L, 5_001L) }
+        )
+    }
+
+    private fun nullAiProcessingDelayMs(): Long {
+        val cpuBusy = currentCpuBusyPercent()
+        val batteryTemperature = currentBatteryTemperatureCelsius()
+        val thermalHigh = batteryTemperature != null && batteryTemperature >= 42f
+        val cpuHigh = cpuBusy != null && cpuBusy >= 82f
+        val lastRunHigh = nullAiLastGenerationMs >= 10_000L
+
+        nullAiConsecutiveHighCost = if (thermalHigh || cpuHigh || lastRunHigh) {
+            (nullAiConsecutiveHighCost + 1).coerceAtMost(5)
+        } else {
+            (nullAiConsecutiveHighCost - 1).coerceAtLeast(0)
+        }
+
+        return when {
+            batteryTemperature != null && batteryTemperature >= 45f -> 8_000L
+            thermalHigh && cpuHigh -> 6_000L
+            cpuHigh || thermalHigh -> 3_500L
+            nullAiConsecutiveHighCost >= 3 -> 2_500L
+            lastRunHigh -> 1_500L
+            else -> 0L
+        }
+    }
+
+    private fun recordNullAiProcessingCost(durationMs: Long) {
+        nullAiLastGenerationMs = durationMs
+        if (durationMs >= 10_000L) {
+            nullAiConsecutiveHighCost = (nullAiConsecutiveHighCost + 1).coerceAtMost(5)
+        }
+    }
+
+    private fun currentBatteryTemperatureCelsius(): Float? {
+        val intent = getApplication<Application>().registerReceiver(
+            null,
+            IntentFilter(Intent.ACTION_BATTERY_CHANGED)
+        ) ?: return null
+        val tenths = intent.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, Int.MIN_VALUE)
+        return tenths.takeIf { it != Int.MIN_VALUE }?.let { it / 10f }
+    }
+
+    private fun currentCpuBusyPercent(): Float? {
+        val sample = readCpuSample() ?: return null
+        val previous = nullAiCpuSample
+        nullAiCpuSample = sample
+        if (previous == null || sample.sampledAt <= previous.sampledAt) return null
+        val totalDelta = sample.total - previous.total
+        val idleDelta = sample.idle - previous.idle
+        if (totalDelta <= 0L) return null
+        return (((totalDelta - idleDelta).coerceAtLeast(0L) * 100f) / totalDelta)
+            .coerceIn(0f, 100f)
+    }
+
+    private fun readCpuSample(): CpuSample? {
+        val parts = runCatching {
+            File("/proc/stat").useLines { lines ->
+                lines.firstOrNull()
+                    ?.split(Regex("\\s+"))
+                    ?.filter { it.isNotBlank() }
+            }
+        }.getOrNull() ?: return null
+        if (parts.firstOrNull() != "cpu" || parts.size < 8) return null
+        val values = parts.drop(1).mapNotNull { it.toLongOrNull() }
+        if (values.size < 7) return null
+        val idle = values.getOrElse(3) { 0L } + values.getOrElse(4) { 0L }
+        return CpuSample(
+            idle = idle,
+            total = values.sum(),
+            sampledAt = SystemClock.elapsedRealtime()
+        )
     }
 
     private fun shouldUseNullAiMemory(message: String): Boolean {
@@ -1739,11 +2103,25 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     fun nullAiDisplayName(): String = "Null IA"
 
     fun nullAiSubtitle(): String {
-        return when {
-            nullAiPreparing -> "Preparando modelo..."
-            nullAiThinking -> "Pensando..."
-            nullAiPrepareError.isNotBlank() -> "IA local indisponivel"
-            else -> "IA local • ${aiEngine.activeModel.label}"
+        return nullAiUnavailableReason().ifBlank {
+            if (nullAiModelDownloading) "Baixando modelo..." else ""
+        }
+    }
+
+    fun isNullAiAvailableInThisEnvironment(): Boolean {
+        return aiEngine.isAvailableInThisEnvironment()
+    }
+
+    fun nullAiUnavailableReason(): String {
+        return aiEngine.unavailableReason()
+    }
+
+    fun refreshNullAiDownloadState() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val downloading = NullAiModelStore.isDownloadRunning(getApplication())
+            withContext(Dispatchers.Main.immediate) {
+                nullAiModelDownloading = downloading
+            }
         }
     }
 
@@ -1753,8 +2131,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun prepareNullAi() {
         if (!nullAiEnabled) return
-        val modelPath = aiEngine.activeModel.path
-        if (nullAiReady && nullAiPreparedModelPath == modelPath) return
+        val modelSignature = nullAiActiveModelSignature()
+        if (nullAiReady && nullAiPreparedModelSignature == modelSignature) return
         if (nullAiPreparing) return
 
         nullAiReady = false
@@ -1765,7 +2143,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             val result = aiEngine.prepare()
             result
                 .onSuccess {
-                    nullAiPreparedModelPath = aiEngine.activeModel.path
+                    nullAiPreparedModelSignature = nullAiActiveModelSignature()
                     nullAiReady = true
                     nullAiPrepareError = ""
                 }
@@ -1777,6 +2155,33 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             conversationsVersion++
             refreshConversationPreviewsAsync()
         }
+    }
+
+    private fun scheduleNullAiIdleRelease() {
+        nullAiIdleReleaseJob?.cancel()
+        nullAiIdleReleaseJob = viewModelScope.launch {
+            delay(75_000L)
+            if (nullAiRequestQueue.isEmpty() &&
+                nullAiReplyQueue.isEmpty() &&
+                !nullAiThinking &&
+                !nullAiRevealPending &&
+                !nullAiRenderingReply &&
+                !nullAiPreparing
+            ) {
+                aiEngine.shutdown()
+                nullAiPreparedModelSignature = ""
+                nullAiReady = false
+                nullAiHasPendingWork = false
+                conversationsVersion++
+                refreshConversationPreviewsAsync()
+            }
+        }
+    }
+
+    private fun nullAiActiveModelSignature(): String {
+        val path = aiEngine.activeModel.path
+        val file = File(path)
+        return "$path:${file.length()}:${file.lastModified()}"
     }
 
     suspend fun searchExactMessages(query: String): SearchSummary {
@@ -1798,9 +2203,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         username = peer,
                         displayName = chatTitleFor(peer),
                         emoji = publicEmojiForRoute(peer),
+                        mapColorArgb = publicMapColorForRoute(peer),
                         lastTimestamp = items.lastOrNull()?.timestamp ?: 0L,
                         unreadCount = unreadByPeer[peer] ?: 0,
-                        previewLine = if (hitCount == 1) "1 resultado" else "$hitCount resultados"
+                        previewLine = if (hitCount == 1) "1 resultado" else "$hitCount resultados",
+                        locked = isConversationLocked(peer)
                     )
                     preview to hitCount
                 }
@@ -1853,6 +2260,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     username = target,
                     displayName = nullAiDisplayName(),
                     emoji = "IA",
+                    mapColorArgb = 0xFF263238.toInt(),
                     lastTimestamp = last?.timestamp ?: 0L,
                     unreadCount = unreadByPeer[target] ?: 0,
                     previewLine = if (items.isEmpty()) {
@@ -1860,6 +2268,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     } else {
                         previewLineFor(items, unreadByPeer[target] ?: 0)
                     },
+                    locked = false,
                     isAi = true
                 )
             }
@@ -1875,6 +2284,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 username = target,
                 displayName = chatTitleFor(target),
                 emoji = publicEmojiForRoute(target),
+                mapColorArgb = publicMapColorForRoute(target),
                 lastTimestamp = last?.timestamp ?: 0L,
                 unreadCount = unreadByPeer[target] ?: 0,
                 previewLine = if (hasDraft(target)) {
@@ -1883,7 +2293,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     fallbackLine
                 } else {
                     previewLineFor(items, unreadByPeer[target] ?: 0)
-                }
+                },
+                locked = isConversationLocked(target)
             )
         }.sortedWith(
             compareByDescending<ConversationPreview> { if (it.isAi) 1 else 0 }
@@ -1944,6 +2355,20 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun conversationHiddenKey(route: String): String = "hidden:${routeStorageKey(route)}"
     private fun conversationDraftKey(route: String): String = "draft:${routeStorageKey(route)}"
+    private fun conversationLockedKey(route: String): String = "locked:${routeStorageKey(route)}"
+
+    fun isConversationLocked(route: String): Boolean {
+        val clean = canonicalConversationKey(route)
+        if (clean.isBlank() || isNullAiConversation(clean)) return false
+        return conversationStatePrefs.getBoolean(conversationLockedKey(clean), false)
+    }
+
+    fun setConversationLocked(route: String, locked: Boolean) {
+        val clean = canonicalConversationKey(route)
+        if (clean.isBlank() || isNullAiConversation(clean)) return
+        conversationStatePrefs.edit().putBoolean(conversationLockedKey(clean), locked).apply()
+        refreshConversationPreviewsAsync()
+    }
 
     private fun isConversationHidden(route: String): Boolean {
         val clean = canonicalConversationKey(route)
@@ -2179,10 +2604,66 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         return nodeManager.publicProfileFor(clean)?.bio.orEmpty()
     }
 
+    private fun publicImageUrlForRoute(route: String): String {
+        val clean = canonicalConversationKey(route)
+        if (isLocalRoute(clean)) return profileImageUrl
+        return nodeManager.publicProfileFor(clean)?.imageUrl.orEmpty()
+    }
+
+    private fun updateLocalProfileImagePath(path: String) {
+        profileImagePath = path
+        profileImageUrl = ""
+        profilePrefs.edit()
+            .putString(profileImagePathKey, path)
+            .putString(profileImageUrlKey, "")
+            .apply()
+        nodeManager.setProfileImageUrl(getApplication(), "")
+        currentPublicRoute().takeIf { it.isNotBlank() }?.let { route ->
+            profileImagePaths[canonicalConversationKey(route)] = path
+        }
+        conversationsVersion++
+        routeNamesVersion++
+        refreshRouteLookup()
+        refreshConversationPreviewsAsync()
+    }
+
+    private fun profileImageExtension(context: Context, uri: Uri): String {
+        return when (context.contentResolver.getType(uri)?.lowercase()) {
+            "image/png" -> "png"
+            "image/webp" -> "webp"
+            else -> "jpg"
+        }
+    }
+
     private fun publicMapColorForRoute(route: String): Int {
         val clean = canonicalConversationKey(route)
         if (isLocalRoute(clean)) return profileMapColorArgb
         return nodeManager.publicProfileFor(clean)?.mapColorArgb ?: 0xFF6750A4.toInt()
+    }
+
+    private fun refreshProfileImageCache(route: String) {
+        val clean = canonicalConversationKey(route)
+        val imageUrl = publicImageUrlForRoute(clean)
+        if (clean.isBlank() || imageUrl.isBlank() || !AppVisibility.isVisible) {
+            if (imageUrl.isBlank()) profileImagePaths.remove(clean)
+            return
+        }
+        val cachedPath = ProfileImageCache.cachedPath(getApplication(), clean, imageUrl)
+        if (cachedPath.isBlank()) {
+            profileImagePaths.remove(clean)
+        } else {
+            profileImagePaths[clean] = cachedPath
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            val path = runCatching {
+                ProfileImageCache.refresh(getApplication(), clean, imageUrl)
+            }.getOrDefault("")
+            withContext(Dispatchers.Main.immediate) {
+                if (publicImageUrlForRoute(clean) == imageUrl) {
+                    if (path.isBlank()) profileImagePaths.remove(clean) else profileImagePaths[clean] = path
+                }
+            }
+        }
     }
 
     private fun loadLocationSharingMode(): LocationSharingMode {
@@ -2453,8 +2934,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         if (!isNullAiConversation(clean)) return
         nullAiConversationRevision++
         nullAiPrepareJob?.cancel()
+        nullAiQueueJob?.cancel()
+        nullAiRevealJob?.cancel()
+        nullAiRequestQueue.clear()
+        nullAiReplyQueue.clear()
         nullAiThinking = false
         nullAiRenderingReply = false
+        nullAiRevealPending = false
+        nullAiHasPendingWork = false
         nullAiReady = false
         nullAiPreparing = false
         nullAiPrepareError = ""
@@ -2547,10 +3034,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val cleanRoute = canonicalConversationKey(route)
         val remote = nodeManager.publicProfileFor(cleanRoute)
         val keepViewedMessages = defaultKeepViewedMessages || (remote?.keepViewedMessages ?: false)
-        val allowScreenshots = defaultAllowScreenshots || (remote?.allowScreenshots ?: false)
         return ConversationPolicy(
             keepViewedMessages = keepViewedMessages,
-            allowScreenshots = allowScreenshots,
+            allowScreenshots = defaultAllowScreenshots,
             keepViewedMessagesOverridden = false,
             allowScreenshotsOverridden = false,
             updatedAt = remote?.updatedAt ?: 0L
@@ -2559,6 +3045,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun effectiveConversationPolicyFor(route: String): ConversationPolicy {
         val basePolicy = baseConversationPolicyFor(route)
+        if (isNullAiConversation(route)) {
+            return basePolicy.copy(
+                allowScreenshots = true,
+                allowScreenshotsOverridden = false
+            )
+        }
         val localPolicy = localConversationPolicyFor(route)
         return ConversationPolicy(
             keepViewedMessages = if (localPolicy.keepViewedMessagesOverridden) localPolicy.keepViewedMessages else basePolicy.keepViewedMessages,
@@ -2661,10 +3153,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val host = value.substring(0, separator)
             .removeSuffix(".onion")
             .lowercase()
-        val port = value.substring(separator + 1)
-            .takeIf { candidate -> candidate.all { it.isDigit() } }
-            ?: "5000"
-        return "$host:$port"
+        return host
     }
 
     private fun routeTokenStringForDisplay(route: String): String {
@@ -2676,7 +3165,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private fun resolveContactRouteQuery(query: String): String {
         val clean = canonicalConversationKey(query)
         if (clean.isBlank()) return ""
-        if (nodeManager.isValidRoute(clean)) return clean
 
         compactRouteTokenToOnion(clean)?.let { compactRoute ->
             return compactRoute
@@ -2707,17 +3195,16 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun compactRouteTokenToOnion(token: String): String? {
-        val clean = token.trim()
-        val separator = clean.lastIndexOf(':').takeIf { it > 0 && it < clean.lastIndex }
-            ?: clean.lastIndexOf('#')
-        if (separator <= 0 || separator == clean.lastIndex) return null
-        val host = clean.substring(0, separator)
-            .trim()
-            .removePrefix("onion:")
-            .removeSuffix(".onion")
-            .lowercase()
-        val port = clean.substring(separator + 1).trim()
-        if (host.isBlank() || port.toIntOrNull() == null) return null
+        val host = token.trim().lowercase()
+        if (
+            host.isBlank() ||
+            host.startsWith("onion:") ||
+            host.endsWith(".onion") ||
+            host.any { it.isWhitespace() || it == ':' || it == '#' || it == '/' }
+        ) {
+            return null
+        }
+        val port = "5000"
         val route = "onion:$host.onion:$port"
         return canonicalConversationKey(route).takeIf { nodeManager.isValidRoute(it) }
     }

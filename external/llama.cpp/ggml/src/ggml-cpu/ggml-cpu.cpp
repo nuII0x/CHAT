@@ -4,11 +4,14 @@
 #include "repack.h"
 #include "traits.h"
 #include "ggml-impl.h"
-#include "amx/amx.h"
 
 #include <cctype>
 #include <string>
 #include <vector>
+
+#if defined(__AMX_INT8__) && defined(__AVX512VNNI__)
+#    include "amx/amx.h"
+#endif
 
 #ifdef GGML_USE_CPU_HBM
 #    include "hbm.h"

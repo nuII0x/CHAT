@@ -1,8 +1,12 @@
 package com.null0x.chat.ui.home
 
+import android.graphics.BitmapFactory
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -12,25 +16,26 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.zIndex
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.null0x.chat.ui.common.CursorAwareOutlinedTextField
-import com.null0x.chat.util.normalizeProfileEmojiInput
 import com.null0x.chat.util.normalizeProfileNameInput
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-internal fun profileAttentionCount(name: String, emoji: String, bio: String): Int {
+internal fun profileAttentionCount(name: String, bio: String): Int {
     var count = 0
     if (name.trim().isBlank()) count++
-    if (emoji.trim().isBlank()) count++
     if (bio.trim().isBlank()) count++
     return count
 }
@@ -48,25 +53,28 @@ internal fun limitUtf8Bytes(text: String, maxBytes: Int): String {
     return ""
 }
 
+internal fun readableProfileAvatarContentColor(backgroundColor: Color): Color {
+    return if (backgroundColor.luminance() > 0.56f) Color(0xFF111111) else Color.White
+}
+
 @Composable
 internal fun InitialAvatar(
     text: String,
     emoji: String? = null,
+    backgroundColor: Color? = null,
     prominent: Boolean = false,
     large: Boolean = false,
-    active: Boolean = false
+    active: Boolean = false,
+    imagePath: String = ""
 ) {
     val size = when {
         large -> 72.dp
         prominent -> 44.dp
         else -> 42.dp
     }
-    val color = if (prominent) {
-        MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.20f)
-    } else {
-        MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
-    }
-    val textColor = if (prominent) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.primary
+    val color = backgroundColor ?: MaterialTheme.colorScheme.surfaceVariant
+    val iconColor = backgroundColor?.let { readableProfileAvatarContentColor(it) }
+        ?: MaterialTheme.colorScheme.onSurfaceVariant
 
     Box(
         modifier = Modifier.size(size + 10.dp),
@@ -74,16 +82,27 @@ internal fun InitialAvatar(
     ) {
         Surface(shape = CircleShape, color = color, modifier = Modifier.size(size)) {
             Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
-                Text(
-                    text = if (emoji.isNullOrBlank()) {
-                        text.trim().take(1).ifBlank { "P" }.uppercase()
-                    } else {
-                        emoji
-                    },
-                    color = textColor,
-                    fontWeight = FontWeight.Bold,
-                    style = if (large) MaterialTheme.typography.titleMedium else MaterialTheme.typography.bodyLarge
-                )
+                val avatarBitmap = androidx.compose.runtime.remember(imagePath) {
+                    imagePath.takeIf { it.isNotBlank() }
+                        ?.let { runCatching { BitmapFactory.decodeFile(it) }.getOrNull() }
+                }
+                if (avatarBitmap != null) {
+                    Image(
+                        bitmap = avatarBitmap.asImageBitmap(),
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .clip(CircleShape)
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Filled.Person,
+                        contentDescription = null,
+                        tint = iconColor,
+                        modifier = Modifier.size(size * 0.56f)
+                    )
+                }
             }
         }
         if (active) {
@@ -100,74 +119,76 @@ internal fun InitialAvatar(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-internal fun ProfileIdentityDialog(
+internal fun ProfileIdentityBottomSheet(
     currentName: String,
-    currentEmoji: String,
     onDismiss: () -> Unit,
-    onSave: (String, String) -> Unit
+    onSave: (String) -> Unit
 ) {
     var name by rememberSaveable { mutableStateOf(normalizeProfileNameInput(currentName)) }
-    var emoji by rememberSaveable { mutableStateOf(normalizeProfileEmojiInput(currentEmoji).ifBlank { "🙂" }) }
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
     LaunchedEffect(currentName) {
         name = normalizeProfileNameInput(currentName)
     }
-    LaunchedEffect(currentEmoji) {
-        emoji = normalizeProfileEmojiInput(currentEmoji).ifBlank { "🙂" }
-    }
 
-    AlertDialog(
+    ModalBottomSheet(
         onDismissRequest = onDismiss,
-        title = { Text("Editar perfil") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text(
-                    text = "Ajuste apenas o nome e o emoji de exibição.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth()
+        sheetState = sheetState,
+        containerColor = MaterialTheme.colorScheme.surface,
+        tonalElevation = 0.dp
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 18.dp, end = 18.dp, bottom = 28.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text(
+                text = "Editar perfil",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Text(
+                text = "Ajuste o nome público do perfil.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            CursorAwareOutlinedTextField(
+                value = name,
+                onValueChange = { name = normalizeProfileNameInput(it) },
+                singleLine = true,
+                label = { Text("Nome do perfil") },
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+                keyboardOptions = KeyboardOptions(
+                    capitalization = KeyboardCapitalization.Words,
+                    autoCorrectEnabled = false,
+                    imeAction = ImeAction.Done
                 )
-                CursorAwareOutlinedTextField(
-                    value = name,
-                    onValueChange = { name = normalizeProfileNameInput(it) },
-                    singleLine = true,
-                    label = { Text("Nome do perfil") },
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(14.dp),
-                    keyboardOptions = KeyboardOptions(
-                        capitalization = KeyboardCapitalization.Words,
-                        autoCorrectEnabled = false,
-                        imeAction = ImeAction.Done
-                    )
-                )
-                CursorAwareOutlinedTextField(
-                    value = emoji,
-                    onValueChange = {
-                        emoji = normalizeProfileEmojiInput(it)
-                    },
-                    singleLine = true,
-                    label = { Text("Emoji do perfil") },
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(14.dp),
-                    keyboardOptions = KeyboardOptions(
-                        autoCorrectEnabled = false,
-                        imeAction = ImeAction.Done
-                    )
-                )
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TextButton(onClick = onDismiss) {
+                    Text("Cancelar")
+                }
+                TextButton(
+                    onClick = {
+                        val clean = normalizeProfileNameInput(name)
+                        if (clean.isNotBlank()) onSave(clean)
+                    }
+                ) {
+                    Text("Salvar")
+                }
             }
-        },
-        confirmButton = {
-            TextButton(onClick = {
-                val clean = normalizeProfileNameInput(name)
-                if (clean.isNotBlank()) onSave(clean, normalizeProfileEmojiInput(emoji).ifBlank { "🙂" })
-            }) { Text("Salvar") }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancelar") }
         }
-    )
+    }
 }
 
 internal fun formatTime(timestamp: Long): String {

@@ -16,7 +16,7 @@ Arquivos no app:
 - `app/src/main/assets/map/ne_populated_places.json`
 - `app/src/main/assets/map/ne_countries_labels.json`
 - `app/src/main/assets/map/ne_admin1_regions.json`
-- `app/src/main/assets/map/ne_country_boundaries_110m.json`
+- `app/src/main/assets/map/ne_country_boundaries_50m.json`
 
 Fonte:
 
@@ -27,7 +27,7 @@ Fonte:
 Uso no app:
 
 - Massa de terra global.
-- Divisas entre paises em baixa resolucao.
+- Divisas entre paises em resolucao 1:50m.
 - Rotulos globais de paises, cidades e regioes administrativas.
 
 Transformacoes aplicadas:
@@ -35,6 +35,7 @@ Transformacoes aplicadas:
 - Conversao para JSON/GeoJSON compacto.
 - Reducao/simplificacao de pontos para renderizacao offline em Android.
 - Selecao de campos necessarios para exibicao no mapa.
+- As massas de terra e fronteiras mundiais podem ser regeneradas por `scripts/generate_map_assets.py`.
 
 Observacao de licenca:
 
@@ -70,7 +71,7 @@ Observacao de licenca:
 - Verificar a licenca atual do repositorio antes de distribuir releases publicas.
 - Se a licenca nao estiver explicita ou mudar, substituir por fonte oficial ou por base com licenca claramente compativel.
 
-### geodata-br-states
+### IBGE - Malha Municipal Digital 2025
 
 Arquivo no app:
 
@@ -78,25 +79,26 @@ Arquivo no app:
 
 Fonte:
 
-- Repositorio: https://github.com/giuliano-macedo/geodata-br-states
-- Arquivo usado: `geojson/br_states.json`
+- Site: https://www.ibge.gov.br/geociencias/organizacao-do-territorio/malhas-territoriais/15774-malhas.html
+- Download publico: https://geoftp.ibge.gov.br/organizacao_do_territorio/malhas_territoriais/malhas_municipais/municipio_2025/Brasil/BR_UF_2025.zip
+- Arquivo usado: `BR_UF_2025.shp`
 
 Uso no app:
 
-- Divisas internas entre estados brasileiros.
+- Divisas internas oficiais entre Unidades da Federacao brasileiras.
 
 Transformacoes aplicadas:
 
-- Simplificacao de geometria.
-- Arredondamento de coordenadas.
-- Deduplicacao das linhas compartilhadas entre estados para renderizar apenas uma divisa interestadual.
-- Remocao do contorno externo do Brasil nesta camada; o contorno entre paises fica na camada Natural Earth.
-- Conversao para JSON compacto contendo apenas segmentos internos de fronteira.
+- Leitura direta do shapefile oficial com `scripts/generate_map_assets.py`.
+- Extracao apenas dos trechos compartilhados por duas ou mais UFs, removendo o contorno externo do Brasil desta camada.
+- Encadeamento dos segmentos compartilhados em linhas continuas para evitar sobreposicao e serrilhado entre estados.
+- Simplificacao leve e arredondamento de coordenadas para renderizacao offline sem deformar as divisas estaduais.
+- Conversao para JSON compacto contendo apenas linhas internas de fronteira.
 
 Observacao de licenca:
 
-- Verificar a licenca atual do repositorio antes de distribuir releases publicas.
-- Se necessario, substituir por malhas oficiais do IBGE.
+- O indice publico de downloads do IBGE informa que os arquivos ali disponiveis sao publicos.
+- Manter atribuicao tecnica no projeto por transparencia e revisar os metadados do IBGE antes de releases publicas.
 
 ## Fontes Oficiais Alternativas Recomendadas
 

@@ -70,105 +70,35 @@ private val LightColorScheme = lightColorScheme(
     onErrorContainer = AppOnSurfaceLight
 )
 
-private val PinkColorScheme = lightColorScheme(
-    primary = AppPinkPrimary,
-    onPrimary = Color.White,
-    primaryContainer = AppPinkPrimaryContainer,
-    onPrimaryContainer = AppPinkOnSurface,
-    secondary = AppPinkSecondary,
-    onSecondary = Color.White,
-    secondaryContainer = AppPinkSecondaryContainer,
-    onSecondaryContainer = AppPinkOnSurface,
-    tertiary = AppPinkTertiary,
-    onTertiary = Color.White,
-    tertiaryContainer = AppPinkTertiaryContainer,
-    onTertiaryContainer = AppPinkOnSurface,
-    background = AppPinkBackground,
-    onBackground = AppPinkOnSurface,
-    surface = AppPinkSurface,
-    onSurface = AppPinkOnSurface,
-    surfaceVariant = AppPinkSurfaceVariant,
-    onSurfaceVariant = AppPinkOnSurfaceVariant,
-    outline = AppPinkOutline,
-    outlineVariant = AppPinkSurfaceVariant,
-    inverseSurface = AppPinkOnSurface,
-    inverseOnSurface = AppPinkSurface,
-    inversePrimary = AppPinkPrimaryContainer,
-    surfaceTint = AppPinkPrimary,
-    error = Color(0xFFB3261E),
-    onError = Color.White,
-    errorContainer = Color(0xFFF9DEDC),
-    onErrorContainer = Color(0xFF410E0B)
-)
-
-private val BlueColorScheme = lightColorScheme(
-    primary = AppBluePrimary,
-    onPrimary = Color.White,
-    primaryContainer = AppBluePrimaryContainer,
-    onPrimaryContainer = AppBlueOnSurface,
-    secondary = AppBlueSecondary,
-    onSecondary = Color.White,
-    secondaryContainer = AppBlueSecondaryContainer,
-    onSecondaryContainer = AppBlueOnSurface,
-    tertiary = AppBlueTertiary,
-    onTertiary = Color.White,
-    tertiaryContainer = AppBlueTertiaryContainer,
-    onTertiaryContainer = AppBlueOnSurface,
-    background = AppBlueBackground,
-    onBackground = AppBlueOnSurface,
-    surface = AppBlueSurface,
-    onSurface = AppBlueOnSurface,
-    surfaceVariant = AppBlueSurfaceVariant,
-    onSurfaceVariant = AppBlueOnSurfaceVariant,
-    outline = AppBlueOutline,
-    outlineVariant = AppBlueSurfaceVariant,
-    inverseSurface = AppBlueOnSurface,
-    inverseOnSurface = AppBlueSurface,
-    inversePrimary = AppBluePrimaryContainer,
-    surfaceTint = AppBluePrimary,
-    error = Color(0xFFBA1A1A),
-    onError = Color.White,
-    errorContainer = Color(0xFFFFDAD6),
-    onErrorContainer = Color(0xFF410002)
-)
-
 fun themeBackgroundColor(themeMode: ThemeMode, systemDarkTheme: Boolean): Color {
     return when (themeMode) {
         ThemeMode.SYSTEM -> if (systemDarkTheme) AppBackgroundDark else Color.White
-        ThemeMode.BLUE -> AppBlueBackground
         ThemeMode.LIGHT -> Color.White
         ThemeMode.DARK -> AppBackgroundDark
-        ThemeMode.PINK -> AppPinkBackground
     }
 }
 
 fun themeAccentColor(themeMode: ThemeMode, systemDarkTheme: Boolean): Color {
     return when (themeMode) {
         ThemeMode.SYSTEM -> if (systemDarkTheme) AppOnSurfaceDark else AppOnSurfaceLight
-        ThemeMode.BLUE -> AppBluePrimary
         ThemeMode.LIGHT -> AppOnSurfaceLight
         ThemeMode.DARK -> AppOnSurfaceDark
-        ThemeMode.PINK -> AppPinkPrimary
     }
 }
 
 fun themeContextualBarColor(themeMode: ThemeMode, systemDarkTheme: Boolean): Color {
     return when (themeMode) {
-        ThemeMode.SYSTEM -> if (systemDarkTheme) AppSurfaceVariantDark else AppSurfaceVariantLight
-        ThemeMode.BLUE -> AppBluePrimary
+        ThemeMode.SYSTEM -> if (systemDarkTheme) AppSurfaceDark else AppSurfaceLight
         ThemeMode.LIGHT -> AppSurfaceLight
         ThemeMode.DARK -> AppSurfaceDark
-        ThemeMode.PINK -> AppPinkPrimary
     }
 }
 
 fun themeSurfaceTint(themeMode: ThemeMode, systemDarkTheme: Boolean): Color {
     return when (themeMode) {
-        ThemeMode.SYSTEM -> if (systemDarkTheme) AppSurfaceVariantDark else AppSurfaceVariantLight
-        ThemeMode.BLUE -> AppBlueSurface
+        ThemeMode.SYSTEM -> if (systemDarkTheme) AppSurfaceDark else AppSurfaceLight
         ThemeMode.LIGHT -> AppSurfaceLight
         ThemeMode.DARK -> AppSurfaceDark
-        ThemeMode.PINK -> AppPinkSurface
     }
 }
 
@@ -176,52 +106,18 @@ fun themeDialogColor(themeMode: ThemeMode, systemDarkTheme: Boolean): Color {
     return themeSurfaceTint(themeMode, systemDarkTheme)
 }
 
-fun themeConversationBubbleColor(themeMode: ThemeMode, systemDarkTheme: Boolean): Color {
-    return when (themeMode) {
-        ThemeMode.SYSTEM -> if (systemDarkTheme) Color.Black else Color.White
-        ThemeMode.BLUE -> AppBluePrimary
-        ThemeMode.LIGHT -> Color.White
-        ThemeMode.DARK -> Color.Black
-        ThemeMode.PINK -> AppPinkPrimary
-    }
-}
-
-fun themeConversationPeerBubbleColor(themeMode: ThemeMode, systemDarkTheme: Boolean): Color {
-    return when (themeMode) {
-        ThemeMode.SYSTEM -> Color(0xFFE7E7E7)
-        ThemeMode.BLUE -> AppBlueSurfaceVariant
-        ThemeMode.LIGHT -> Color(0xFFE7E7E7)
-        ThemeMode.DARK -> Color(0xFFE7E7E7)
-        ThemeMode.PINK -> AppPinkSurfaceVariant
-    }
-}
-
-fun themeConversationTextColor(themeMode: ThemeMode, systemDarkTheme: Boolean): Color {
-    return readableContentColor(themeConversationBubbleColor(themeMode, systemDarkTheme))
-}
-
-fun themeConversationPeerTextColor(themeMode: ThemeMode, systemDarkTheme: Boolean): Color {
-    return readableContentColor(themeConversationPeerBubbleColor(themeMode, systemDarkTheme))
-}
-
 fun dockSelectedBackgroundColor(themeMode: ThemeMode, systemDarkTheme: Boolean): Color {
     return when (themeMode) {
+        ThemeMode.SYSTEM -> if (systemDarkTheme) Color.White.copy(alpha = 0.16f) else Color.Transparent
         ThemeMode.LIGHT -> Color.Transparent
-        ThemeMode.SYSTEM -> if (systemDarkTheme) {
-            Color.White.copy(alpha = 0.16f)
-        } else {
-            Color.Transparent
-        }
-        ThemeMode.BLUE, ThemeMode.PINK -> Color.Black.copy(alpha = 0.08f)
         ThemeMode.DARK -> Color.White.copy(alpha = 0.16f)
     }
 }
 
 fun dockSelectedIconTint(themeMode: ThemeMode, systemDarkTheme: Boolean): Color {
     return when (themeMode) {
-        ThemeMode.LIGHT -> Color.Black
         ThemeMode.SYSTEM -> if (systemDarkTheme) Color.White else Color.Black
-        ThemeMode.BLUE, ThemeMode.PINK -> Color.Black
+        ThemeMode.LIGHT -> Color.Black
         ThemeMode.DARK -> Color.White
     }
 }
@@ -236,16 +132,14 @@ fun readableContentColor(background: Color, alpha: Float): Color {
 
 @Composable
 fun ChatTheme(
-    themeMode: ThemeMode = ThemeMode.BLUE,
+    themeMode: ThemeMode = ThemeMode.LIGHT,
     content: @Composable () -> Unit
 ) {
     val systemDarkTheme = isSystemInDarkTheme()
     val colorScheme = when (themeMode) {
         ThemeMode.SYSTEM -> if (systemDarkTheme) DarkColorScheme else LightColorScheme
-        ThemeMode.BLUE -> BlueColorScheme
         ThemeMode.LIGHT -> LightColorScheme
         ThemeMode.DARK -> DarkColorScheme
-        ThemeMode.PINK -> PinkColorScheme
     }
 
     MaterialTheme(

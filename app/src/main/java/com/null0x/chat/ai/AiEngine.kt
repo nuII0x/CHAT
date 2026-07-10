@@ -6,6 +6,8 @@ interface AiEngine {
     suspend fun prepare(): Result<Unit>
 
     suspend fun generateReply(prompt: String): Result<String>
+
+    fun shutdown()
 }
 
 data class AiModel(

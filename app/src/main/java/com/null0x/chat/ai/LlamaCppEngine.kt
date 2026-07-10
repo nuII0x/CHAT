@@ -11,6 +11,8 @@ class LlamaCppEngine(context: Context) : AiEngine {
     companion object {
         private const val TAG = "LlamaCppEngine"
         private const val MAX_PROMPT_CHARS = 4000
+        private const val UNSUPPORTED_ENVIRONMENT_MESSAGE =
+            "Null IA indisponível neste aparelho. O chat funciona normalmente, mas a IA local exige Android ARM 64 bits (arm64-v8a)."
 
         private val nativeAvailable: Boolean = runCatching {
             System.loadLibrary("llama_jni")
@@ -23,6 +25,18 @@ class LlamaCppEngine(context: Context) : AiEngine {
 
     private val appContext = context.applicationContext
 
+    fun isAvailableInThisEnvironment(): Boolean {
+        return nativeAvailable && runCatching { nativeIsSupported() }.getOrDefault(false)
+    }
+
+    fun unavailableReason(): String {
+        return if (isAvailableInThisEnvironment()) {
+            ""
+        } else {
+            UNSUPPORTED_ENVIRONMENT_MESSAGE
+        }
+    }
+
     override val activeModel: AiModel
         get() = NullAiModelStore.currentModel(appContext)
 
@@ -31,9 +45,9 @@ class LlamaCppEngine(context: Context) : AiEngine {
         nativeMutex.withLock<Result<Unit>> {
             Log.d(TAG, "prepare() iniciado")
 
-            if (!nativeAvailable) {
+            if (!isAvailableInThisEnvironment()) {
                 Result.failure(
-                    IllegalStateException("A biblioteca nativa llama_jni ainda nao carregou.")
+                    IllegalStateException(unavailableReason())
                 )
             } else if (!NullAiModelStore.hasUsableModel(appContext)) {
                 Result.failure(
@@ -44,7 +58,7 @@ class LlamaCppEngine(context: Context) : AiEngine {
                 Log.d(TAG, "Preparando modelo: ${model.path}")
 
                 runCatching {
-                    val error = nativePrepare(model.path).trim()
+                    val error = nativePrepare(model.path, useGPU = false).trim()
                     if (error.isNotBlank()) {
                         throw IllegalStateException(error)
                     }
@@ -62,6 +76,15 @@ class LlamaCppEngine(context: Context) : AiEngine {
         generateReplyWithStats(prompt).map { it.text }
     }
 
+    override fun shutdown() {
+        if (!nativeAvailable) return
+        runCatching {
+            nativeShutdown()
+        }.onFailure {
+            Log.w(TAG, "shutdown() falhou", it)
+        }
+    }
+
     suspend fun generateReplyWithStats(prompt: String): Result<AiGeneration> = withContext(Dispatchers.Default) {
         nativeMutex.withLock {
             val cleanPrompt = prompt.trim()
@@ -74,10 +97,10 @@ class LlamaCppEngine(context: Context) : AiEngine {
                 )
             }
 
-            if (!nativeAvailable) {
+            if (!isAvailableInThisEnvironment()) {
                 return@withLock Result.success(
                     AiGeneration(
-                        text = "Null IA encontrou o chat local, mas a biblioteca nativa llama_jni ainda nao carregou."
+                        text = unavailableReason()
                     )
                 )
             }
@@ -150,9 +173,13 @@ class LlamaCppEngine(context: Context) : AiEngine {
         )
     }
 
-    private external fun nativePrepare(modelPath: String): String
+    private external fun nativePrepare(modelPath: String, useGPU: Boolean): String
+
+    private external fun nativeIsSupported(): Boolean
 
     private external fun nativeGenerate(modelPath: String, prompt: String): String
+
+    private external fun nativeShutdown()
 }
 
 data class AiGeneration(

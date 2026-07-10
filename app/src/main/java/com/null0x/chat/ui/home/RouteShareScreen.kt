@@ -4,8 +4,6 @@ import android.graphics.Bitmap
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.VpnKey
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
@@ -31,8 +29,7 @@ import com.null0x.chat.ui.common.WindowDispositionScaffold
 @Composable
 internal fun RouteShareScreen(
     tokenLabel: String,
-    onBack: () -> Unit,
-    onLockApp: () -> Unit
+    onBack: () -> Unit
 ) {
     val context = LocalContext.current
     val windowColor = MaterialTheme.colorScheme.background
@@ -41,16 +38,7 @@ internal fun RouteShareScreen(
         title = "Compartilhar",
         subtitle = "Mostra o QR de acesso para outro dispositivo",
         onBack = onBack,
-        windowColor = windowColor,
-        bottomActions = {
-            IconButton(onClick = onLockApp) {
-                Icon(
-                    imageVector = Icons.Filled.VpnKey,
-                    contentDescription = "Trancar app",
-                    tint = MaterialTheme.colorScheme.onBackground
-                )
-            }
-        }
+        windowColor = windowColor
     ) {
         Box(
             modifier = Modifier

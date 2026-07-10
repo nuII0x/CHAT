@@ -19,8 +19,10 @@ import kotlinx.coroutines.flow.asStateFlow
 import java.io.File
 
 object AppUpdateManager {
-    // Troque este link pelo manifest JSON oficial hospedado no GitHub.
-    const val APP_UPDATE_MANIFEST_URL = "https://raw.githubusercontent.com/nuII0x/Chat/main/update.json"
+    // Troque pelo endereço onion real do seu servidor de atualização.
+    const val APP_UPDATE_MANIFEST_URL = "http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.onion/update.json"
+    const val ACTION_DOWNLOAD_UPDATE = "com.null0x.chat.action.DOWNLOAD_UPDATE"
+    const val ACTION_INSTALL_UPDATE = "com.null0x.chat.action.INSTALL_UPDATE"
 
     private const val PrefsName = "app_updates"
     private const val CheckWorkName = "app_update_check"
@@ -107,6 +109,23 @@ object AppUpdateManager {
             .putString(ErrorKey, "")
             .apply()
         refreshState(appContext)
+    }
+
+    fun canUseUpdateUrl(rawUrl: String): Boolean {
+        return runCatching {
+            val uri = Uri.parse(rawUrl.trim())
+            val host = uri.host.orEmpty().lowercase()
+            (uri.scheme.equals("http", ignoreCase = true) || uri.scheme.equals("https", ignoreCase = true)) &&
+                host.endsWith(".onion") &&
+                host.length == 62
+        }.getOrDefault(false)
+    }
+
+    fun canUseUpdateDownloadUrl(rawUrl: String): Boolean {
+        return runCatching {
+            val uri = Uri.parse(rawUrl.trim())
+            uri.scheme.equals("http", ignoreCase = true) || uri.scheme.equals("https", ignoreCase = true)
+        }.getOrDefault(false)
     }
 
     fun installDownloadedUpdate(context: Context): Result<Unit> {

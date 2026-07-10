@@ -2,20 +2,22 @@ package com.null0x.chat.update
 
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
+import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.content.Context
 import android.os.Build
 import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
 import androidx.work.CoroutineWorker
 import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import com.null0x.chat.AppBranding
 import com.null0x.chat.R
+import com.null0x.chat.network.TorHttp
 import org.json.JSONObject
 import java.io.File
-import java.net.HttpURLConnection
-import java.net.URL
 
 class AppUpdateWorker(
     appContext: Context,
@@ -30,10 +32,17 @@ class AppUpdateWorker(
         }
     }
 
-    private fun checkForUpdate(context: Context): Result {
+    private suspend fun checkForUpdate(context: Context): Result {
         return runCatching {
-            val manifest = fetchManifest()
+            val manifest = fetchManifest(context)
             AppUpdateManager.recordCheckResult(context, manifest)
+            if (manifest != null && manifest.versionCode > com.null0x.chat.BuildConfig.VERSION_CODE) {
+                if (AppUpdateManager.isAutoDownloadEnabled(context)) {
+                    AppUpdateManager.enqueueDownload(context)
+                } else {
+                    showUpdateAvailableNotification(context, manifest)
+                }
+            }
             Result.success()
         }.getOrElse { error ->
             AppUpdateManager.recordCheckResult(context, manifest = null, error = error.message.orEmpty())
@@ -43,7 +52,7 @@ class AppUpdateWorker(
 
     private suspend fun downloadUpdate(context: Context): Result {
         val state = AppUpdateManager.refreshState(context)
-        val apkUrl = state.apkUrl.takeIf { it.startsWith("http://", true) || it.startsWith("https://", true) }
+        val apkUrl = state.apkUrl.takeIf { AppUpdateManager.canUseUpdateDownloadUrl(it) }
             ?: return Result.failure()
         val targetFile = File(
             AppUpdateManager.updatesDir(context),
@@ -54,12 +63,12 @@ class AppUpdateWorker(
 
         return try {
             setForeground(createForegroundInfo(context, "Baixando atualização...", -1, true))
-            val connection = URL(apkUrl).openConnection() as HttpURLConnection
-            connection.connectTimeout = 15_000
-            connection.readTimeout = 45_000
-            connection.instanceFollowRedirects = true
+            val connection = TorHttp.openDirectConnection(
+                rawUrl = apkUrl,
+                connectTimeoutMs = 15_000,
+                readTimeoutMs = 45_000
+            )
             connection.requestMethod = "GET"
-            connection.useCaches = false
             connection.connect()
             when (connection.responseCode) {
                 in 200..299 -> Unit
@@ -112,6 +121,7 @@ class AppUpdateWorker(
             }
             AppUpdateManager.recordDownloadComplete(context, targetFile)
             setForeground(createForegroundInfo(context, "Atualização pronta para instalar", 100, false))
+            showInstallReadyNotification(context, state.availableVersionName)
             Result.success()
         } catch (error: Exception) {
             tempFile.delete()
@@ -120,13 +130,17 @@ class AppUpdateWorker(
         }
     }
 
-    private fun fetchManifest(): RemoteUpdateManifest {
-        val connection = URL(AppUpdateManager.APP_UPDATE_MANIFEST_URL).openConnection() as HttpURLConnection
-        connection.connectTimeout = 12_000
-        connection.readTimeout = 20_000
-        connection.instanceFollowRedirects = true
+    private suspend fun fetchManifest(context: Context): RemoteUpdateManifest {
+        require(AppUpdateManager.canUseUpdateUrl(AppUpdateManager.APP_UPDATE_MANIFEST_URL)) {
+            "Manifest de atualização precisa ser .onion"
+        }
+        val connection = TorHttp.openConnection(
+            context = context,
+            rawUrl = AppUpdateManager.APP_UPDATE_MANIFEST_URL,
+            connectTimeoutMs = 12_000,
+            readTimeoutMs = 20_000
+        )
         connection.requestMethod = "GET"
-        connection.useCaches = false
         connection.connect()
         if (connection.responseCode !in 200..299) {
             error("Manifest de atualização indisponível: HTTP ${connection.responseCode}")
@@ -139,10 +153,72 @@ class AppUpdateWorker(
         val releaseNotes = json.optString("releaseNotes").trim()
         require(versionCode > 0) { "versionCode inválido no manifest" }
         require(versionName.isNotBlank()) { "versionName inválido no manifest" }
-        require(apkUrl.startsWith("http://", true) || apkUrl.startsWith("https://", true)) {
-            "apkUrl inválido no manifest"
+        require(AppUpdateManager.canUseUpdateDownloadUrl(apkUrl)) {
+            "apkUrl precisa ser http ou https"
         }
         return RemoteUpdateManifest(versionCode, versionName, apkUrl, releaseNotes)
+    }
+
+    private fun showUpdateAvailableNotification(context: Context, manifest: RemoteUpdateManifest) {
+        val actionIntent = Intent(context, AppUpdateActionReceiver::class.java).apply {
+            action = AppUpdateManager.ACTION_DOWNLOAD_UPDATE
+        }
+        val action = NotificationCompat.Action.Builder(
+            R.drawable.ic_stat_nochat,
+            "Baixar e instalar",
+            PendingIntent.getBroadcast(
+                context,
+                DOWNLOAD_ACTION_REQUEST,
+                actionIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or immutableFlag()
+            )
+        ).build()
+        val notification = NotificationCompat.Builder(context, ensureChannel(context))
+            .setSmallIcon(R.drawable.ic_stat_nochat)
+            .setContentTitle("Nova atualização disponível")
+            .setContentText("Versão ${manifest.versionName}")
+            .setStyle(
+                NotificationCompat.BigTextStyle()
+                    .bigText(manifest.releaseNotes.ifBlank { "Toque para baixar a atualização." })
+            )
+            .setOnlyAlertOnce(true)
+            .setAutoCancel(false)
+            .setCategory(NotificationCompat.CATEGORY_STATUS)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .addAction(action)
+            .build()
+        NotificationManagerCompat.from(context).notify(UPDATE_AVAILABLE_NOTIFICATION_ID, notification)
+    }
+
+    private fun showInstallReadyNotification(context: Context, versionName: String) {
+        val actionIntent = Intent(context, AppUpdateActionReceiver::class.java).apply {
+            action = AppUpdateManager.ACTION_INSTALL_UPDATE
+        }
+        val action = NotificationCompat.Action.Builder(
+            R.drawable.ic_stat_nochat,
+            "Instalar",
+            PendingIntent.getBroadcast(
+                context,
+                INSTALL_ACTION_REQUEST,
+                actionIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or immutableFlag()
+            )
+        ).build()
+        val notification = NotificationCompat.Builder(context, ensureChannel(context))
+            .setSmallIcon(R.drawable.ic_stat_nochat)
+            .setContentTitle("Atualização pronta")
+            .setContentText("Versão ${versionName.ifBlank { "nova" }} baixada")
+            .setOnlyAlertOnce(true)
+            .setAutoCancel(false)
+            .setCategory(NotificationCompat.CATEGORY_STATUS)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .addAction(action)
+            .build()
+        NotificationManagerCompat.from(context).notify(INSTALL_READY_NOTIFICATION_ID, notification)
+    }
+
+    private fun immutableFlag(): Int {
+        return PendingIntent.FLAG_IMMUTABLE
     }
 
     private fun createForegroundInfo(
@@ -198,5 +274,9 @@ class AppUpdateWorker(
     companion object {
         private const val CHANNEL_ID = "app_updates"
         private const val NOTIFICATION_ID = 4801
+        private const val UPDATE_AVAILABLE_NOTIFICATION_ID = 4802
+        private const val INSTALL_READY_NOTIFICATION_ID = 4803
+        private const val DOWNLOAD_ACTION_REQUEST = 4804
+        private const val INSTALL_ACTION_REQUEST = 4805
     }
 }

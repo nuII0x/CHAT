@@ -31,16 +31,10 @@ function(ggml_add_cpu_backend_variant_impl tag_name)
         ggml-cpu/ggml-cpu.cpp
         ggml-cpu/repack.cpp
         ggml-cpu/repack.h
-        ggml-cpu/hbm.cpp
-        ggml-cpu/hbm.h
         ggml-cpu/quants.c
         ggml-cpu/quants.h
         ggml-cpu/traits.cpp
         ggml-cpu/traits.h
-        ggml-cpu/amx/amx.cpp
-        ggml-cpu/amx/amx.h
-        ggml-cpu/amx/mmq.cpp
-        ggml-cpu/amx/mmq.h
         ggml-cpu/ggml-cpu-impl.h
         ggml-cpu/common.h
         ggml-cpu/binary-ops.h
@@ -91,6 +85,10 @@ function(ggml_add_cpu_backend_variant_impl tag_name)
         message(STATUS "Using memkind for CPU HBM")
 
         target_compile_definitions(${GGML_CPU_NAME} PRIVATE GGML_USE_CPU_HBM)
+
+        list(APPEND GGML_CPU_SOURCES
+                    ggml-cpu/hbm.cpp
+                    ggml-cpu/hbm.h)
 
         target_link_libraries(${GGML_CPU_NAME} PUBLIC memkind)
     endif()

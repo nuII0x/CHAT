@@ -218,8 +218,7 @@ object FastRelayTransport {
         )
     }
 
-    private fun torProxyIfNeeded(baseUrl: String): Proxy? {
-        if (!isTorRelayUrl(baseUrl)) return null
+    private fun torProxy(): Proxy {
         return Proxy(
             Proxy.Type.SOCKS,
             InetSocketAddress.createUnresolved(TorManager.socksHost(), TorManager.socksPort())
@@ -228,9 +227,8 @@ object FastRelayTransport {
 
     private suspend fun postJson(baseUrl: String, path: String, body: JSONObject, authHeaders: Map<String, String> = emptyMap()): JSONObject =
         withContext(Dispatchers.IO) {
-            val proxy = torProxyIfNeeded(baseUrl)
             val url = URL(baseUrl + path)
-            val connection = (if (proxy != null) url.openConnection(proxy) else url.openConnection()) as HttpURLConnection
+            val connection = url.openConnection(torProxy()) as HttpURLConnection
             connection.apply {
                 requestMethod = "POST"
                 connectTimeout = CONNECT_TIMEOUT_MS

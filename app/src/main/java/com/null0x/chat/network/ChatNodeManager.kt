@@ -51,6 +51,7 @@ object ChatNodeManager {
         val displayName: String,
         val emoji: String,
         val bio: String,
+        val imageUrl: String,
         val mapColorArgb: Int,
         val signingPublicKey: String,
         val exchangePublicKey: String,
@@ -155,6 +156,9 @@ object ChatNodeManager {
     var profileBio: String = ""
         private set
     @Volatile
+    var profileImageUrl: String = ""
+        private set
+    @Volatile
     var profileMapColorArgb: Int = 0xFF6750A4.toInt()
         private set
     @Volatile
@@ -246,6 +250,9 @@ object ChatNodeManager {
                 ?: "🙂"
             profileBio = profilePrefs
                 ?.getString("profile_bio", null)
+                .orEmpty()
+            profileImageUrl = profilePrefs
+                ?.getString("profile_image_url", null)
                 .orEmpty()
             profileMapColorArgb = profilePrefs
                 ?.getInt("profile_map_color", profileMapColorArgb)
@@ -508,6 +515,17 @@ object ChatNodeManager {
         profilePrefs = prefs
         prefs.edit()
             .putInt("profile_map_color", colorArgb)
+            .apply()
+        publishLocalProfile()
+    }
+
+    fun setProfileImageUrl(context: Context, imageUrl: String) {
+        val cleanUrl = imageUrl.trim().take(2048)
+        profileImageUrl = cleanUrl
+        val prefs = profilePrefs ?: context.applicationContext.getSharedPreferences("profile", Context.MODE_PRIVATE)
+        profilePrefs = prefs
+        prefs.edit()
+            .putString("profile_image_url", cleanUrl)
             .apply()
         publishLocalProfile()
     }
@@ -839,6 +857,7 @@ object ChatNodeManager {
                 displayName = profileName,
                 emoji = profileEmoji,
                 bio = profileBio,
+                imageUrl = profileImageUrl,
                 mapColorArgb = profileMapColorArgb,
                 signingPublicKey = RouteIdentityRegistry.identityManager().getPublicKey(),
                 exchangePublicKey = RouteIdentityRegistry.identityManager().getExchangePublicKey(),
@@ -866,6 +885,7 @@ object ChatNodeManager {
                 displayName = json.optString("displayName").trim(),
                 emoji = json.optString("emoji").trim(),
                 bio = json.optString("bio").trim(),
+                imageUrl = json.optString("imageUrl").trim(),
                 mapColorArgb = json.optInt("mapColorArgb", 0xFF6750A4.toInt()),
                 signingPublicKey = json.optString("signingPublicKey").trim(),
                 exchangePublicKey = json.optString("exchangePublicKey").trim(),
@@ -1141,6 +1161,7 @@ object ChatNodeManager {
                 displayName = json.optString("displayName").trim().take(80),
                 emoji = json.optString("emoji").trim().take(16),
                 bio = limitUtf8Bytes(json.optString("bio").trim(), 4 * 1024),
+                imageUrl = json.optString("imageUrl").trim().take(2048),
                 mapColorArgb = json.optInt("mapColorArgb", 0xFF6750A4.toInt()),
                 signingPublicKey = json.optString("signingPublicKey").trim(),
                 exchangePublicKey = json.optString("exchangePublicKey").trim(),
@@ -1161,6 +1182,7 @@ object ChatNodeManager {
             .put("displayName", profile.displayName)
             .put("emoji", profile.emoji)
             .put("bio", profile.bio)
+            .put("imageUrl", profile.imageUrl)
             .put("mapColorArgb", profile.mapColorArgb)
             .put("signingPublicKey", profile.signingPublicKey)
             .put("exchangePublicKey", profile.exchangePublicKey)
@@ -1198,6 +1220,7 @@ object ChatNodeManager {
             .put("displayName", profileName)
             .put("emoji", profileEmoji)
             .put("bio", profileBio)
+            .put("imageUrl", profileImageUrl)
             .put("mapColorArgb", profileMapColorArgb)
             .put("signingPublicKey", RouteIdentityRegistry.identityManager().getPublicKey())
             .put("exchangePublicKey", RouteIdentityRegistry.identityManager().getExchangePublicKey())

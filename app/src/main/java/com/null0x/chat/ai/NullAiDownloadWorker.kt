@@ -12,9 +12,8 @@ import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import com.null0x.chat.AppBranding
 import com.null0x.chat.R
+import com.null0x.chat.network.TorHttp
 import java.io.File
-import java.net.HttpURLConnection
-import java.net.URL
 
 class NullAiDownloadWorker(
     appContext: Context,
@@ -39,12 +38,12 @@ class NullAiDownloadWorker(
         return try {
             setForeground(createForegroundInfo(context, "Baixando modelo da Null IA...", -1, true))
 
-            val connection = URL(downloadUrl).openConnection() as HttpURLConnection
-            connection.connectTimeout = 15_000
-            connection.readTimeout = 30_000
-            connection.instanceFollowRedirects = true
+            val connection = TorHttp.openDirectConnection(
+                rawUrl = downloadUrl,
+                connectTimeoutMs = 15_000,
+                readTimeoutMs = 30_000
+            )
             connection.requestMethod = "GET"
-            connection.useCaches = false
 
             connection.connect()
             val responseCode = connection.responseCode

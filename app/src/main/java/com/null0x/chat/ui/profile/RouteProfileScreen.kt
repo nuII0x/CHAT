@@ -1,5 +1,7 @@
 package com.null0x.chat.ui.profile
 
+import android.graphics.BitmapFactory
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,9 +23,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ChatBubble
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Videocam
-import androidx.compose.material.icons.filled.VpnKey
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
@@ -41,8 +42,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
@@ -52,14 +55,15 @@ import androidx.compose.ui.unit.sp
 import com.null0x.chat.ui.common.CursorAwareOutlinedTextField
 import com.null0x.chat.ui.maskedRouteLabel
 import com.null0x.chat.ui.security.ProtectedWindowCapture
+import com.null0x.chat.ui.common.PrimalisAlertDialog
 import com.null0x.chat.ui.common.WindowDispositionScaffold
 import com.null0x.chat.viewmodel.ChatViewModel
 
 @Composable
 fun RouteProfileScreen(
     profile: ChatViewModel.PublicProfile,
+    profileImagePath: String = "",
     onBack: () -> Unit,
-    onLockApp: () -> Unit,
     onSaveLocalName: (String, String) -> Unit,
     contactBlocked: Boolean = false,
     onSendMessage: (() -> Unit)? = null,
@@ -100,13 +104,6 @@ fun RouteProfileScreen(
                         .padding(start = 6.dp, end = 8.dp)
                 )
             }
-            IconButton(onClick = onLockApp) {
-                Icon(
-                    Icons.Filled.VpnKey,
-                    contentDescription = "Trancar app",
-                    tint = MaterialTheme.colorScheme.onBackground
-                )
-            }
         }
     ) {
         Column(
@@ -133,7 +130,8 @@ fun RouteProfileScreen(
                         ProfileAvatar(
                             text = profile.displayName,
                             emoji = profile.emoji,
-                            backgroundColor = Color(profile.mapColorArgb)
+                            backgroundColor = Color(profile.mapColorArgb),
+                            imagePath = profileImagePath
                         )
                         Column(modifier = Modifier.widthIn(max = 260.dp)) {
                             Text(
@@ -334,52 +332,52 @@ private fun ProfileBlockContactConfirmationDialog(
 ) {
     if (!visible) return
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = {
-            Text("Tem certeza que deseja bloquear esta pessoa?")
-        },
-        text = {
-            Text(
-                "Você não receberá mais nada deste contato e o endereço sumirá do aplicativo. " +
-                    "Mesmo que desbloqueie, terá que procurar pelo token novamente."
-            )
-        },
-        confirmButton = {
-            TextButton(onClick = onConfirmBlock) {
-                Text("Sim, bloquear")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Não")
-            }
-        }
+    PrimalisAlertDialog(
+        title = "Bloquear esta rota?",
+        message = "As mensagens dessa pessoa param de chegar e o contato sai da sua lista. Para conversar de novo, você precisará adicionar o token novamente.",
+        icon = Icons.Filled.Lock,
+        confirmLabel = "Bloquear",
+        dismissLabel = "Manter contato",
+        onConfirm = onConfirmBlock,
+        onDismiss = onDismiss,
+        destructive = true
     )
 }
 
 @Composable
-private fun ProfileAvatar(text: String, emoji: String, backgroundColor: Color) {
+private fun ProfileAvatar(text: String, emoji: String, backgroundColor: Color, imagePath: String = "") {
     val avatarSize = 72.dp
-    val contentColor = if (backgroundColor.luminance() > 0.58f) Color.Black else Color.White
+    val avatarBitmap = androidx.compose.runtime.remember(imagePath) {
+        imagePath.takeIf { it.isNotBlank() }
+            ?.let { runCatching { BitmapFactory.decodeFile(it) }.getOrNull() }
+    }
     Surface(
         shape = CircleShape,
-        color = backgroundColor,
+        color = MaterialTheme.colorScheme.surfaceVariant,
         modifier = Modifier
             .width(avatarSize)
             .height(avatarSize)
     ) {
         Box(contentAlignment = Alignment.Center) {
-            Text(
-                text = if (emoji.isBlank()) {
-                    text.trim().take(1).ifBlank { "P" }.uppercase()
-                } else {
-                    emoji
-                },
-                color = contentColor,
-                fontWeight = FontWeight.Bold,
-                style = MaterialTheme.typography.titleMedium
-            )
+            if (avatarBitmap != null) {
+                Image(
+                    bitmap = avatarBitmap.asImageBitmap(),
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clip(CircleShape)
+                )
+            } else {
+                Icon(
+                    imageVector = Icons.Filled.Person,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier
+                        .width(42.dp)
+                        .height(42.dp)
+                )
+            }
         }
     }
 }

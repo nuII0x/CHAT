@@ -1,9 +1,13 @@
 package com.null0x.chat.ui.home
 
 import android.Manifest
+import android.content.Context
 import android.content.pm.PackageManager
+import android.graphics.BitmapFactory
 import android.provider.Settings
 import android.widget.Toast
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -41,20 +45,21 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ChatBubble
 import androidx.compose.material.icons.filled.Contacts
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Done
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.KeyboardArrowLeft
-import androidx.compose.material.icons.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -79,15 +84,21 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.luminance
-import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.TextFieldValue
@@ -99,14 +110,16 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.null0x.chat.network.ChatNodeManager
 import com.null0x.chat.network.TorManager
+import com.null0x.chat.ui.common.PrimalisAlertDialog
 import com.null0x.chat.ui.common.SystemBarsColorEffect
+import com.null0x.chat.ui.common.primalisBareOutlinedTextFieldColors
 import com.null0x.chat.ui.maskedRouteLabel
 import com.null0x.chat.ui.profile.RouteProfileScreen
 import com.null0x.chat.security.SensitiveClipboard
 import com.null0x.chat.security.AppSecurityManager
-import com.null0x.chat.ui.theme.AppearancePreference
 import com.null0x.chat.ui.theme.themeBackgroundColor
 import com.null0x.chat.ui.theme.ThemePreference
 import com.null0x.chat.viewmodel.ChatViewModel
@@ -114,8 +127,14 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 private sealed interface PendingProfileChange {
-    data class Identity(val name: String, val emoji: String) : PendingProfileChange
+    data class Identity(val name: String) : PendingProfileChange
     data class Bio(val bio: String) : PendingProfileChange
+}
+
+private sealed interface PendingConversationAccess {
+    val username: String
+
+    data class Open(override val username: String) : PendingConversationAccess
 }
 
 private enum class ReviewCueKind {
@@ -133,19 +152,23 @@ private data class ReviewCue(
     val kind: ReviewCueKind
 )
 
+private const val HOME_ONBOARDING_PREFS = "home_onboarding"
+private const val CHATS_TAB_FIRST_REVIEW_SEEN_KEY = "chats_tab_first_review_seen"
 @Composable
 fun HomeScreen(
     vm: ChatViewModel,
-    onLockApp: () -> Unit,
     onSignOut: () -> Unit,
     onOpenChat: (String) -> Unit
 ) {
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val onboardingPrefs = remember(context) {
+        context.applicationContext.getSharedPreferences(HOME_ONBOARDING_PREFS, Context.MODE_PRIVATE)
+    }
     val serviceStatus by TorManager.status.collectAsState()
     val networkAvailable by TorManager.networkAvailableState.collectAsState()
     val knownRoutesRefreshing by ChatNodeManager.knownRoutesRefreshing.collectAsState()
     val themeMode by ThemePreference.themeMode.collectAsState()
-    val appearance by AppearancePreference.appearance.collectAsState()
     val systemDarkTheme = isSystemInDarkTheme()
     val homeBackgroundColor = themeBackgroundColor(themeMode, systemDarkTheme)
     SystemBarsColorEffect(
@@ -154,6 +177,7 @@ fun HomeScreen(
         statusBarDarkIcons = homeBackgroundColor.luminance() > 0.5f
     )
     val publicRoute = vm.currentPublicRoute()
+    val myProfileImagePath = vm.profileImagePathFor(publicRoute).ifBlank { vm.profileImagePath }
     val serviceReady = serviceStatus is TorManager.Status.Ready
     val serviceStarting = serviceStatus is TorManager.Status.Starting
     val pagerState = rememberPagerState(initialPage = HomeTab.Chats.ordinal) { HomeTab.entries.size }
@@ -171,12 +195,15 @@ fun HomeScreen(
     val tab = HomeTab.entries[tabIndex]
     var query by rememberSaveable { mutableStateOf("") }
     var searchSummary by remember { mutableStateOf<ChatViewModel.SearchSummary?>(null) }
-    var showProfileDialog by rememberSaveable { mutableStateOf(false) }
+    var showProfileSheet by rememberSaveable { mutableStateOf(false) }
+    var showProfilePhotoPreview by rememberSaveable { mutableStateOf(false) }
     var showRouteProfile by rememberSaveable { mutableStateOf(false) }
     var showShareRoute by rememberSaveable { mutableStateOf(false) }
     var routeProfileTarget by rememberSaveable { mutableStateOf("") }
     var selectedContactUsername by rememberSaveable { mutableStateOf<String?>(null) }
     var selectedChatUsernames by remember { mutableStateOf(setOf<String>()) }
+    var pendingConversationAccess by remember { mutableStateOf<PendingConversationAccess?>(null) }
+    var conversationAccessError by rememberSaveable { mutableStateOf("") }
     var pendingProfileChange by remember { mutableStateOf<PendingProfileChange?>(null) }
     var profileAuthError by rememberSaveable { mutableStateOf("") }
     var headerSearchActive by remember { mutableStateOf(false) }
@@ -198,12 +225,41 @@ fun HomeScreen(
             routeCameraPermissionLauncher.launch(Manifest.permission.CAMERA)
         }
     }
+    val profileImagePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { imageUri ->
+        if (imageUri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            vm.importProfileImageFromGallery(imageUri)
+                .onSuccess {
+                    Toast.makeText(context, "Imagem do perfil atualizada", Toast.LENGTH_SHORT).show()
+                }
+                .onFailure { error ->
+                    Toast.makeText(
+                        context,
+                        error.message ?: "Falha ao importar imagem",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+        }
+    }
     val publicRouteToken = remember(publicRoute) { vm.routeTokenFor(publicRoute) }
     val routeLabel = publicRouteToken.ifBlank { publicRoute.trim() }
     val conversations = vm.conversationPreviews()
     val contacts = vm.contactPreviews()
     val pendingContactRequests = vm.pendingContactRequests()
     val blockedContacts = vm.blockedContactPreviews()
+    DisposableEffect(lifecycleOwner, vm) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                vm.refreshProfileImagesInForeground()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
     val distanceLocation = rememberGpsLocation(
         context = context,
         enabled = context.hasLocationPermission() && context.isGpsEnabled()
@@ -219,6 +275,19 @@ fun HomeScreen(
     }
     val searchFocusRequester = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
+    DisposableEffect(lifecycleOwner, tab) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME && tab == HomeTab.Settings) {
+                focusManager.clearFocus(force = true)
+                keyboardController?.hide()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
     BackHandler(enabled = showShareRoute) {
         showShareRoute = false
     }
@@ -245,29 +314,46 @@ fun HomeScreen(
         contacts,
         vm.routeLookup,
         vm.profileName,
-        vm.profileEmojiSymbol,
         vm.profileBioText,
     ) {
         mapOf(
             HomeTab.Chats to conversations.sumOf { it.unreadCount },
             HomeTab.Contacts to pendingContactRequests.size + if (vm.routeLookup?.isLocalOwner == false) 1 else 0,
             HomeTab.Map to 0,
-            HomeTab.Profile to profileAttentionCount(vm.profileName, vm.profileEmojiSymbol, vm.profileBioText),
+            HomeTab.Profile to profileAttentionCount(vm.profileName, vm.profileBioText),
             HomeTab.Settings to 0
         )
     }
     val visibleConversations = searchSummary?.conversations ?: conversations
-    val chatReviewCues = remember(visibleConversations) {
-        visibleConversations
-            .filter { it.unreadCount > 0 }
-            .map {
+    var showInitialChatReviewCue by remember {
+        mutableStateOf(!onboardingPrefs.getBoolean(CHATS_TAB_FIRST_REVIEW_SEEN_KEY, false))
+    }
+    val chatReviewCues = remember(showInitialChatReviewCue, searchSummary) {
+        if (showInitialChatReviewCue && searchSummary == null) {
+            listOf(
                 ReviewCue(
-                    key = it.username,
-                    title = it.displayName,
-                    detail = pluralize(it.unreadCount, "mensagem nova", "mensagens novas"),
+                    key = "first-open:chats",
+                    title = "Conversas",
+                    detail = "Aba pronta para seus chats",
                     kind = ReviewCueKind.Chat
                 )
-            }
+            )
+        } else {
+            emptyList()
+        }
+    }
+    fun openConversation(username: String) {
+        val clean = username.trim()
+        if (clean.isBlank()) return
+        vm.selectTarget(clean)
+        onOpenChat(clean)
+    }
+    LaunchedEffect(tab, showInitialChatReviewCue) {
+        if (tab == HomeTab.Chats && showInitialChatReviewCue) {
+            onboardingPrefs.edit().putBoolean(CHATS_TAB_FIRST_REVIEW_SEEN_KEY, true).apply()
+            delay(1_800)
+            showInitialChatReviewCue = false
+        }
     }
     val contactReviewCues = remember(pendingContactRequests, vm.routeLookup) {
         buildList {
@@ -295,7 +381,7 @@ fun HomeScreen(
             }
         }
     }
-    val profileReviewCues = remember(vm.profileName, vm.profileEmojiSymbol, vm.profileBioText) {
+    val profileReviewCues = remember(vm.profileName, vm.profileBioText) {
         buildList {
             if (vm.profileName.trim().isBlank()) {
                 add(
@@ -303,16 +389,6 @@ fun HomeScreen(
                         key = "profile:name",
                         title = "Nome do perfil",
                         detail = "Defina um nome para sua rota",
-                        kind = ReviewCueKind.ProfileIdentity
-                    )
-                )
-            }
-            if (vm.profileEmojiSymbol.trim().isBlank()) {
-                add(
-                    ReviewCue(
-                        key = "profile:emoji",
-                        title = "Emoji do perfil",
-                        detail = "Escolha um emoji para aparecer nas listas",
                         kind = ReviewCueKind.ProfileIdentity
                     )
                 )
@@ -510,6 +586,7 @@ fun HomeScreen(
                         }
                         keyboardController?.hide()
                     },
+                    searchQrEnabled = tab == HomeTab.Contacts,
                     onSearchQrClick = {
                         keyboardController?.hide()
                         openRouteQrScanner()
@@ -543,7 +620,6 @@ fun HomeScreen(
                             selectedContactUsername = null
                         }
                     },
-                    onLockApp = onLockApp,
                     onSelect = { targetTab ->
                         scope.launch {
                             val currentPage = pagerState.currentPage
@@ -574,8 +650,10 @@ fun HomeScreen(
                             searchSummary = searchSummary,
                             myUsername = vm.myUsername,
                             profileEmoji = vm.profileEmojiSymbol,
+                            profileMapColor = Color(vm.profileMapColorArgb),
                             hasSearch = searchSummary != null,
                             publicRouteToken = publicRouteToken,
+                            profileImagePathForRoute = vm::profileImagePathFor,
                             selectedChatUsernames = selectedChatUsernames,
                             reviewCues = chatReviewCues,
                             pointedReviewCue = chatReviewCues.getOrNull(chatReviewIndex),
@@ -590,9 +668,13 @@ fun HomeScreen(
                                 }
                             },
                             isRouteActive = vm::isPartnerOnline,
-                            onSelect = {
-                                vm.selectTarget(it)
-                                onOpenChat(it)
+                            onSelect = { item ->
+                                if (item.locked) {
+                                    pendingConversationAccess = PendingConversationAccess.Open(item.username)
+                                    conversationAccessError = ""
+                                } else {
+                                    openConversation(item.username)
+                                }
                             },
                             onToggleSelection = { username ->
                                 selectedChatUsernames = if (selectedChatUsernames.contains(username)) {
@@ -634,6 +716,7 @@ fun HomeScreen(
                             onAcceptContact = vm::acceptContactRequest,
                             shouldShowAcceptedNotice = vm::shouldShowAcceptedNotice,
                             onAcceptedNoticeShown = vm::markAcceptedNoticeShown,
+                            profileImagePathForRoute = vm::profileImagePathFor,
                             onOpenProfile = { username ->
                                 selectedContactUsername = null
                                 routeProfileTarget = username
@@ -670,8 +753,6 @@ fun HomeScreen(
                             locationSharingMode = vm.locationSharingMode,
                             locationSharingAllowedRoutes = vm.locationSharingAllowedRoutes,
                             sharedLocationForRoute = vm::sharedLocationForRoute,
-                            onProfileEmojiChange = vm::updateProfileEmoji,
-                            onProfileMapColorChange = vm::updateProfileMapColor,
                             onShareLocationWithAll = vm::shareLocationWithAllContacts,
                             onShareLocationWithSelected = vm::shareLocationWithSelectedContacts,
                             onDisableLocationSharing = vm::disableLocationSharing,
@@ -689,12 +770,11 @@ fun HomeScreen(
                         )
                         HomeTab.Profile -> ProfileTab(
                             profileName = vm.profileName,
-                            profileEmoji = vm.profileEmojiSymbol,
                             publicRoute = publicRoute,
                             publicRouteToken = publicRouteToken,
                             routeLabel = routeLabel,
                             profileBio = vm.profileBioText,
-                            profileMapColor = Color(vm.profileMapColorArgb),
+                            profileImagePath = myProfileImagePath,
                             reviewCues = profileReviewCues,
                             pointedReviewCue = profileReviewCues.getOrNull(profileReviewIndex),
                             onPreviousReviewCue = {
@@ -711,8 +791,9 @@ fun HomeScreen(
                                 profileAuthError = ""
                                 pendingProfileChange = PendingProfileChange.Bio(bio)
                             },
-                            onProfileMapColorChange = vm::updateProfileMapColor,
-                            onEditProfile = { showProfileDialog = true },
+                            onProfileImageOpen = { showProfilePhotoPreview = true },
+                            onProfileImagePick = { profileImagePickerLauncher.launch("image/*") },
+                            onEditProfile = { showProfileSheet = true },
                             onShareRoute = { showShareRoute = true }
                         )
                         HomeTab.Settings -> SettingsTab(
@@ -730,6 +811,7 @@ fun HomeScreen(
                             showChatLastActivity = vm.showChatLastActivity,
                             onShowChatLastActivityChange = vm::updateChatLastActivityVisibility,
                             nullAiEnabled = vm.nullAiEnabled,
+                            nullAiUnavailableReason = vm.nullAiUnavailableReason(),
                             onNullAiEnabledChange = vm::updateNullAiEnabled,
                             contacts = contacts,
                             locationSharingMode = vm.locationSharingMode,
@@ -742,7 +824,6 @@ fun HomeScreen(
                             blockedContacts = blockedContacts,
                             onUnblockContact = vm::unblockContact,
                             onContactsBackupRequested = vm::contactsBackupJson,
-                            onLockApp = onLockApp,
                             onSignOut = onSignOut,
                         )
                     }
@@ -751,15 +832,25 @@ fun HomeScreen(
         }
     }
 
-    if (showProfileDialog) {
-        ProfileIdentityDialog(
+    if (showProfileSheet) {
+        ProfileIdentityBottomSheet(
             currentName = vm.profileName,
-            currentEmoji = vm.profileEmojiSymbol,
-            onDismiss = { showProfileDialog = false },
-            onSave = { name, emoji ->
+            onDismiss = { showProfileSheet = false },
+            onSave = { name ->
                 profileAuthError = ""
-                pendingProfileChange = PendingProfileChange.Identity(name, emoji)
-                showProfileDialog = false
+                pendingProfileChange = PendingProfileChange.Identity(name)
+                showProfileSheet = false
+            }
+        )
+    }
+
+    if (showProfilePhotoPreview) {
+        ProfilePhotoPreviewOverlay(
+            profileImagePath = myProfileImagePath,
+            onDismiss = { showProfilePhotoPreview = false },
+            onChangePhoto = {
+                showProfilePhotoPreview = false
+                profileImagePickerLauncher.launch("image/*")
             }
         )
     }
@@ -770,12 +861,11 @@ fun HomeScreen(
         exit = androidx.compose.animation.slideOutHorizontally(targetOffsetX = { fullWidth -> fullWidth }) + androidx.compose.animation.fadeOut()
     ) {
         val shareToken = remember(publicRoute) {
-            vm.routeTokenFor(publicRoute).replace(":", "#")
+            vm.routeTokenFor(publicRoute)
         }
         RouteShareScreen(
             tokenLabel = shareToken.ifBlank { "Aguardando parceiro..." },
-            onBack = { showShareRoute = false },
-            onLockApp = onLockApp
+            onBack = { showShareRoute = false }
         )
     }
 
@@ -793,8 +883,8 @@ fun HomeScreen(
         }
         RouteProfileScreen(
             profile = profile,
+            profileImagePath = vm.profileImagePathFor(target),
             onBack = { showRouteProfile = false },
-            onLockApp = onLockApp,
             onSaveLocalName = { route, name -> vm.setLocalNameForRoute(route, name) },
             contactBlocked = vm.isContactBlocked(target),
             onSendMessage = {
@@ -838,7 +928,6 @@ fun HomeScreen(
                     when (change) {
                         is PendingProfileChange.Identity -> {
                             vm.updateProfileName(change.name)
-                            vm.updateProfileEmoji(change.emoji)
                         }
                         is PendingProfileChange.Bio -> vm.updateProfileBio(change.bio)
                     }
@@ -851,6 +940,31 @@ fun HomeScreen(
             }
         )
     }
+
+    pendingConversationAccess?.let { request ->
+        val target = request.username
+        PasswordConfirmDialog(
+            title = "Entrar no chat trancado",
+            message = "Digite a senha para abrir esta conversa. O app continua aberto.",
+            error = conversationAccessError,
+            baseThemeMode = themeMode,
+            onDismiss = {
+                pendingConversationAccess = null
+                conversationAccessError = ""
+            },
+            onConfirm = { password ->
+                val result = AppSecurityManager.verifyPassword(context, password)
+                if (result.isSuccess) {
+                    vm.setConversationLocked(target, false)
+                    openConversation(target)
+                    pendingConversationAccess = null
+                    conversationAccessError = ""
+                } else {
+                    conversationAccessError = "Senha errada, tente novamente"
+                }
+            }
+        )
+    }
 }
 
 @Composable
@@ -859,15 +973,17 @@ private fun ChatsTabSelectionAware(
     searchSummary: ChatViewModel.SearchSummary?,
     myUsername: String,
     profileEmoji: String,
+    profileMapColor: Color,
     hasSearch: Boolean,
     publicRouteToken: String,
+    profileImagePathForRoute: (String) -> String,
     selectedChatUsernames: Set<String>,
     reviewCues: List<ReviewCue>,
     pointedReviewCue: ReviewCue?,
     onPreviousReviewCue: () -> Unit,
     onNextReviewCue: () -> Unit,
     isRouteActive: (String) -> Boolean,
-    onSelect: (String) -> Unit,
+    onSelect: (ChatViewModel.ConversationPreview) -> Unit,
     onToggleSelection: (String) -> Unit
 ) {
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
@@ -889,8 +1005,10 @@ private fun ChatsTabSelectionAware(
                 conversations = conversations,
                 myUsername = myUsername,
                 profileEmoji = profileEmoji,
+                profileMapColor = profileMapColor,
                 hasSearch = hasSearch,
                 publicRouteToken = publicRouteToken,
+                profileImagePathForRoute = profileImagePathForRoute,
                 selectedChatUsernames = selectedChatUsernames,
                 highlightedUsernames = reviewCues.map { it.key }.toSet(),
                 pointedUsername = pointedReviewCue?.key,
@@ -921,13 +1039,15 @@ private fun ConversationsPanelSelection(
     conversations: List<ChatViewModel.ConversationPreview>,
     myUsername: String,
     profileEmoji: String,
+    profileMapColor: Color,
     hasSearch: Boolean,
     publicRouteToken: String,
+    profileImagePathForRoute: (String) -> String,
     selectedChatUsernames: Set<String>,
     highlightedUsernames: Set<String>,
     pointedUsername: String?,
     isRouteActive: (String) -> Boolean,
-    onSelect: (String) -> Unit,
+    onSelect: (ChatViewModel.ConversationPreview) -> Unit,
     onToggleSelection: (String) -> Unit
 ) {
     if (conversations.isEmpty()) {
@@ -935,6 +1055,7 @@ private fun ConversationsPanelSelection(
             EmptyState(
                 myUsername = myUsername,
                 profileEmoji = profileEmoji,
+                profileMapColor = profileMapColor,
                 hasSearch = hasSearch,
                 publicRouteToken = publicRouteToken
             )
@@ -953,14 +1074,16 @@ private fun ConversationsPanelSelection(
                 ConversationRowSelectable(
                     item = item,
                     selected = selected,
+                    locked = item.locked,
                     highlighted = highlightedUsernames.contains(item.username),
                     pointed = pointedUsername == item.username,
-                    active = if (item.isAi) true else isRouteActive(item.username),
+                    active = if (item.isAi) false else isRouteActive(item.username),
+                    imagePath = profileImagePathForRoute(item.username),
                     onClick = {
                         if (selectedChatUsernames.isNotEmpty()) {
                             onToggleSelection(item.username)
                         } else {
-                            onSelect(item.username)
+                            onSelect(item)
                         }
                     },
                     onLongClick = {
@@ -977,9 +1100,11 @@ private fun ConversationsPanelSelection(
 private fun ConversationRowSelectable(
     item: ChatViewModel.ConversationPreview,
     selected: Boolean,
+    locked: Boolean,
     highlighted: Boolean,
     pointed: Boolean,
     active: Boolean,
+    imagePath: String,
     onClick: () -> Unit,
     onLongClick: () -> Unit
 ) {
@@ -987,13 +1112,17 @@ private fun ConversationRowSelectable(
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .combinedClickable(onClick = onClick, onLongClick = onLongClick),
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick
+            ),
         color = when {
             selected -> MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
             highlighted -> MaterialTheme.colorScheme.primary.copy(alpha = highlightAlpha)
+            locked -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.045f)
             else -> Color.Transparent
         },
-        tonalElevation = if (highlighted) 1.dp else 0.dp
+        tonalElevation = if (highlighted || locked) 1.dp else 0.dp
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
             Row(
@@ -1007,13 +1136,24 @@ private fun ConversationRowSelectable(
                     modifier = Modifier.weight(1f),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    InitialAvatar(text = item.displayName, emoji = item.emoji, active = active)
+                    if (item.isAi) {
+                        NullAiNetworkAvatar(backgroundColor = Color(item.mapColorArgb))
+                    } else {
+                        InitialAvatar(
+                            text = item.displayName,
+                            emoji = item.emoji,
+                            backgroundColor = Color(item.mapColorArgb),
+                            active = active,
+                            imagePath = imagePath
+                        )
+                    }
                     Spacer(Modifier.width(11.dp))
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
                             text = item.displayName,
                             style = MaterialTheme.typography.bodyLarge,
                             fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurface,
                             maxLines = 1,
                             softWrap = false,
                             overflow = TextOverflow.Ellipsis,
@@ -1043,6 +1183,21 @@ private fun ConversationRowSelectable(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     SnapCountBadge(unread = item.unreadCount)
+                    if (!item.isAi) {
+                        Box(
+                            modifier = Modifier.size(36.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (locked) {
+                                Icon(
+                                    imageVector = Icons.Filled.Lock,
+                                    contentDescription = "Conversa trancada",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+                    }
                 }
             }
             ListSeparator(modifier = Modifier.padding(start = 64.dp))
@@ -1075,6 +1230,7 @@ private fun ContactsTab(
     onAcceptContact: (String) -> Unit,
     shouldShowAcceptedNotice: (String) -> Boolean,
     onAcceptedNoticeShown: (String) -> Unit,
+    profileImagePathForRoute: (String) -> String,
     onOpenProfile: (String) -> Unit,
     onSelect: (String) -> Unit,
     selectedContactUsername: String?,
@@ -1121,6 +1277,8 @@ private fun ContactsTab(
                         name = item.displayName,
                         username = item.username,
                         emoji = item.emoji,
+                        mapColorArgb = item.mapColorArgb,
+                        imagePath = profileImagePathForRoute(item.username),
                         active = isRouteActive(item.username),
                         onClick = { onOpenProfile(item.username) },
                         statusLabel = "Pedido recebido",
@@ -1158,6 +1316,8 @@ private fun ContactsTab(
                         name = item.displayName,
                         username = item.username,
                         emoji = item.emoji,
+                        mapColorArgb = item.mapColorArgb,
+                        imagePath = profileImagePathForRoute(item.username),
                         active = item.accepted && isRouteActive(item.username),
                         onClick = { onSelect(item.username) },
                         onAvatarClick = { onOpenProfile(item.username) },
@@ -1178,22 +1338,21 @@ private fun ContactsTab(
 @Composable
 private fun ProfileTab(
     profileName: String,
-    profileEmoji: String,
     publicRoute: String,
     publicRouteToken: String,
     routeLabel: String,
     profileBio: String,
-    profileMapColor: Color,
+    profileImagePath: String,
     reviewCues: List<ReviewCue>,
     pointedReviewCue: ReviewCue?,
     onPreviousReviewCue: () -> Unit,
     onNextReviewCue: () -> Unit,
     onProfileBioSave: (String) -> Unit,
-    onProfileMapColorChange: (Int) -> Unit,
+    onProfileImageOpen: () -> Unit,
+    onProfileImagePick: () -> Unit,
     onEditProfile: () -> Unit,
     onShareRoute: () -> Unit
 ) {
-    val context = LocalContext.current
     var bioDraft by rememberSaveable { mutableStateOf(profileBio) }
     LaunchedEffect(profileBio) {
         if (profileBio != bioDraft) {
@@ -1238,12 +1397,34 @@ private fun ProfileTab(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(14.dp)
                         ) {
-                            InitialAvatar(
-                                text = profileName.ifBlank { publicRouteToken.ifBlank { publicRoute } },
-                                emoji = profileEmoji,
-                                prominent = false,
-                                large = true
-                            )
+                            Box {
+                                Box(modifier = Modifier.clickable(onClick = onProfileImageOpen)) {
+                                    InitialAvatar(
+                                        text = profileName.ifBlank { publicRouteToken.ifBlank { publicRoute } },
+                                        prominent = false,
+                                        large = true,
+                                        imagePath = profileImagePath
+                                    )
+                                }
+                                Surface(
+                                    modifier = Modifier
+                                        .align(Alignment.BottomEnd)
+                                        .size(30.dp)
+                                        .clickable(onClick = onProfileImagePick),
+                                    shape = CircleShape,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    tonalElevation = 3.dp
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Icon(
+                                            imageVector = Icons.Filled.Edit,
+                                            contentDescription = "Trocar foto",
+                                            tint = MaterialTheme.colorScheme.onPrimary,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    }
+                                }
+                            }
                             Column(modifier = Modifier.fillMaxWidth()) {
                                 Text(
                                     text = profileName.ifBlank { publicRouteToken.ifBlank { "Token da rota" } },
@@ -1314,28 +1495,6 @@ private fun ProfileTab(
                         }
                     }
                     Text(
-                        text = "Cor no mapa",
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        profileMapColorOptions.forEach { option ->
-                            val selected = option.toArgb() == profileMapColor.toArgb()
-                            Surface(
-                                modifier = Modifier
-                                    .size(if (selected) 38.dp else 34.dp)
-                                    .clickable { onProfileMapColorChange(option.toArgb()) },
-                                shape = CircleShape,
-                                color = option,
-                                border = if (selected) {
-                                    androidx.compose.foundation.BorderStroke(2.dp, MaterialTheme.colorScheme.onSurface)
-                                } else {
-                                    null
-                                }
-                            ) {}
-                        }
-                    }
-                    Text(
                         text = "Bio do perfil",
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.SemiBold
@@ -1354,7 +1513,8 @@ private fun ProfileTab(
                                 maxLines = 10,
                                 label = { Text("Escreva tudo que quiser") },
                                 placeholder = { Text("Até 4 KB visíveis para quem visitar a rota.") },
-                                shape = RoundedCornerShape(16.dp)
+                                shape = RoundedCornerShape(14.dp),
+                                colors = primalisBareOutlinedTextFieldColors()
                             )
                             if (bioPointed) {
                                 Icon(
@@ -1386,14 +1546,96 @@ private fun ProfileTab(
     }
 }
 
-private val profileMapColorOptions = listOf(
-    Color(0xFF6750A4),
-    Color(0xFF006A6A),
-    Color(0xFFB3261E),
-    Color(0xFF386A20),
-    Color(0xFF7D5260),
-    Color(0xFF005FAF)
-)
+@Composable
+private fun ProfilePhotoPreviewOverlay(
+    profileImagePath: String,
+    onDismiss: () -> Unit,
+    onChangePhoto: () -> Unit
+) {
+    var menuExpanded by remember { mutableStateOf(false) }
+    val avatarBitmap = remember(profileImagePath) {
+        profileImagePath.takeIf { it.isNotBlank() }
+            ?.let { runCatching { BitmapFactory.decodeFile(it) }.getOrNull() }
+    }
+
+    BackHandler(onBack = onDismiss)
+
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = Color.Black.copy(alpha = 0.96f),
+        contentColor = Color.White
+    ) {
+        Box(modifier = Modifier.fillMaxSize()) {
+            if (avatarBitmap != null) {
+                Image(
+                    bitmap = avatarBitmap.asImageBitmap(),
+                    contentDescription = "Foto do perfil",
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clickable(onClick = onDismiss)
+                        .padding(horizontal = 10.dp, vertical = 72.dp)
+                )
+            } else {
+                Surface(
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .size(220.dp),
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.surfaceVariant
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = Icons.Filled.Person,
+                            contentDescription = "Foto do perfil",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(120.dp)
+                        )
+                    }
+                }
+            }
+
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .navigationBarsPadding()
+                    .padding(bottom = 18.dp)
+            ) {
+                Surface(
+                    shape = CircleShape,
+                    color = Color.White.copy(alpha = 0.14f),
+                    tonalElevation = 0.dp
+                ) {
+                    IconButton(onClick = { menuExpanded = true }) {
+                        Icon(
+                            imageVector = Icons.Filled.MoreVert,
+                            contentDescription = "Opções da foto",
+                            tint = Color.White
+                        )
+                    }
+                }
+                DropdownMenu(
+                    expanded = menuExpanded,
+                    onDismissRequest = { menuExpanded = false }
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("Trocar foto") },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.Filled.Edit,
+                                contentDescription = null
+                            )
+                        },
+                        onClick = {
+                            menuExpanded = false
+                            onChangePhoto()
+                        }
+                    )
+                }
+            }
+        }
+    }
+}
 
 @Composable
 private fun InfoPill(text: String) {
@@ -1443,6 +1685,7 @@ private fun snapLine(item: ChatViewModel.ConversationPreview): String {
 private fun EmptyState(
     myUsername: String,
     profileEmoji: String,
+    profileMapColor: Color,
     hasSearch: Boolean,
     publicRouteToken: String
 ) {
@@ -1461,6 +1704,7 @@ private fun EmptyState(
                 InitialAvatar(
                     text = if (hasSearch) "?" else myUsername,
                     emoji = if (hasSearch) null else profileEmoji,
+                    backgroundColor = if (hasSearch) null else profileMapColor,
                     prominent = false,
                     large = true
                 )
@@ -1593,7 +1837,11 @@ private fun RouteLookupRow(
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                InitialAvatar(text = routeLookup.displayName, emoji = routeLookup.emoji)
+                InitialAvatar(
+                    text = routeLookup.displayName,
+                    emoji = routeLookup.emoji,
+                    backgroundColor = Color(routeLookup.mapColorArgb)
+                )
                 Column(
                     modifier = Modifier.weight(1f, fill = true),
                     verticalArrangement = Arrangement.spacedBy(3.dp)
@@ -1651,38 +1899,18 @@ private fun RouteLookupRow(
     }
 
     if (showRemoveConfirm) {
-        AlertDialog(
-            onDismissRequest = { showRemoveConfirm = false },
-            title = {
-                Text("Quer remover?")
+        PrimalisAlertDialog(
+            title = "Remover este contato?",
+            message = "Ele sai da sua lista agora e o botão volta para Adicionar. As conversas existentes continuam disponíveis no histórico.",
+            icon = Icons.Filled.Delete,
+            confirmLabel = "Remover",
+            dismissLabel = "Manter",
+            onConfirm = {
+                showRemoveConfirm = false
+                onRemoveContact(routeLookup.username)
             },
-            text = {
-                Text("Ao remover, o botão volta para Adicionar imediatamente.")
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        showRemoveConfirm = false
-                        onRemoveContact(routeLookup.username)
-                    },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.primary,
-                        contentColor = MaterialTheme.colorScheme.onPrimary
-                    )
-                ) {
-                    Text("Sim")
-                }
-            },
-            dismissButton = {
-                TextButton(
-                    onClick = { showRemoveConfirm = false },
-                    colors = ButtonDefaults.textButtonColors(
-                        contentColor = MaterialTheme.colorScheme.onSurface
-                    )
-                ) {
-                    Text("Não")
-                }
-            }
+            onDismiss = { showRemoveConfirm = false },
+            destructive = true
         )
     }
 }
@@ -1693,6 +1921,8 @@ private fun ContactRow(
     name: String,
     username: String,
     emoji: String,
+    mapColorArgb: Int,
+    imagePath: String = "",
     onClick: () -> Unit,
     onAvatarClick: (() -> Unit)? = null,
     onLongClick: (() -> Unit)? = null,
@@ -1735,7 +1965,13 @@ private fun ContactRow(
                         Modifier
                     }
                 ) {
-                    InitialAvatar(text = name, emoji = emoji, active = active)
+                    InitialAvatar(
+                        text = name,
+                        emoji = emoji,
+                        backgroundColor = Color(mapColorArgb),
+                        active = active,
+                        imagePath = imagePath
+                    )
                 }
                 Column(
                     modifier = Modifier
@@ -1795,6 +2031,55 @@ private fun ContactRow(
 }
 
 @Composable
+private fun NullAiNetworkAvatar(
+    backgroundColor: Color,
+    modifier: Modifier = Modifier
+) {
+    val contentColor = readableProfileAvatarContentColor(backgroundColor)
+    Box(
+        modifier = modifier.size(52.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Surface(
+            shape = CircleShape,
+            color = backgroundColor,
+            modifier = Modifier.size(42.dp)
+        ) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val w = size.width
+                val h = size.height
+                val nodes = listOf(
+                    Offset(w * 0.24f, h * 0.50f),
+                    Offset(w * 0.48f, h * 0.34f),
+                    Offset(w * 0.48f, h * 0.66f),
+                    Offset(w * 0.74f, h * 0.24f),
+                    Offset(w * 0.74f, h * 0.50f),
+                    Offset(w * 0.74f, h * 0.76f)
+                )
+                val lines = listOf(0 to 1, 0 to 2, 1 to 3, 1 to 4, 2 to 4, 2 to 5)
+                val lineColor = contentColor.copy(alpha = 0.68f)
+                lines.forEach { (from, to) ->
+                    drawLine(
+                        color = lineColor,
+                        start = nodes[from],
+                        end = nodes[to],
+                        strokeWidth = 2.4.dp.toPx(),
+                        cap = StrokeCap.Round
+                    )
+                }
+                nodes.forEachIndexed { index, offset ->
+                    drawCircle(
+                        color = contentColor,
+                        radius = if (index == 0) 3.6.dp.toPx() else 3.1.dp.toPx(),
+                        center = offset
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun ReviewCueCard(
     cues: List<ReviewCue>,
     pointedCue: ReviewCue?,
@@ -1822,13 +2107,13 @@ private fun ReviewCueCard(
                 modifier = Modifier.size(34.dp)
             ) {
                 Icon(
-                    imageVector = Icons.Filled.KeyboardArrowLeft,
+                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
                     contentDescription = "Item anterior"
                 )
             }
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "Revisar novidade",
+                    text = if (cue.key.startsWith("first-open:")) "Primeiro acesso" else "Revisar novidade",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.primary,
                     fontWeight = FontWeight.SemiBold,
@@ -1861,7 +2146,7 @@ private fun ReviewCueCard(
                 modifier = Modifier.size(34.dp)
             ) {
                 Icon(
-                    imageVector = Icons.Filled.KeyboardArrowRight,
+                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
                     contentDescription = "Proximo item"
                 )
             }

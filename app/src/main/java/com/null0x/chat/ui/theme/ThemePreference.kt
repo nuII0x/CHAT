@@ -7,51 +7,39 @@ import kotlinx.coroutines.flow.asStateFlow
 
 enum class ThemeMode {
     SYSTEM,
-    BLUE,
     LIGHT,
-    DARK,
-    PINK
+    DARK
 }
 
 object ThemePreference {
     private const val PREFS_NAME = "ui_theme"
     private const val THEME_MODE_KEY = "theme_mode"
     private const val LEGACY_DARK_THEME_KEY = "dark_theme_enabled"
-    private const val BLUE_DEFAULT_MIGRATED_KEY = "blue_default_migrated"
 
-    private val _themeMode = MutableStateFlow(ThemeMode.BLUE)
+    private val _themeMode = MutableStateFlow(ThemeMode.LIGHT)
     val themeMode: StateFlow<ThemeMode> = _themeMode.asStateFlow()
 
     fun initialize(context: Context) {
         val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val storedMode = prefs.getString(THEME_MODE_KEY, null)
-        val storedThemeMode = storedMode
-            ?.let { runCatching { ThemeMode.valueOf(it) }.getOrNull() }
-        val shouldMigrateOldSystemDefault = storedThemeMode == ThemeMode.SYSTEM &&
-            !prefs.getBoolean(BLUE_DEFAULT_MIGRATED_KEY, false) &&
-            !prefs.contains(LEGACY_DARK_THEME_KEY)
-        val resolvedMode = if (shouldMigrateOldSystemDefault) {
-            ThemeMode.BLUE
-        } else {
-            when (storedThemeMode) {
-                null -> if (prefs.contains(LEGACY_DARK_THEME_KEY)) {
-                    if (prefs.getBoolean(LEGACY_DARK_THEME_KEY, false)) {
-                        ThemeMode.DARK
-                    } else {
-                        ThemeMode.LIGHT
-                    }
+        val storedThemeMode = parseThemeMode(storedMode)
+        val resolvedMode = when (storedThemeMode) {
+            null -> if (prefs.contains(LEGACY_DARK_THEME_KEY)) {
+                if (prefs.getBoolean(LEGACY_DARK_THEME_KEY, false)) {
+                    ThemeMode.DARK
                 } else {
-                    ThemeMode.BLUE
+                    ThemeMode.LIGHT
                 }
-                else -> storedThemeMode
+            } else {
+                ThemeMode.LIGHT
             }
+            else -> storedThemeMode
         }
 
         _themeMode.value = resolvedMode
-        if (storedMode == null || shouldMigrateOldSystemDefault) {
+        if (storedMode == null || storedThemeMode == null) {
             prefs.edit()
                 .putString(THEME_MODE_KEY, resolvedMode.name)
-                .putBoolean(BLUE_DEFAULT_MIGRATED_KEY, true)
                 .apply()
         }
     }
@@ -63,5 +51,14 @@ object ThemePreference {
             .putString(THEME_MODE_KEY, mode.name)
             .apply()
         _themeMode.value = mode
+    }
+
+    private fun parseThemeMode(value: String?): ThemeMode? {
+        return when (value) {
+            ThemeMode.SYSTEM.name -> ThemeMode.SYSTEM
+            ThemeMode.LIGHT.name -> ThemeMode.LIGHT
+            ThemeMode.DARK.name -> ThemeMode.DARK
+            else -> null
+        }
     }
 }

@@ -6,7 +6,10 @@ llama_add_compile_flags()
 
 # llama
 
-file(GLOB LLAMA_MODELS_SOURCES "models/*.cpp")
+set(LLAMA_MODELS_SOURCES
+    models/qwen.cpp
+    models/qwen2.cpp
+)
 
 add_library(llama
             ../include/llama.h

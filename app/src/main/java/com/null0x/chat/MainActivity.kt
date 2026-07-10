@@ -29,8 +29,10 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.mutableStateOf
@@ -83,6 +85,7 @@ import com.null0x.chat.viewmodel.ChatViewModel
 
 class MainActivity : ComponentActivity() {
     private var openChatUsername by mutableStateOf<String?>(null)
+    private var openChatRequestVersion by mutableIntStateOf(0)
     private var launchedFromNotification = false
     private var lastStatusBarColor = Color.Black
     private var lastStatusBarDarkIcons = false
@@ -119,6 +122,9 @@ class MainActivity : ComponentActivity() {
         val initialOpenChatUsername = MessageNotifier.consumeOpenChatUsername(this, intent)
         openChatUsername = initialOpenChatUsername
         launchedFromNotification = !initialOpenChatUsername.isNullOrBlank()
+        if (launchedFromNotification) {
+            openChatRequestVersion++
+        }
         ThemePreference.initialize(this)
         AppearancePreference.initialize(this)
         BackgroundConnectionModeController.initialize(this)
@@ -203,22 +209,21 @@ class MainActivity : ComponentActivity() {
                         LaunchedEffect(pendingOpenChat) {
                             val username = pendingOpenChat
                             if (!username.isNullOrBlank()) {
-                                vm.selectTarget(username)
+                                vm.selectTarget(username, fromNotification = true)
                                 openChatUsername = null
                             }
                         }
                         Box(modifier = Modifier.fillMaxSize()) {
                             HomeScreen(
                                 vm,
-                                onLockApp = { AppSecurityManager.lock() },
                                 onSignOut = { AppDataWiper.wipeAndExit(this@MainActivity) }
                             ) { peer -> vm.selectTarget(peer) }
                             if (vm.inChat) {
                                 ChatScreen(
                                     vm,
                                     themeMode = themeMode,
-                                    onBack = { vm.openHome() },
-                                    onLockApp = { AppSecurityManager.lock() }
+                                    openChatRequestVersion = openChatRequestVersion,
+                                    onBack = { vm.openHome() }
                                 )
                             }
                         }
@@ -244,6 +249,7 @@ class MainActivity : ComponentActivity() {
         val username = MessageNotifier.consumeOpenChatUsername(this, intent)
         if (!username.isNullOrBlank()) {
             launchedFromNotification = true
+            openChatRequestVersion++
             openChatUsername = username
         }
     }
@@ -504,9 +510,9 @@ private fun AppLockScreen(
     val confirmFocusRequester = remember { FocusRequester() }
     val systemDarkTheme = androidx.compose.foundation.isSystemInDarkTheme()
     val lockColor = when (themeMode) {
-        ThemeMode.DARK -> Color.Black
         ThemeMode.SYSTEM -> if (systemDarkTheme) Color.Black else MaterialTheme.colorScheme.background
-        else -> MaterialTheme.colorScheme.background
+        ThemeMode.DARK -> Color.Black
+        ThemeMode.LIGHT -> MaterialTheme.colorScheme.background
     }
 
     DisposableEffect(context) {

@@ -21,7 +21,6 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.QrCodeScanner
-import androidx.compose.material.icons.filled.VpnKey
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -35,6 +34,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.font.FontWeight
@@ -65,12 +65,12 @@ internal fun AppHeader(
     onSearchActiveChange: (Boolean) -> Unit = {},
     onSearchValueChange: (String) -> Unit = {},
     onSearchSubmit: () -> Unit = {},
+    searchQrEnabled: Boolean = false,
     onSearchQrClick: () -> Unit = {},
     onDeleteSelectedChats: (() -> Unit)? = null,
     onClearSelectedChats: (() -> Unit)? = null,
     onSelectAllChats: (() -> Unit)? = null,
-    onDeleteSelectedContact: () -> Unit,
-    onLockApp: () -> Unit
+    onDeleteSelectedContact: () -> Unit
 ) {
     val showChatActions = selectedChatsCount > 0
     val systemDarkTheme = isSystemInDarkTheme()
@@ -82,7 +82,6 @@ internal fun AppHeader(
     var contactMenuExpanded = remember { mutableStateOf(false) }
     val searchFocusRequester = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
-    val searchContainerColor = themeBackgroundColor(baseThemeMode, systemDarkTheme)
     val searchTextColor = headerContentColor
     val searchPlaceholderColor = searchTextColor.copy(alpha = 0.62f)
     val searchIconColor = searchTextColor.copy(alpha = 0.86f)
@@ -154,13 +153,17 @@ internal fun AppHeader(
                             overflow = TextOverflow.Clip
                         )
                     },
-                    leadingIcon = {
-                        IconButton(onClick = onSearchQrClick) {
-                            Icon(
-                                imageVector = Icons.Filled.QrCodeScanner,
-                                contentDescription = "Ler QR da rota"
-                            )
+                    leadingIcon = if (searchQrEnabled) {
+                        {
+                            IconButton(onClick = onSearchQrClick) {
+                                Icon(
+                                    imageVector = Icons.Filled.QrCodeScanner,
+                                    contentDescription = "Ler QR da rota"
+                                )
+                            }
                         }
+                    } else {
+                        null
                     },
                     trailingIcon = {
                         IconButton(
@@ -175,8 +178,8 @@ internal fun AppHeader(
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                     keyboardActions = KeyboardActions(onSearch = { onSearchSubmit() }),
                     colors = TextFieldDefaults.colors(
-                        focusedContainerColor = searchContainerColor,
-                        unfocusedContainerColor = searchContainerColor,
+                        focusedContainerColor = Color.Transparent,
+                        unfocusedContainerColor = Color.Transparent,
                         focusedTextColor = searchTextColor,
                         unfocusedTextColor = searchTextColor,
                         cursorColor = searchTextColor,
@@ -293,13 +296,6 @@ internal fun AppHeader(
                             softWrap = false
                         )
                     }
-                    IconButton(onClick = onLockApp) {
-                        Icon(
-                            imageVector = Icons.Filled.VpnKey,
-                            contentDescription = "Trancar app",
-                            tint = iconContentColor
-                        )
-                    }
                 }
             } else {
                 if (searchEnabled) {
@@ -313,13 +309,6 @@ internal fun AppHeader(
                             tint = iconContentColor
                         )
                     }
-                }
-                IconButton(onClick = onLockApp) {
-                    Icon(
-                        imageVector = Icons.Filled.VpnKey,
-                        contentDescription = "Trancar app",
-                        tint = iconContentColor
-                    )
                 }
             }
             if (showChatActions) {
@@ -487,12 +476,12 @@ internal fun BottomDock(
     onSearchValueChange: (String) -> Unit = {},
     onSearchSubmit: () -> Unit = {},
     onSearchToggle: () -> Unit = {},
+    searchQrEnabled: Boolean = false,
     onSearchQrClick: () -> Unit = {},
     selectedChatsCount: Int = 0,
     onDeleteSelectedChats: () -> Unit = {},
     selectedContactUsername: String? = null,
     onDeleteSelectedContact: () -> Unit = {},
-    onLockApp: () -> Unit,
     onSelect: (HomeTab) -> Unit
 ) {
     val systemDarkTheme = isSystemInDarkTheme()
@@ -503,9 +492,18 @@ internal fun BottomDock(
     val selectedIconTint = dockSelectedIconTint(baseThemeMode, systemDarkTheme)
     val selectedBackground = dockSelectedBackgroundColor(baseThemeMode, systemDarkTheme)
     val accumulatedDockDragX = remember { mutableStateOf(0f) }
+    val density = LocalDensity.current
+    val keyboardLift = if (searchActive) {
+        val imeBottom = WindowInsets.ime.getBottom(density)
+        val navigationBottom = WindowInsets.navigationBars.getBottom(density)
+        with(density) { (imeBottom - navigationBottom).coerceAtLeast(0).toDp() }
+    } else {
+        0.dp
+    }
     Surface(
         modifier = Modifier
             .fillMaxWidth()
+            .offset(y = -keyboardLift)
             .pointerInput(selected) {
                 detectHorizontalDragGestures(
                     onHorizontalDrag = { _, dragAmount ->
@@ -538,7 +536,6 @@ internal fun BottomDock(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .imePadding()
                 .navigationBarsPadding()
                 .padding(horizontal = 10.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -549,7 +546,28 @@ internal fun BottomDock(
                     .weight(1f)
                     .height(56.dp)
             ) {
-                if (searchEnabled && searchActive) {
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = searchEnabled && searchActive,
+                    modifier = Modifier.align(Alignment.CenterStart),
+                    enter = fadeIn(animationSpec = tween(130)) +
+                        expandHorizontally(
+                            expandFrom = Alignment.Start,
+                            animationSpec = tween(240)
+                        ) +
+                        slideInHorizontally(
+                            initialOffsetX = { -it / 5 },
+                            animationSpec = tween(240)
+                        ),
+                    exit = fadeOut(animationSpec = tween(100)) +
+                        shrinkHorizontally(
+                            shrinkTowards = Alignment.Start,
+                            animationSpec = tween(170)
+                        ) +
+                        slideOutHorizontally(
+                            targetOffsetX = { -it / 6 },
+                            animationSpec = tween(170)
+                        )
+                ) {
                     val fieldModifier = Modifier
                         .fillMaxWidth()
                         .height(56.dp)
@@ -569,13 +587,17 @@ internal fun BottomDock(
                                 overflow = TextOverflow.Ellipsis
                             )
                         },
-                        leadingIcon = {
-                            IconButton(onClick = onSearchQrClick) {
-                                Icon(
-                                    imageVector = Icons.Filled.QrCodeScanner,
-                                    contentDescription = "Ler QR"
-                                )
+                        leadingIcon = if (searchQrEnabled) {
+                            {
+                                IconButton(onClick = onSearchQrClick) {
+                                    Icon(
+                                        imageVector = Icons.Filled.QrCodeScanner,
+                                        contentDescription = "Ler QR"
+                                    )
+                                }
                             }
+                        } else {
+                            null
                         },
                         trailingIcon = {
                             IconButton(
@@ -612,7 +634,22 @@ internal fun BottomDock(
                             unfocusedPlaceholderColor = dockContentColor.copy(alpha = 0.62f)
                         )
                     )
-                } else {
+                }
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = !searchActive,
+                    modifier = Modifier.matchParentSize(),
+                    enter = fadeIn(animationSpec = tween(150)) +
+                        slideInHorizontally(
+                            initialOffsetX = { it / 10 },
+                            animationSpec = tween(190)
+                        ),
+                    exit = fadeOut(animationSpec = tween(90)) +
+                        slideOutHorizontally(
+                            targetOffsetX = { it / 10 },
+                            animationSpec = tween(130)
+                        )
+                ) {
+                    Box(modifier = Modifier.fillMaxSize()) {
                     if (searchEnabled) {
                         IconButton(
                             onClick = onSearchToggle,
@@ -661,6 +698,7 @@ internal fun BottomDock(
                             }
                         }
                     }
+                    }
                 }
             }
 
@@ -681,13 +719,7 @@ internal fun BottomDock(
                     )
                 }
             }
-            IconButton(onClick = onLockApp) {
-                Icon(
-                    imageVector = Icons.Filled.VpnKey,
-                    contentDescription = "Trancar app",
-                    tint = idleIconTint
-                )
-            }
+            Spacer(modifier = Modifier.width(48.dp))
         }
     }
 }
