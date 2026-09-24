@@ -56,19 +56,23 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
@@ -84,6 +88,8 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.null0x.chat.ui.common.PrimalisAlertDialog
 import com.null0x.chat.viewmodel.ChatViewModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.Locale
@@ -237,7 +243,7 @@ internal fun MapTab(
 }
 
 @Composable
-private fun MapGateContent(
+internal fun MapGateContent(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     title: String,
     text: String,
@@ -292,7 +298,7 @@ private fun MapGateContent(
 }
 
 @Composable
-private fun LocationSharingDialog(
+internal fun LocationSharingDialog(
     contacts: List<ChatViewModel.ContactPreview>,
     initiallySelected: Set<String>,
     onShareAll: () -> Unit,
@@ -382,7 +388,7 @@ private fun LocationSharingDialog(
 }
 
 @Composable
-private fun OrbitMapContent(
+internal fun OrbitMapContent(
     myName: String,
     myEmoji: String,
     publicRoute: String,
@@ -405,11 +411,15 @@ private fun OrbitMapContent(
     onRecordMedia: (String) -> Unit
 ) {
     val landData = rememberOfflineLandData()
-    val cityPoints = rememberOfflineCityPoints()
+    val cityPlaces = rememberOfflineCityPoints()
+    val cityPoints = cityPlaces.all
     val countryLabels = rememberOfflineCountryLabels()
     val adminRegions = rememberOfflineAdminRegions()
-    val brazilPlaces = rememberBrazilPlaces()
-    val brazilStateBoundaries = rememberBrazilStateBoundaries()
+    val highDetailPlaces = rememberHighDetailPlaces()
+    val localityDensityCells = remember(cityPlaces, highDetailPlaces) {
+        buildLocalityDensityCells(cityPoints, highDetailPlaces.all)
+    }
+    val highDetailRegionBoundaries = rememberHighDetailRegionBoundaries()
     val countryBoundaries = rememberCountryBoundaries()
     val mapPalette = remember(useDarkMapColors) { offlineMapPalette(useDarkMapColors) }
     var selectedUser by remember { mutableStateOf<OrbitUser?>(null) }
@@ -474,9 +484,8 @@ private fun OrbitMapContent(
             val heightPx = constraints.maxHeight.toFloat()
             val center = Offset(widthPx / 2f, heightPx / 2f)
             val minMetersPerPixel = 1f / 72f
-            val maxMetersPerPixelByWidth = worldCircumferenceMeters / widthPx.coerceAtLeast(1f)
-            val maxMetersPerPixelByHeight = worldHeightMeters / heightPx.coerceAtLeast(1f)
-            val maxMetersPerPixel = minOf(maxMetersPerPixelByWidth, maxMetersPerPixelByHeight)
+            val overviewGlobeRadius = minOf(widthPx, heightPx).coerceAtLeast(1f) * 0.34f
+            val maxMetersPerPixel = (earthRadiusMeters / overviewGlobeRadius)
                 .coerceAtLeast(minMetersPerPixel)
             val minZoom = (baseMetersPerPixel / maxMetersPerPixel).coerceAtLeast(0.002f)
             val maxZoom = 8_640f
@@ -493,6 +502,8 @@ private fun OrbitMapContent(
             val worldWidthPx = worldCircumferenceMeters / metersPerPixel
             val worldHeightPx = worldHeightMeters / metersPerPixel
             val wholeMapHeightVisible = worldHeightPx <= heightPx + 1f
+            val showFlatDetails = metersPerPixel <= sphericalDetailMetersPerPixel
+            val globeRadius = earthRadiusMeters / metersPerPixel
             val renderPan = Offset(
                 x = wrapHorizontalMapPan(pan.x, worldWidthPx),
                 y = clampVerticalMapPan(
@@ -518,6 +529,15 @@ private fun OrbitMapContent(
                 width = widthPx,
                 height = heightPx
             )
+            val citySafeArea = remember(viewportGeoBounds) {
+                snappedCitySafeArea(viewportGeoBounds)
+            }
+            val nearbyCityPoints = remember(cityPlaces, citySafeArea) {
+                cityPlaces.near(
+                    viewport = citySafeArea,
+                    paddingDegrees = 0.0
+                )
+            }
             val dynamicMapTitle = remember(
                 centerGeoPoint,
                 viewportGeoBounds,
@@ -525,9 +545,9 @@ private fun OrbitMapContent(
                 heightPx,
                 metersPerPixel,
                 countryLabels,
-                cityPoints,
+                nearbyCityPoints,
                 adminRegions,
-                brazilPlaces
+                highDetailPlaces
             ) {
                 titleForMapCenter(
                     center = centerGeoPoint,
@@ -536,9 +556,9 @@ private fun OrbitMapContent(
                     viewportHeightPx = heightPx,
                     metersPerPixel = metersPerPixel,
                     countryLabels = countryLabels,
-                    cityPoints = cityPoints,
+                    cityPoints = nearbyCityPoints,
                     adminRegions = adminRegions,
-                    brazilPlaces = brazilPlaces.all
+                    highDetailPlaces = highDetailPlaces.all
                 )
             }
             LaunchedEffect(dynamicMapTitle) {
@@ -560,19 +580,45 @@ private fun OrbitMapContent(
                 mapUsers.filter { it.hasLocation && !it.isSelf }
             }
             val locatedMapUsers = mapUsers.filter { it.hasLocation }
-            val visibleUsers = locatedMapUsers.filter { user ->
-                user.screenPoint(center, renderPan, metersPerPixel, worldWidthPx).isInside(widthPx, heightPx, padding = 46f)
-            }
-            val positionedUsers = remember(visibleUsers, center, renderPan, metersPerPixel, worldWidthPx, widthPx, heightPx) {
-                separateNearbyUsers(
-                    users = visibleUsers,
-                    center = center,
-                    pan = renderPan,
-                    metersPerPixel = metersPerPixel,
-                    worldWidthPx = worldWidthPx,
-                    width = widthPx,
-                    height = heightPx
-                )
+            val positionedUsers = remember(
+                locatedMapUsers,
+                showFlatDetails,
+                center,
+                renderPan,
+                metersPerPixel,
+                worldWidthPx,
+                widthPx,
+                heightPx,
+                centerGeoPoint,
+                globeRadius,
+                origin
+            ) {
+                if (showFlatDetails) {
+                    val visibleUsers = locatedMapUsers.filter { user ->
+                        user.screenPoint(center, renderPan, metersPerPixel, worldWidthPx)
+                            .isInside(widthPx, heightPx, padding = 46f)
+                    }
+                    separateNearbyUsers(
+                        users = visibleUsers,
+                        center = center,
+                        pan = renderPan,
+                        metersPerPixel = metersPerPixel,
+                        worldWidthPx = worldWidthPx,
+                        width = widthPx,
+                        height = heightPx
+                    )
+                } else {
+                    separateGlobeUsers(
+                        users = locatedMapUsers,
+                        origin = origin,
+                        centerLongitude = centerGeoPoint.longitude,
+                        centerLatitude = centerGeoPoint.latitude,
+                        globeCenter = center,
+                        globeRadius = globeRadius,
+                        width = widthPx,
+                        height = heightPx
+                    )
+                }
             }
             val occupiedUserLabelBoxes = remember(positionedUsers, widthPx, heightPx) {
                 buildUserOccupationBoxes(positionedUsers, widthPx, heightPx)
@@ -621,32 +667,52 @@ private fun OrbitMapContent(
                         )
                     }
             ) {
-                drawRect(color = mapBackground)
-                horizontalCopies.forEach { copyOffset ->
-                    drawOfflineWorldLand(
-                        landRings = landData.landRingsFor(metersPerPixel),
-                        origin = origin,
-                        center = center,
-                        pan = renderPan.copy(x = renderPan.x + copyOffset),
-                        metersPerPixel = metersPerPixel,
-                        color = landColor,
-                        outlineColor = gridColor.copy(alpha = if (useDarkMapColors) 0.22f else 0.30f)
+                drawSpaceBackground()
+                drawOfflineGlobe(
+                    landRings = landData.landRingsFor(metersPerPixel),
+                    boundaryRings = if (showFlatDetails) countryBoundaries else emptyList(),
+                    centerLongitude = centerGeoPoint.longitude,
+                    centerLatitude = centerGeoPoint.latitude,
+                    metersPerPixel = metersPerPixel,
+                    color = landColor,
+                    oceanColor = mapBackground,
+                    outlineColor = gridColor,
+                    boundaryColor = boundaryColor,
+                    useDarkColors = useDarkMapColors
+                )
+                if (!showFlatDetails) {
+                    drawGlobeLocalityDensity(
+                        cells = localityDensityCells,
+                        centerLongitude = centerGeoPoint.longitude,
+                        centerLatitude = centerGeoPoint.latitude,
+                        radius = globeRadius,
+                        color = cityDotColor
                     )
                 }
-                horizontalCopies.forEach { copyOffset ->
+                if (showFlatDetails) horizontalCopies.forEach { copyOffset ->
+                    if (metersPerPixel >= localityDensityMetersPerPixel) {
+                        drawLocalityDensity(
+                            cells = localityDensityCells,
+                            origin = origin,
+                            center = center,
+                            pan = renderPan.copy(x = renderPan.x + copyOffset),
+                            metersPerPixel = metersPerPixel,
+                            color = cityDotColor
+                        )
+                    } else {
+                        drawWorldLocalityDots(
+                            cityPoints = nearbyCityPoints,
+                            origin = origin,
+                            center = center,
+                            pan = renderPan.copy(x = renderPan.x + copyOffset),
+                            metersPerPixel = metersPerPixel,
+                            color = cityDotColor
+                        )
+                    }
+                }
+                if (showFlatDetails) horizontalCopies.forEach { copyOffset ->
                     drawMapBoundaries(
-                        boundaryRings = countryBoundaries,
-                        viewport = viewportGeoBounds,
-                        origin = origin,
-                        center = center,
-                        pan = renderPan.copy(x = renderPan.x + copyOffset),
-                        metersPerPixel = metersPerPixel,
-                        color = boundaryColor,
-                        strokeWidth = 0.9.dp.toPx(),
-                        visibleWhen = metersPerPixel <= countryBoundaryMetersPerPixel
-                    )
-                    drawMapBoundaries(
-                        boundaryRings = brazilStateBoundaries,
+                        boundaryRings = highDetailRegionBoundaries,
                         viewport = viewportGeoBounds,
                         origin = origin,
                         center = center,
@@ -657,11 +723,11 @@ private fun OrbitMapContent(
                         visibleWhen = metersPerPixel <= stateBoundaryMetersPerPixel
                     )
                 }
-                horizontalCopies.forEach { copyOffset ->
+                if (showFlatDetails) horizontalCopies.forEach { copyOffset ->
                     drawOfflineMapLabels(
                         countryLabels = countryLabels,
                         adminRegions = adminRegions,
-                        cityPoints = cityPoints,
+                        cityPoints = nearbyCityPoints,
                         origin = origin,
                         center = center,
                         pan = renderPan.copy(x = renderPan.x + copyOffset),
@@ -671,8 +737,8 @@ private fun OrbitMapContent(
                         occupiedBoxes = occupiedUserLabelBoxes,
                         showContinentOverview = wholeMapHeightVisible
                     )
-                    drawBrazilPlaceLabels(
-                        places = brazilPlaces,
+                    drawHighDetailPlaceLabels(
+                        places = highDetailPlaces,
                         viewport = viewportGeoBounds,
                         origin = origin,
                         center = center,
@@ -793,7 +859,7 @@ private fun OrbitMapContent(
 }
 
 @Composable
-private fun CenterOrbitAvatar(
+internal fun CenterOrbitAvatar(
     name: String,
     emoji: String,
     backgroundColor: Color,
@@ -835,7 +901,7 @@ private fun CenterOrbitAvatar(
 }
 
 @Composable
-private fun OrbitUserAvatar(
+internal fun OrbitUserAvatar(
     user: OrbitUser,
     label: String?,
     onClick: () -> Unit,
@@ -880,7 +946,7 @@ private fun OrbitUserAvatar(
 }
 
 @Composable
-private fun OrbitUserDistanceCard(
+internal fun OrbitUserDistanceCard(
     user: OrbitUser,
     onClick: () -> Unit
 ) {
@@ -938,7 +1004,7 @@ private fun OrbitUserDistanceCard(
 }
 
 @Composable
-private fun MapUserBottomCard(
+internal fun MapUserBottomCard(
     user: OrbitUser,
     onClose: () -> Unit,
     onOpenChat: () -> Unit,
@@ -1038,7 +1104,7 @@ private fun MapUserBottomCard(
 }
 
 @Composable
-private fun SelfMapQuickSettingsSheet(
+internal fun SelfMapQuickSettingsSheet(
     name: String,
     emoji: String,
     profileMapColor: Color,
@@ -1193,2380 +1259,4 @@ private fun SelfMapQuickSettingsSheet(
             }
         }
     }
-}
-
-@Composable
-private fun rememberOfflineLandData(): OfflineLandData {
-    val context = LocalContext.current
-    return remember(context) {
-        OfflineLandData(
-            land50m = loadOfflineLandRings(context, "map/ne_50m_land.min.geojson"),
-            land110m = loadOfflineLandRings(context, "map/ne_110m_land.min.geojson")
-        )
-    }
-}
-
-@Composable
-private fun rememberOfflineCityPoints(): List<CityPoint> {
-    val context = LocalContext.current
-    return remember(context) {
-        loadOfflineCityPoints(context)
-    }
-}
-
-@Composable
-private fun rememberOfflineCountryLabels(): List<CountryLabel> {
-    val context = LocalContext.current
-    return remember(context) {
-        loadOfflineCountryLabels(context)
-    }
-}
-
-@Composable
-private fun rememberOfflineAdminRegions(): List<AdminRegion> {
-    val context = LocalContext.current
-    return remember(context) {
-        loadOfflineAdminRegions(context)
-    }
-}
-
-@Composable
-private fun rememberBrazilPlaces(): BrazilPlacesData {
-    val context = LocalContext.current
-    return remember(context) {
-        loadBrazilPlaces(context)
-    }
-}
-
-@Composable
-private fun rememberBrazilStateBoundaries(): List<BoundaryRing> {
-    val context = LocalContext.current
-    return remember(context) {
-        loadBoundaryRings(context, "map/br_state_boundaries.json")
-    }
-}
-
-@Composable
-private fun rememberCountryBoundaries(): List<BoundaryRing> {
-    val context = LocalContext.current
-    return remember(context) {
-        loadBoundaryRings(context, "map/ne_country_boundaries_50m.json")
-    }
-}
-
-private fun loadOfflineLandRings(context: Context, assetPath: String): List<LandRing> {
-    val raw = runCatching {
-        context.assets.open(assetPath).bufferedReader().use { it.readText() }
-    }.getOrNull() ?: return emptyList()
-    val features = runCatching { JSONObject(raw).optJSONArray("features") }.getOrNull() ?: return emptyList()
-    return buildList {
-        for (featureIndex in 0 until features.length()) {
-            val geometry = features.optJSONObject(featureIndex)?.optJSONObject("geometry") ?: continue
-            when (geometry.optString("type")) {
-                "Polygon" -> addPolygonRings(geometry.optJSONArray("coordinates"))
-                "MultiPolygon" -> {
-                    val polygons = geometry.optJSONArray("coordinates") ?: continue
-                    for (polygonIndex in 0 until polygons.length()) {
-                        addPolygonRings(polygons.optJSONArray(polygonIndex))
-                    }
-                }
-            }
-        }
-    }
-}
-
-private fun loadOfflineCityPoints(context: Context): List<CityPoint> {
-    val raw = runCatching {
-        context.assets.open("map/ne_populated_places.json").bufferedReader().use { it.readText() }
-    }.getOrNull() ?: return emptyList()
-    val cities = runCatching { JSONArray(raw) }.getOrNull() ?: return emptyList()
-    return buildList {
-        for (index in 0 until cities.length()) {
-            val city = cities.optJSONObject(index) ?: continue
-            val name = city.optString("name").trim()
-            if (name.isBlank()) continue
-            val longitude = city.optDouble("lon")
-            val latitude = city.optDouble("lat")
-            if (isInsideBrazilLabelBounds(longitude, latitude)) continue
-            add(
-                CityPoint(
-                    name = name,
-                    longitude = longitude,
-                    latitude = latitude,
-                    importanceRank = cityImportanceRank(name)
-                )
-            )
-        }
-    }
-}
-
-private fun isInsideBrazilLabelBounds(longitude: Double, latitude: Double): Boolean {
-    return longitude in -74.5..-33.0 && latitude in -34.2..6.0
-}
-
-private fun loadOfflineCountryLabels(context: Context): List<CountryLabel> {
-    val raw = runCatching {
-        context.assets.open("map/ne_countries_labels.json").bufferedReader().use { it.readText() }
-    }.getOrNull() ?: return emptyList()
-    val labels = runCatching { JSONArray(raw) }.getOrNull() ?: return emptyList()
-    return buildList {
-        for (index in 0 until labels.length()) {
-            val label = labels.optJSONObject(index) ?: continue
-            val name = label.optString("name").trim()
-            if (name.isBlank()) continue
-            add(
-                CountryLabel(
-                    name = name,
-                    longitude = label.optDouble("lon"),
-                    latitude = label.optDouble("lat"),
-                    rank = label.optInt("rank", 99),
-                    population = label.optLong("pop", 0L),
-                    minZoom = label.optDouble("min", 0.0).toFloat(),
-                    maxZoom = label.optDouble("max", 99.0).toFloat()
-                )
-            )
-        }
-    }
-}
-
-private fun loadOfflineAdminRegions(context: Context): List<AdminRegion> {
-    val raw = runCatching {
-        context.assets.open("map/ne_admin1_regions.json").bufferedReader().use { it.readText() }
-    }.getOrNull() ?: return emptyList()
-    val regions = runCatching { JSONArray(raw) }.getOrNull() ?: return emptyList()
-    return buildList {
-        for (index in 0 until regions.length()) {
-            val region = regions.optJSONObject(index) ?: continue
-            val name = region.optString("name").trim()
-            val bbox = region.optJSONArray("bbox") ?: continue
-            if (name.isBlank() || bbox.length() < 4) continue
-            add(
-                AdminRegion(
-                    name = name,
-                    country = region.optString("country").trim(),
-                    longitude = region.optDouble("lon"),
-                    latitude = region.optDouble("lat"),
-                    minLongitude = bbox.optDouble(0),
-                    minLatitude = bbox.optDouble(1),
-                    maxLongitude = bbox.optDouble(2),
-                    maxLatitude = bbox.optDouble(3),
-                    rank = region.optInt("rank", 9)
-                )
-            )
-        }
-    }
-}
-
-private fun loadBrazilPlaces(context: Context): BrazilPlacesData {
-    val raw = runCatching {
-        context.assets.open("map/br_places.json").bufferedReader().use { it.readText() }
-    }.getOrNull() ?: return BrazilPlacesData(emptyList())
-    val places = runCatching { JSONArray(raw) }.getOrNull() ?: return BrazilPlacesData(emptyList())
-    return BrazilPlacesData(buildList {
-        for (index in 0 until places.length()) {
-            val place = places.optJSONObject(index) ?: continue
-            val name = place.optString("n").trim()
-            if (name.isBlank()) continue
-            add(
-                BrazilPlacePoint(
-                    name = name,
-                    longitude = place.optDouble("lon"),
-                    latitude = place.optDouble("lat"),
-                    kind = when (place.optString("k")) {
-                        "d" -> BrazilPlaceKind.District
-                        "s" -> BrazilPlaceKind.Subdistrict
-                        else -> BrazilPlaceKind.Municipality
-                    },
-                    rank = place.optInt("rank", 3)
-                )
-            )
-        }
-    })
-}
-
-private fun loadBoundaryRings(context: Context, assetPath: String): List<BoundaryRing> {
-    val raw = runCatching {
-        context.assets.open(assetPath).bufferedReader().use { it.readText() }
-    }.getOrNull() ?: return emptyList()
-    val features = runCatching { JSONArray(raw) }.getOrNull() ?: return emptyList()
-    return buildList {
-        for (featureIndex in 0 until features.length()) {
-            val feature = features.optJSONObject(featureIndex) ?: continue
-            val rings = feature.optJSONArray("rings") ?: continue
-            for (ringIndex in 0 until rings.length()) {
-                boundaryRingFromJson(rings.optJSONArray(ringIndex))?.let { add(it) }
-            }
-        }
-    }
-}
-
-private fun boundaryRingFromJson(ring: JSONArray?): BoundaryRing? {
-    if (ring == null || ring.length() < 2) return null
-    var minLongitude = Double.POSITIVE_INFINITY
-    var minLatitude = Double.POSITIVE_INFINITY
-    var maxLongitude = Double.NEGATIVE_INFINITY
-    var maxLatitude = Double.NEGATIVE_INFINITY
-    val points = buildList {
-        for (pointIndex in 0 until ring.length()) {
-            val point = ring.optJSONArray(pointIndex) ?: continue
-            val longitude = point.optDouble(0)
-            val latitude = point.optDouble(1)
-            if (!longitude.isFinite() || !latitude.isFinite()) continue
-            minLongitude = minOf(minLongitude, longitude)
-            minLatitude = minOf(minLatitude, latitude)
-            maxLongitude = maxOf(maxLongitude, longitude)
-            maxLatitude = maxOf(maxLatitude, latitude)
-            add(GeoPoint(longitude = longitude, latitude = latitude))
-        }
-    }
-    if (points.size < 2) return null
-    return BoundaryRing(
-        points = points.withContinuousLongitudes(),
-        minLongitude = minLongitude,
-        minLatitude = minLatitude,
-        maxLongitude = maxLongitude,
-        maxLatitude = maxLatitude
-    )
-}
-
-private data class OfflineLandData(
-    val land50m: List<LandRing>,
-    val land110m: List<LandRing>
-) {
-    fun landRingsFor(metersPerPixel: Float): List<LandRing> {
-        return when {
-            metersPerPixel <= 50f -> land50m
-            metersPerPixel <= 110f -> land110m
-            else -> land110m
-        }
-    }
-}
-
-private data class BrazilPlacesData(
-    val all: List<BrazilPlacePoint>
-) {
-    private val byCell: Map<Long, List<BrazilPlacePoint>> = all.groupBy { place ->
-        brazilPlaceCellKey(place.longitude, place.latitude)
-    }
-
-    fun near(viewport: GeoBounds, paddingDegrees: Double): List<BrazilPlacePoint> {
-        if (all.isEmpty()) return emptyList()
-        val minLon = kotlin.math.floor(viewport.minLongitude - paddingDegrees).toInt()
-        val maxLon = kotlin.math.ceil(viewport.maxLongitude + paddingDegrees).toInt()
-        val minLat = kotlin.math.floor(viewport.minLatitude - paddingDegrees).toInt()
-        val maxLat = kotlin.math.ceil(viewport.maxLatitude + paddingDegrees).toInt()
-        return buildList {
-            for (lon in minLon..maxLon) {
-                for (lat in minLat..maxLat) {
-                    byCell[brazilPlaceCellKey(lon.toDouble(), lat.toDouble())]?.let { addAll(it) }
-                }
-            }
-        }
-    }
-}
-
-private fun brazilPlaceCellKey(longitude: Double, latitude: Double): Long {
-    val lonCell = kotlin.math.floor(longitude).toInt() + 180
-    val latCell = kotlin.math.floor(latitude).toInt() + 90
-    return (lonCell.toLong() shl 32) xor (latCell.toLong() and 0xffffffffL)
-}
-
-private fun MutableList<LandRing>.addPolygonRings(polygon: JSONArray?) {
-    if (polygon == null) return
-    for (ringIndex in 0 until polygon.length()) {
-        val ring = polygon.optJSONArray(ringIndex) ?: continue
-        val points = buildList {
-            for (pointIndex in 0 until ring.length()) {
-                val point = ring.optJSONArray(pointIndex) ?: continue
-                add(
-                    GeoPoint(
-                        longitude = point.optDouble(0),
-                        latitude = point.optDouble(1)
-                    )
-                )
-            }
-        }
-        if (points.size >= 3) {
-            add(createLandRing(points))
-        }
-    }
-}
-
-private fun createLandRing(points: List<GeoPoint>): LandRing {
-    val continuousPoints = points.withContinuousLongitudes()
-    return LandRing(
-        detailedPoints = continuousPoints,
-        balancedPoints = continuousPoints.simplifiedByStride(stride = 3),
-        overviewPoints = continuousPoints.simplifiedByStride(stride = 8)
-    )
-}
-
-private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawOfflineMapLabels(
-    countryLabels: List<CountryLabel>,
-    adminRegions: List<AdminRegion>,
-    cityPoints: List<CityPoint>,
-    origin: Location,
-    center: Offset,
-    pan: Offset,
-    metersPerPixel: Float,
-    labelColor: Color,
-    dotColor: Color,
-    occupiedBoxes: List<LabelBox>,
-    showContinentOverview: Boolean
-) {
-    if (countryLabels.isEmpty() && adminRegions.isEmpty() && cityPoints.isEmpty()) return
-    val labelZoom = mapLabelZoom(metersPerPixel)
-    val crowdedCountryLimit = ((size.width * size.height) / 32_000f).roundToInt().coerceIn(8, 42)
-    val crowdedAdminLimit = ((size.width * size.height) / 34_000f).roundToInt().coerceIn(8, 38)
-    val crowdedCityLimit = crowdedCityLimitForViewport(size.width, size.height)
-    val continentPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = labelColor.copy(alpha = 0.72f).toArgb()
-        textSize = 15.sp.toPx()
-        typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
-    }
-    val countryPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = labelColor.copy(alpha = 0.90f).toArgb()
-        textSize = 13.sp.toPx()
-        typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
-    }
-    val adminPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = labelColor.copy(alpha = 0.86f).toArgb()
-        textSize = 12.sp.toPx()
-        typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
-    }
-    val cityPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = labelColor.toArgb()
-        textSize = 11.sp.toPx()
-        typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.NORMAL)
-    }
-    val latScale = 111_320.0
-    val lonScale = (111_320.0 * cos(Math.toRadians(origin.latitude))).coerceAtLeast(1e-6)
-    val placedLabels = mutableListOf<LabelBox>()
-    val labelRenderPadding = 220f
-
-    if (showContinentOverview || metersPerPixel > continentOnlyMetersPerPixel) {
-        drawContinentLabels(
-            origin = origin,
-            center = center,
-            pan = pan,
-            metersPerPixel = metersPerPixel,
-            lonScale = lonScale,
-            latScale = latScale,
-            paint = continentPaint,
-            renderPadding = labelRenderPadding
-        )
-        return
-    }
-
-    if (metersPerPixel <= adminLabelMetersPerPixel && metersPerPixel > cityLabelMetersPerPixel) {
-        val placedAdminLabels = drawAdminRegionLabels(
-            adminRegions = adminRegions,
-            origin = origin,
-            center = center,
-            pan = pan,
-            metersPerPixel = metersPerPixel,
-            lonScale = lonScale,
-            latScale = latScale,
-            paint = adminPaint,
-            occupiedBoxes = occupiedBoxes,
-            renderPadding = labelRenderPadding,
-            labelLimit = crowdedAdminLimit
-        )
-        drawCountryLabelsWithoutAdminRegions(
-            countryLabels = countryLabels,
-            administeredCountryKeys = adminRegions.mapNotNull { it.country.mapLabelKey().takeIf { key -> key.isNotBlank() } }.toSet(),
-            origin = origin,
-            center = center,
-            pan = pan,
-            metersPerPixel = metersPerPixel,
-            lonScale = lonScale,
-            latScale = latScale,
-            paint = countryPaint,
-            occupiedBoxes = occupiedBoxes,
-            existingLabels = placedAdminLabels,
-            renderPadding = labelRenderPadding,
-            labelZoom = labelZoom,
-            labelLimit = crowdedCountryLimit
-        )
-        return
-    }
-
-    if (metersPerPixel <= cityLabelMetersPerPixel) {
-        drawCityLabels(
-            cityPoints = cityPoints,
-            origin = origin,
-            center = center,
-            pan = pan,
-            metersPerPixel = metersPerPixel,
-            lonScale = lonScale,
-            latScale = latScale,
-            paint = cityPaint,
-            dotColor = dotColor,
-            occupiedBoxes = occupiedBoxes,
-            renderPadding = labelRenderPadding,
-            crowdedCityLimit = crowdedCityLimit
-        )
-        return
-    }
-
-    val visibleCountryLabels = countryLabels
-        .asSequence()
-        .filter { labelZoom >= it.minZoom - 0.35f && labelZoom <= it.maxZoom + 1.25f }
-        .mapNotNull { country ->
-            val point = mapLabelPoint(
-                longitude = country.longitude,
-                latitude = country.latitude,
-                origin = origin,
-                center = center,
-                pan = pan,
-                metersPerPixel = metersPerPixel,
-                lonScale = lonScale,
-                latScale = latScale
-            )
-            if (point.isNearViewport(size.width, size.height, labelRenderPadding)) country to point else null
-        }
-        .sortedWith(
-            compareBy<Pair<CountryLabel, Offset>> { it.first.rank }
-                .thenByDescending { it.first.population }
-        )
-        .toList()
-    val countryLimit = if (visibleCountryLabels.size <= crowdedCountryLimit * 2) {
-        Int.MAX_VALUE
-    } else {
-        crowdedCountryLimit
-    }
-    visibleCountryLabels
-        .forEach { (country, point) ->
-            if (placedLabels.count { it.kind == LabelKind.Country } >= countryLimit) return@forEach
-            val box = labelBox(country.name, point, countryPaint, LabelKind.Country, xOffset = 0f, yOffset = -7.dp.toPx())
-            if (
-                box.isInsideRenderBand(size.width, size.height, labelRenderPadding) &&
-                isLabelPlaceable(box, placedLabels, occupiedBoxes, padding = 8f)
-            ) {
-                drawContext.canvas.nativeCanvas.drawText(country.name, box.textX, box.textY, countryPaint)
-                placedLabels += box
-            }
-        }
-}
-
-private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAdminRegionLabels(
-    adminRegions: List<AdminRegion>,
-    origin: Location,
-    center: Offset,
-    pan: Offset,
-    metersPerPixel: Float,
-    lonScale: Double,
-    latScale: Double,
-    paint: Paint,
-    occupiedBoxes: List<LabelBox>,
-    renderPadding: Float,
-    labelLimit: Int
-): List<LabelBox> {
-    if (adminRegions.isEmpty()) return emptyList()
-    val placedLabels = mutableListOf<LabelBox>()
-    adminRegions
-        .asSequence()
-        .mapNotNull { region ->
-            val point = mapLabelPoint(
-                longitude = region.longitude,
-                latitude = region.latitude,
-                origin = origin,
-                center = center,
-                pan = pan,
-                metersPerPixel = metersPerPixel,
-                lonScale = lonScale,
-                latScale = latScale
-            )
-            if (point.isNearViewport(size.width, size.height, renderPadding)) region to point else null
-        }
-        .sortedWith(
-            compareBy<Pair<AdminRegion, Offset>> { it.first.rank }
-                .thenBy { it.first.name }
-        )
-        .forEach { (region, point) ->
-            if (placedLabels.size >= labelLimit) return@forEach
-            val box = labelBox(region.name, point, paint, LabelKind.Admin, xOffset = 0f, yOffset = -6.dp.toPx())
-            if (
-                box.isInsideRenderBand(size.width, size.height, renderPadding) &&
-                isLabelPlaceable(box, placedLabels, occupiedBoxes, padding = 8f)
-            ) {
-                drawContext.canvas.nativeCanvas.drawText(region.name, box.textX, box.textY, paint)
-                placedLabels += box
-            }
-        }
-    return placedLabels
-}
-
-private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawCountryLabelsWithoutAdminRegions(
-    countryLabels: List<CountryLabel>,
-    administeredCountryKeys: Set<String>,
-    origin: Location,
-    center: Offset,
-    pan: Offset,
-    metersPerPixel: Float,
-    lonScale: Double,
-    latScale: Double,
-    paint: Paint,
-    occupiedBoxes: List<LabelBox>,
-    existingLabels: List<LabelBox>,
-    renderPadding: Float,
-    labelZoom: Float,
-    labelLimit: Int
-) {
-    if (countryLabels.isEmpty()) return
-    val placedLabels = existingLabels.toMutableList()
-    countryLabels
-        .asSequence()
-        .filter { country -> country.name.mapLabelKey() !in administeredCountryKeys }
-        .filter { country -> labelZoom >= country.minZoom - 0.35f }
-        .mapNotNull { country ->
-            val point = mapLabelPoint(
-                longitude = country.longitude,
-                latitude = country.latitude,
-                origin = origin,
-                center = center,
-                pan = pan,
-                metersPerPixel = metersPerPixel,
-                lonScale = lonScale,
-                latScale = latScale
-            )
-            if (point.isNearViewport(size.width, size.height, renderPadding)) country to point else null
-        }
-        .sortedWith(
-            compareBy<Pair<CountryLabel, Offset>> { it.second.viewportGridIndex(size.width, size.height) }
-                .thenBy { it.first.rank }
-                .thenByDescending { it.first.population }
-        )
-        .forEach { (country, point) ->
-            if (placedLabels.count { it.kind == LabelKind.Country } >= labelLimit) return@forEach
-            val box = labelBox(country.name, point, paint, LabelKind.Country, xOffset = 0f, yOffset = -7.dp.toPx())
-            if (
-                box.isInsideRenderBand(size.width, size.height, renderPadding) &&
-                isLabelPlaceable(box, placedLabels, occupiedBoxes, padding = 8f)
-            ) {
-                drawContext.canvas.nativeCanvas.drawText(country.name, box.textX, box.textY, paint)
-                placedLabels += box
-            }
-        }
-}
-
-private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawCityLabels(
-    cityPoints: List<CityPoint>,
-    origin: Location,
-    center: Offset,
-    pan: Offset,
-    metersPerPixel: Float,
-    lonScale: Double,
-    latScale: Double,
-    paint: Paint,
-    dotColor: Color,
-    occupiedBoxes: List<LabelBox>,
-    renderPadding: Float,
-    crowdedCityLimit: Int
-) {
-    val placedLabels = mutableListOf<LabelBox>()
-    val visibleCityLabels = cityPoints
-        .asSequence()
-        .filter { city -> city.isVisibleAt(metersPerPixel) }
-        .filter { city -> city.preProjectionSampledAt(metersPerPixel) }
-        .mapNotNull { city ->
-            val point = mapLabelPoint(
-                longitude = city.longitude,
-                latitude = city.latitude,
-                origin = origin,
-                center = center,
-                pan = pan,
-                metersPerPixel = metersPerPixel,
-                lonScale = lonScale,
-                latScale = latScale
-            )
-            if (point.isNearViewport(size.width, size.height, renderPadding)) city to point else null
-        }
-        .toList()
-    val cityStep = if (visibleCityLabels.size <= crowdedCityLimit * 2) {
-        1
-    } else {
-        citySampleStep(metersPerPixel)
-    }
-    val cityLimit = if (visibleCityLabels.size <= crowdedCityLimit * 2 || metersPerPixel <= 240f) {
-        Int.MAX_VALUE
-    } else {
-        cityLimitForZoom(metersPerPixel, crowdedCityLimit)
-    }
-    visibleCityLabels
-        .asSequence()
-        .filter { (city, _) -> cityStep == 1 || city.importanceRank <= 1 || city.stableSampleIndex() % cityStep == 0 }
-        .toList()
-        .distributedAcrossViewport(
-            width = size.width,
-            height = size.height,
-            comparator = compareBy<Pair<CityPoint, Offset>> { it.first.importanceRank }
-                .thenBy { it.first.stableSampleIndex() }
-        )
-        .forEach { (city, point) ->
-            if (placedLabels.count { it.kind == LabelKind.City } >= cityLimit) return@forEach
-            val placement = cityLabelPlacement(
-                text = city.name,
-                point = point,
-                paint = paint,
-                placedLabels = placedLabels,
-                occupiedBoxes = occupiedBoxes,
-                width = size.width,
-                height = size.height,
-                renderPadding = renderPadding,
-                normalXOffset = 5.dp.toPx(),
-                normalYOffset = -5.dp.toPx()
-            )
-            if (placement != null) {
-                drawCircle(color = dotColor, radius = 2.5.dp.toPx(), center = point)
-                if (placement.pinned) {
-                    drawLine(
-                        color = dotColor.copy(alpha = 0.72f),
-                        start = point,
-                        end = placement.box.connectorPointToward(point),
-                        strokeWidth = 1.dp.toPx(),
-                        cap = StrokeCap.Round
-                    )
-                }
-                drawContext.canvas.nativeCanvas.drawText(city.name, placement.box.textX, placement.box.textY, paint)
-                placedLabels += placement.box
-            }
-        }
-}
-
-private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawOfflineWorldLand(
-    landRings: List<LandRing>,
-    origin: Location,
-    center: Offset,
-    pan: Offset,
-    metersPerPixel: Float,
-    color: Color,
-    outlineColor: Color
-) {
-    if (landRings.isEmpty()) return
-    val latScale = 111_320.0
-    val lonScale = (111_320.0 * cos(Math.toRadians(origin.latitude))).coerceAtLeast(1e-6)
-    val renderPadding = 320.dp.toPx()
-    landRings.forEach { ring ->
-        val points = ring.pointsFor(metersPerPixel)
-        if (points.size < 3) return@forEach
-        val path = Path()
-        var minX = Float.POSITIVE_INFINITY
-        var maxX = Float.NEGATIVE_INFINITY
-        var minY = Float.POSITIVE_INFINITY
-        var maxY = Float.NEGATIVE_INFINITY
-        points.forEachIndexed { index, geoPoint ->
-            val xMeters = (geoPoint.longitude - origin.longitude) * lonScale
-            val yMeters = (geoPoint.latitude - origin.latitude) * latScale
-            val x = center.x + pan.x + (xMeters / metersPerPixel).toFloat()
-            val y = center.y + pan.y - (yMeters / metersPerPixel).toFloat()
-            if (!x.isFinite() || !y.isFinite()) return@forEach
-            if (index == 0) {
-                path.moveTo(x, y)
-            } else {
-                path.lineTo(x, y)
-            }
-            if (x < minX) minX = x
-            if (x > maxX) maxX = x
-            if (y < minY) minY = y
-            if (y > maxY) maxY = y
-        }
-        val intersectsViewport = maxX >= -renderPadding &&
-            minX <= size.width + renderPadding &&
-            maxY >= -renderPadding &&
-            minY <= size.height + renderPadding
-        if (!intersectsViewport) return@forEach
-
-        path.close()
-        drawPath(path = path, color = color)
-        drawPath(path = path, color = outlineColor, style = Stroke(width = 1.dp.toPx()))
-    }
-}
-
-private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawMapBoundaries(
-    boundaryRings: List<BoundaryRing>,
-    viewport: GeoBounds,
-    origin: Location,
-    center: Offset,
-    pan: Offset,
-    metersPerPixel: Float,
-    color: Color,
-    strokeWidth: Float,
-    visibleWhen: Boolean
-) {
-    if (!visibleWhen || boundaryRings.isEmpty()) return
-    val latScale = 111_320.0
-    val lonScale = (111_320.0 * cos(Math.toRadians(origin.latitude))).coerceAtLeast(1e-6)
-    val renderPadding = 260.dp.toPx()
-    boundaryRings
-        .asSequence()
-        .filter { it.intersects(viewport, paddingDegrees = 2.5) }
-        .forEach { ring ->
-            val path = Path()
-            var hasPoint = false
-            var minX = Float.POSITIVE_INFINITY
-            var maxX = Float.NEGATIVE_INFINITY
-            var minY = Float.POSITIVE_INFINITY
-            var maxY = Float.NEGATIVE_INFINITY
-            ring.points.forEachIndexed { index, geoPoint ->
-                val point = mapLabelPoint(
-                    longitude = geoPoint.longitude,
-                    latitude = geoPoint.latitude,
-                    origin = origin,
-                    center = center,
-                    pan = pan,
-                    metersPerPixel = metersPerPixel,
-                    lonScale = lonScale,
-                    latScale = latScale
-                )
-                if (!point.x.isFinite() || !point.y.isFinite()) return@forEachIndexed
-                if (index == 0) path.moveTo(point.x, point.y) else path.lineTo(point.x, point.y)
-                hasPoint = true
-                minX = minOf(minX, point.x)
-                maxX = maxOf(maxX, point.x)
-                minY = minOf(minY, point.y)
-                maxY = maxOf(maxY, point.y)
-            }
-            if (!hasPoint) return@forEach
-            val intersectsViewport = maxX >= -renderPadding &&
-                minX <= size.width + renderPadding &&
-                maxY >= -renderPadding &&
-                minY <= size.height + renderPadding
-            if (intersectsViewport) {
-                drawPath(path = path, color = color, style = Stroke(width = strokeWidth, cap = StrokeCap.Round))
-            }
-        }
-}
-
-private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawBrazilPlaceLabels(
-    places: BrazilPlacesData,
-    viewport: GeoBounds,
-    origin: Location,
-    center: Offset,
-    pan: Offset,
-    metersPerPixel: Float,
-    labelColor: Color,
-    dotColor: Color,
-    occupiedBoxes: List<LabelBox>
-) {
-    if (places.all.isEmpty() || metersPerPixel > brazilMunicipalityMetersPerPixel) return
-    val latScale = 111_320.0
-    val lonScale = (111_320.0 * cos(Math.toRadians(origin.latitude))).coerceAtLeast(1e-6)
-    val renderPadding = 140f
-    val placePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = labelColor.toArgb()
-        textSize = when {
-            metersPerPixel <= brazilSubdistrictMetersPerPixel -> 10.sp.toPx()
-            metersPerPixel <= brazilDistrictMetersPerPixel -> 10.5.sp.toPx()
-            else -> 11.sp.toPx()
-        }
-        typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.NORMAL)
-    }
-    val visible = places.near(viewport, paddingDegrees = 0.9)
-        .asSequence()
-        .filter { place -> place.isVisibleAtBrazilZoom(metersPerPixel) }
-        .filter { place -> viewport.contains(place.longitude, place.latitude, paddingDegrees = 0.8) }
-        .mapNotNull { place ->
-            val point = mapLabelPoint(
-                longitude = place.longitude,
-                latitude = place.latitude,
-                origin = origin,
-                center = center,
-                pan = pan,
-                metersPerPixel = metersPerPixel,
-                lonScale = lonScale,
-                latScale = latScale
-            )
-            if (point.isNearViewport(size.width, size.height, renderPadding)) place to point else null
-        }
-        .toList()
-    if (visible.isEmpty()) return
-
-    visible.forEach { (place, point) ->
-        if (place.kind == BrazilPlaceKind.Municipality || metersPerPixel <= brazilDistrictMetersPerPixel) {
-            val radius = if (place.kind == BrazilPlaceKind.Municipality) 2.25.dp.toPx() else 1.45.dp.toPx()
-            drawCircle(color = dotColor.copy(alpha = place.dotAlpha()), radius = radius, center = point)
-        }
-    }
-
-    val labelLimit = brazilLabelLimit(metersPerPixel, size.width, size.height)
-    val placedLabels = mutableListOf<LabelBox>()
-    visible
-        .distributedAcrossViewport(
-            width = size.width,
-            height = size.height,
-            comparator = compareBy<Pair<BrazilPlacePoint, Offset>> { it.first.rank }
-                .thenBy { it.first.kind.ordinal }
-                .thenBy { it.first.name }
-        )
-        .forEach { (place, point) ->
-            if (placedLabels.size >= labelLimit) return@forEach
-            val placement = cityLabelPlacement(
-                text = place.name,
-                point = point,
-                paint = placePaint,
-                placedLabels = placedLabels,
-                occupiedBoxes = occupiedBoxes,
-                width = size.width,
-                height = size.height,
-                renderPadding = renderPadding,
-                normalXOffset = 5.dp.toPx(),
-                normalYOffset = -5.dp.toPx()
-            ) ?: return@forEach
-            if (placement.pinned) {
-                drawLine(
-                    color = dotColor.copy(alpha = 0.50f),
-                    start = point,
-                    end = placement.box.connectorPointToward(point),
-                    strokeWidth = 0.8.dp.toPx(),
-                    cap = StrokeCap.Round
-                )
-            }
-            drawContext.canvas.nativeCanvas.drawText(place.name, placement.box.textX, placement.box.textY, placePaint)
-            placedLabels += placement.box
-        }
-}
-
-private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawContinentLabels(
-    origin: Location,
-    center: Offset,
-    pan: Offset,
-    metersPerPixel: Float,
-    lonScale: Double,
-    latScale: Double,
-    paint: Paint,
-    renderPadding: Float
-) {
-    continentLabels.forEach { continent ->
-        val point = mapLabelPoint(
-            longitude = continent.longitude,
-            latitude = continent.latitude,
-            origin = origin,
-            center = center,
-            pan = pan,
-            metersPerPixel = metersPerPixel,
-            lonScale = lonScale,
-            latScale = latScale
-        )
-        if (!point.isNearViewport(size.width, size.height, renderPadding)) return@forEach
-        val box = labelBox(continent.name, point, paint, LabelKind.Continent, xOffset = 0f, yOffset = 0f)
-        if (box.isInsideRenderBand(size.width, size.height, renderPadding)) {
-            drawContext.canvas.nativeCanvas.drawText(continent.name, box.textX, box.textY, paint)
-        }
-    }
-}
-
-private fun LandRing.pointsFor(metersPerPixel: Float): List<GeoPoint> {
-    return when {
-        metersPerPixel > 110f -> overviewPoints
-        metersPerPixel > 50f -> balancedPoints
-        else -> detailedPoints
-    }
-}
-
-private fun List<GeoPoint>.simplifiedByStride(stride: Int): List<GeoPoint> {
-    if (stride <= 1 || size <= 10) return this
-    return buildList {
-        forEachIndexed { index, point ->
-            if (index == 0 || index == lastIndex || index % stride == 0) {
-                add(point)
-            }
-        }
-        if (size < 3) {
-            clear()
-            addAll(this@simplifiedByStride)
-        }
-    }
-}
-
-private fun List<GeoPoint>.withContinuousLongitudes(): List<GeoPoint> {
-    val source = this
-    if (source.isEmpty()) return emptyList()
-    return buildList(source.size) {
-        val firstPoint = source.first()
-        var previousLongitude = firstPoint.longitude
-        add(firstPoint)
-        source.drop(1).forEach { point ->
-            var longitude = point.longitude
-            while (longitude - previousLongitude > 180.0) longitude -= 360.0
-            while (longitude - previousLongitude < -180.0) longitude += 360.0
-            add(point.copy(longitude = longitude))
-            previousLongitude = longitude
-        }
-    }
-}
-
-private fun CityPoint.isVisibleAt(metersPerPixel: Float): Boolean {
-    return when (importanceRank) {
-        0 -> metersPerPixel <= cityLabelMetersPerPixel
-        1 -> metersPerPixel <= cityLabelMetersPerPixel * 0.75f
-        else -> metersPerPixel <= cityTitleMetersPerPixel * 1.5f
-    }
-}
-
-private fun CityPoint.preProjectionSampledAt(metersPerPixel: Float): Boolean {
-    val step = preProjectionCitySampleStep(metersPerPixel)
-    return step == 1 || importanceRank <= 1 || stableSampleIndex() % step == 0
-}
-
-private fun BrazilPlacePoint.isVisibleAtBrazilZoom(metersPerPixel: Float): Boolean {
-    return when (kind) {
-        BrazilPlaceKind.Municipality -> metersPerPixel <= brazilMunicipalityMetersPerPixel
-        BrazilPlaceKind.District -> metersPerPixel <= brazilDistrictMetersPerPixel
-        BrazilPlaceKind.Subdistrict -> metersPerPixel <= brazilSubdistrictMetersPerPixel
-    }
-}
-
-private fun BrazilPlacePoint.dotAlpha(): Float {
-    return when (kind) {
-        BrazilPlaceKind.Municipality -> 0.90f
-        BrazilPlaceKind.District -> 0.68f
-        BrazilPlaceKind.Subdistrict -> 0.48f
-    }
-}
-
-private fun brazilLabelLimit(metersPerPixel: Float, width: Float, height: Float): Int {
-    val base = ((width * height) / 14_000f).roundToInt().coerceIn(16, 126)
-    return when {
-        metersPerPixel > 460f -> base.coerceAtMost(34)
-        metersPerPixel > 260f -> base.coerceAtMost(52)
-        metersPerPixel > 120f -> base.coerceAtMost(82)
-        else -> base
-    }
-}
-
-private fun cityLimitForZoom(metersPerPixel: Float, crowdedCityLimit: Int): Int {
-    return when {
-        metersPerPixel > 600f -> 18
-        metersPerPixel > 420f -> 28
-        metersPerPixel > 260f -> 44
-        metersPerPixel > 160f -> crowdedCityLimit.coerceAtMost(64)
-        else -> crowdedCityLimit
-    }
-}
-
-private fun crowdedCityLimitForViewport(width: Float, height: Float): Int {
-    return ((width * height) / 14_000f).roundToInt().coerceIn(18, 130)
-}
-
-private fun GeoBounds.offsetFor(longitude: Double, latitude: Double, width: Float, height: Float): Offset {
-    val safeLongitudeSpan = longitudeSpan().coerceAtLeast(1e-6)
-    val safeLatitudeSpan = latitudeSpan().coerceAtLeast(1e-6)
-    return Offset(
-        x = (((longitude - minLongitude) / safeLongitudeSpan) * width).toFloat(),
-        y = (((maxLatitude - latitude) / safeLatitudeSpan) * height).toFloat()
-    )
-}
-
-private fun Offset.viewportGridIndex(width: Float, height: Float, columns: Int = 4, rows: Int = 4): Int {
-    val safeWidth = width.coerceAtLeast(1f)
-    val safeHeight = height.coerceAtLeast(1f)
-    val column = ((x / safeWidth) * columns).toInt().coerceIn(0, columns - 1)
-    val row = ((y / safeHeight) * rows).toInt().coerceIn(0, rows - 1)
-    return row * columns + column
-}
-
-private fun <T> List<Pair<T, Offset>>.distributedAcrossViewport(
-    width: Float,
-    height: Float,
-    comparator: Comparator<Pair<T, Offset>>,
-    columns: Int = 4,
-    rows: Int = 4
-): List<Pair<T, Offset>> {
-    if (isEmpty()) return emptyList()
-    val cellCount = (columns * rows).coerceAtLeast(1)
-    val cells = List(cellCount) { mutableListOf<Pair<T, Offset>>() }
-    forEach { item ->
-        cells[item.second.viewportGridIndex(width, height, columns, rows)] += item
-    }
-    cells.forEach { it.sortWith(comparator) }
-    return buildList(size) {
-        var depth = 0
-        while (size < this@distributedAcrossViewport.size) {
-            var addedAtThisDepth = false
-            cells.forEach { cell ->
-                if (depth < cell.size) {
-                    add(cell[depth])
-                    addedAtThisDepth = true
-                }
-            }
-            if (!addedAtThisDepth) break
-            depth++
-        }
-    }
-}
-
-private fun String.mapLabelKey(): String {
-    return trim()
-        .lowercase(Locale.ROOT)
-        .filter { it.isLetterOrDigit() }
-}
-
-private fun mapLabelZoom(metersPerPixel: Float): Float {
-    return log2((60_000f / metersPerPixel).coerceAtLeast(1f)) + 1f
-}
-
-private fun citySampleStep(metersPerPixel: Float): Int {
-    return when {
-        metersPerPixel > 420f -> 6
-        metersPerPixel > 260f -> 5
-        metersPerPixel > 160f -> 3
-        else -> 1
-    }
-}
-
-private fun preProjectionCitySampleStep(metersPerPixel: Float): Int {
-    return when {
-        metersPerPixel > 420f -> 4
-        metersPerPixel > 260f -> 3
-        metersPerPixel > 160f -> 2
-        else -> 1
-    }
-}
-
-private fun cityImportanceRank(name: String): Int {
-    return when (name.trim().lowercase(Locale.ROOT)) {
-        "new york", "los angeles", "chicago", "washington, d.c.", "washington", "toronto",
-        "mexico city", "sao paulo", "são paulo", "rio de janeiro", "buenos aires", "lima", "bogota", "bogotá",
-        "santiago", "london", "paris", "berlin", "madrid", "rome", "moscow", "istanbul",
-        "cairo", "lagos", "nairobi", "johannesburg", "dubai", "riyadh", "tehran",
-        "mumbai", "delhi", "new delhi", "karachi", "dhaka", "bangkok", "singapore",
-        "jakarta", "beijing", "shanghai", "hong kong", "seoul", "tokyo", "osaka",
-        "sydney", "melbourne" -> 0
-        "san francisco", "miami", "houston", "atlanta", "boston", "montreal", "vancouver",
-        "caracas", "quito", "la paz", "montevideo", "brasilia", "brasília", "recife", "salvador",
-        "fortaleza", "manaus", "curitiba", "porto alegre", "lisbon", "amsterdam",
-        "brussels", "vienna", "prague", "warsaw", "stockholm", "oslo", "copenhagen",
-        "athens", "zurich", "dublin", "budapest", "bucharest", "kiev", "kyiv",
-        "casablanca", "addis ababa", "accra", "dakar", "cape town", "doha", "kuwait",
-        "jerusalem", "tel aviv", "baghdad", "tashkent", "kabul", "kolkata", "chennai",
-        "bengaluru", "bangalore", "hyderabad", "lahore", "yangon", "hanoi", "ho chi minh city",
-        "manila", "taipei", "guangzhou", "shenzhen", "tianjin", "wuhan", "chengdu",
-        "busan", "kyoto", "auckland" -> 1
-        else -> 2
-    }
-}
-
-private fun CityPoint.stableSampleIndex(): Int {
-    val coordinateHash = ((latitude * 10_000).roundToInt() * 31) xor (longitude * 10_000).roundToInt()
-    return (name.hashCode() xor coordinateHash).absoluteValue
-}
-
-private fun mapLabelPoint(
-    longitude: Double,
-    latitude: Double,
-    origin: Location,
-    center: Offset,
-    pan: Offset,
-    metersPerPixel: Float,
-    lonScale: Double,
-    latScale: Double
-): Offset {
-    val deltaLongitude = wrappedLongitudeDelta(origin.longitude, longitude)
-    val xMeters = deltaLongitude * lonScale
-    val yMeters = (latitude - origin.latitude) * latScale
-    return Offset(
-        x = center.x + pan.x + (xMeters / metersPerPixel).toFloat(),
-        y = center.y + pan.y - (yMeters / metersPerPixel).toFloat()
-    )
-}
-
-private fun mapGeoPointAtScreen(
-    screenPoint: Offset,
-    origin: Location,
-    center: Offset,
-    pan: Offset,
-    metersPerPixel: Float
-): GeoPoint {
-    val latScale = 111_320.0
-    val lonScale = (111_320.0 * cos(Math.toRadians(origin.latitude))).coerceAtLeast(1e-6)
-    val xMeters = (screenPoint.x - center.x - pan.x) * metersPerPixel
-    val yMeters = (center.y + pan.y - screenPoint.y) * metersPerPixel
-    return GeoPoint(
-        longitude = normalizeLongitude(origin.longitude + xMeters / lonScale),
-        latitude = (origin.latitude + yMeters / latScale).coerceIn(-90.0, 90.0)
-    )
-}
-
-private fun mapGeoBoundsForViewport(
-    origin: Location,
-    center: Offset,
-    pan: Offset,
-    metersPerPixel: Float,
-    width: Float,
-    height: Float
-): GeoBounds {
-    val topLeft = mapGeoPointAtScreen(
-        screenPoint = Offset(0f, 0f),
-        origin = origin,
-        center = center,
-        pan = pan,
-        metersPerPixel = metersPerPixel
-    )
-    val bottomRight = mapGeoPointAtScreen(
-        screenPoint = Offset(width, height),
-        origin = origin,
-        center = center,
-        pan = pan,
-        metersPerPixel = metersPerPixel
-    )
-    return GeoBounds(
-        minLongitude = minOf(topLeft.longitude, bottomRight.longitude),
-        minLatitude = minOf(topLeft.latitude, bottomRight.latitude),
-        maxLongitude = maxOf(topLeft.longitude, bottomRight.longitude),
-        maxLatitude = maxOf(topLeft.latitude, bottomRight.latitude)
-    )
-}
-
-private fun titleForMapCenter(
-    center: GeoPoint,
-    viewport: GeoBounds,
-    viewportWidthPx: Float,
-    viewportHeightPx: Float,
-    metersPerPixel: Float,
-    countryLabels: List<CountryLabel>,
-    cityPoints: List<CityPoint>,
-    adminRegions: List<AdminRegion>,
-    brazilPlaces: List<BrazilPlacePoint>
-): String {
-    if (isWholeEarthViewport(viewport, metersPerPixel)) {
-        return "Terra"
-    }
-    val dominantRegion = dominantAdminRegionName(
-        center = center,
-        viewport = viewport,
-        regions = adminRegions
-    )
-    if (metersPerPixel > continentOnlyMetersPerPixel) {
-        return dominantContinentName(viewport, center) ?: nearestContinentName(center) ?: "Terra"
-    }
-    if (metersPerPixel <= brazilSubdistrictTitleMetersPerPixel) {
-        nearestBrazilPlaceTitleName(
-            center = center,
-            viewport = viewport,
-            viewportWidthPx = viewportWidthPx,
-            viewportHeightPx = viewportHeightPx,
-            metersPerPixel = metersPerPixel,
-            places = brazilPlaces,
-            maxDegrees = 0.08,
-            includeDistricts = true
-        )?.let { return it }
-    }
-    if (metersPerPixel <= cityTitleMetersPerPixel) {
-        nearestBrazilPlaceTitleName(
-            center = center,
-            viewport = viewport,
-            viewportWidthPx = viewportWidthPx,
-            viewportHeightPx = viewportHeightPx,
-            metersPerPixel = metersPerPixel,
-            places = brazilPlaces,
-            maxDegrees = 0.32,
-            includeDistricts = true
-        )?.let { return it }
-    }
-    if (metersPerPixel <= cityTitleMetersPerPixel) {
-        nearestCityTitleName(
-            center = center,
-            viewport = viewport,
-            viewportWidthPx = viewportWidthPx,
-            viewportHeightPx = viewportHeightPx,
-            metersPerPixel = metersPerPixel,
-            cityPoints = cityPoints,
-            maxDegrees = 2.8
-        )?.let { return it }
-    }
-    if (metersPerPixel <= cityLabelMetersPerPixel) {
-        dominantRegion?.let { return it }
-        nearestAdminRegionName(center, adminRegions)?.let { return it }
-    }
-    if (metersPerPixel <= adminLabelMetersPerPixel) {
-        dominantAdminCountryName(
-            center = center,
-            viewport = viewport,
-            regions = adminRegions
-        )?.let { return it }
-        return nearestAdminCountryName(center, adminRegions)
-            ?: dominantCountryName(center, viewport, countryLabels)
-            ?: nearestCountryName(center, countryLabels)
-            ?: nearestContinentName(center)
-            ?: "Terra"
-    }
-    return dominantContinentName(viewport, center)
-        ?: nearestContinentName(center)
-        ?: "Terra"
-}
-
-private fun nearestBrazilPlaceTitleName(
-    center: GeoPoint,
-    viewport: GeoBounds,
-    viewportWidthPx: Float,
-    viewportHeightPx: Float,
-    metersPerPixel: Float,
-    places: List<BrazilPlacePoint>,
-    maxDegrees: Double,
-    includeDistricts: Boolean
-): String? {
-    if (places.isEmpty() || viewportWidthPx <= 0f || viewportHeightPx <= 0f) return null
-    val allowedKinds = if (includeDistricts) {
-        setOf(BrazilPlaceKind.Municipality, BrazilPlaceKind.District, BrazilPlaceKind.Subdistrict)
-    } else {
-        setOf(BrazilPlaceKind.Municipality)
-    }
-    val nearestPlace = places
-        .asSequence()
-        .filter { it.kind in allowedKinds }
-        .filter { viewport.contains(it.longitude, it.latitude) }
-        .map { place ->
-            place to approximateGeoDistanceScore(center.longitude, center.latitude, place.longitude, place.latitude)
-        }
-        .filter { (_, score) -> score <= maxDegrees * maxDegrees }
-        .minWithOrNull(
-            compareBy<Pair<BrazilPlacePoint, Double>> { it.second }
-                .thenBy { it.first.rank }
-                .thenBy { it.first.kind.ordinal }
-        )
-        ?.first
-        ?: return null
-    return if (
-        isBrazilPlaceNameVisibleOnMap(
-            place = nearestPlace,
-            places = places,
-            viewport = viewport,
-            viewportWidthPx = viewportWidthPx,
-            viewportHeightPx = viewportHeightPx,
-            metersPerPixel = metersPerPixel
-        )
-    ) {
-        null
-    } else {
-        nearestPlace.name
-    }
-}
-
-private fun isBrazilPlaceNameVisibleOnMap(
-    place: BrazilPlacePoint,
-    places: List<BrazilPlacePoint>,
-    viewport: GeoBounds,
-    viewportWidthPx: Float,
-    viewportHeightPx: Float,
-    metersPerPixel: Float
-): Boolean {
-    if (!place.isVisibleAtBrazilZoom(metersPerPixel)) return false
-    val labelLimit = brazilLabelLimit(metersPerPixel, viewportWidthPx, viewportHeightPx)
-    return places
-        .asSequence()
-        .filter { it.isVisibleAtBrazilZoom(metersPerPixel) }
-        .filter { viewport.contains(it.longitude, it.latitude, paddingDegrees = 0.8) }
-        .map { it to viewport.offsetFor(it.longitude, it.latitude, viewportWidthPx, viewportHeightPx) }
-        .toList()
-        .distributedAcrossViewport(
-            width = viewportWidthPx,
-            height = viewportHeightPx,
-            comparator = compareBy<Pair<BrazilPlacePoint, Offset>> { it.first.rank }
-                .thenBy { it.first.kind.ordinal }
-                .thenBy { it.first.name }
-        )
-        .take(labelLimit)
-        .any { it.first == place }
-}
-
-private fun dominantAdminRegionName(
-    center: GeoPoint,
-    viewport: GeoBounds,
-    regions: List<AdminRegion>
-): String? {
-    val viewportArea = viewport.area()
-    if (viewportArea <= 0.0) return null
-    var bestRegion: AdminRegion? = null
-    var bestCoverage = 0.0
-    for (region in regions) {
-        val coverage = region.intersectionArea(viewport) / viewportArea
-        val currentBestRank = bestRegion?.rank ?: Int.MAX_VALUE
-        val containsCenterBonus = if (region.contains(center)) 0.06 else 0.0
-        val adjustedCoverage = coverage + containsCenterBonus
-        if (adjustedCoverage >= 0.70 && (adjustedCoverage > bestCoverage || region.rank < currentBestRank)) {
-            bestRegion = region
-            bestCoverage = adjustedCoverage
-        }
-    }
-    return bestRegion?.name
-}
-
-private fun dominantAdminCountryName(
-    center: GeoPoint,
-    viewport: GeoBounds,
-    regions: List<AdminRegion>
-): String? {
-    val viewportArea = viewport.area()
-    if (viewportArea <= 0.0) return null
-    val coverageByCountry = linkedMapOf<String, Double>()
-    regions.forEach { region ->
-        val country = region.country
-        if (country.isBlank()) return@forEach
-        val coverage = region.intersectionArea(viewport) / viewportArea
-        if (coverage > 0.0) {
-            val centerBonus = if (region.contains(center)) 0.18 else 0.0
-            coverageByCountry[country] = (coverageByCountry[country] ?: 0.0) + coverage + centerBonus
-        }
-    }
-    val ranked = coverageByCountry.entries.sortedByDescending { it.value }
-    val best = ranked.firstOrNull() ?: return null
-    val second = ranked.getOrNull(1)?.value ?: 0.0
-    return if (best.value >= 0.24 || best.value >= second * 1.35) best.key else null
-}
-
-private fun nearestAdminCountryName(center: GeoPoint, regions: List<AdminRegion>): String? {
-    return regions
-        .filter { it.contains(center) && it.country.isNotBlank() }
-        .minWithOrNull(compareBy<AdminRegion> { it.rank }.thenBy {
-            approximateGeoDistanceScore(center.longitude, center.latitude, it.longitude, it.latitude)
-        })
-        ?.country
-}
-
-private fun nearestAdminRegionName(center: GeoPoint, regions: List<AdminRegion>): String? {
-    return regions
-        .filter { it.contains(center) }
-        .minWithOrNull(compareBy<AdminRegion> { it.rank }.thenBy {
-            approximateGeoDistanceScore(center.longitude, center.latitude, it.longitude, it.latitude)
-        })
-        ?.name
-}
-
-private fun dominantContinentName(viewport: GeoBounds, center: GeoPoint): String? {
-    val visibleContinents = continentLabels
-        .filter { viewport.contains(it.longitude, it.latitude, paddingDegrees = 12.0) }
-    if (visibleContinents.isEmpty()) return null
-    return visibleContinents.minByOrNull { continent ->
-        approximateGeoDistanceScore(center.longitude, center.latitude, continent.longitude, continent.latitude)
-    }?.name
-}
-
-private fun nearestContinentName(center: GeoPoint): String? {
-    return continentLabels.minByOrNull { label ->
-        approximateGeoDistanceScore(
-            center.longitude,
-            center.latitude,
-            label.longitude,
-            label.latitude
-        )
-    }?.name
-}
-
-private fun dominantCountryName(
-    center: GeoPoint,
-    viewport: GeoBounds,
-    countryLabels: List<CountryLabel>
-): String? {
-    val viewportPadding = (maxOf(viewport.longitudeSpan(), viewport.latitudeSpan()) * 0.28)
-        .coerceIn(0.8, 8.0)
-    return countryLabels
-        .asSequence()
-        .mapNotNull { country ->
-            val isInsideViewport = viewport.contains(country.longitude, country.latitude)
-            val isNearViewport = viewport.contains(
-                longitude = country.longitude,
-                latitude = country.latitude,
-                paddingDegrees = viewportPadding
-            )
-            if (!isInsideViewport && !isNearViewport) return@mapNotNull null
-            country to if (isInsideViewport) 0 else 1
-        }
-        .minWithOrNull(
-            compareBy<Pair<CountryLabel, Int>> { it.second }
-                .thenBy {
-                    approximateGeoDistanceScore(
-                        center.longitude,
-                        center.latitude,
-                        it.first.longitude,
-                        it.first.latitude
-                    )
-                }
-                .thenBy { it.first.rank }
-                .thenByDescending { it.first.population }
-        )
-        ?.first
-        ?.name
-}
-
-private fun nearestCountryName(center: GeoPoint, countryLabels: List<CountryLabel>): String? {
-    return countryLabels.minByOrNull { country ->
-        approximateGeoDistanceScore(
-            center.longitude,
-            center.latitude,
-            country.longitude,
-            country.latitude
-        ) * country.rank.coerceAtLeast(1)
-    }?.name
-}
-
-private fun nearestCityTitleName(
-    center: GeoPoint,
-    viewport: GeoBounds,
-    viewportWidthPx: Float,
-    viewportHeightPx: Float,
-    metersPerPixel: Float,
-    cityPoints: List<CityPoint>,
-    maxDegrees: Double
-): String? {
-    if (cityPoints.isEmpty() || viewportWidthPx <= 0f || viewportHeightPx <= 0f) return null
-    val nearestCity = cityPoints
-        .asSequence()
-        .filter { city -> viewport.contains(city.longitude, city.latitude) }
-        .map { city ->
-            city to approximateGeoDistanceScore(center.longitude, center.latitude, city.longitude, city.latitude)
-        }
-        .filter { (_, score) -> score <= maxDegrees * maxDegrees }
-        .minWithOrNull(
-            compareBy<Pair<CityPoint, Double>> { it.second }
-                .thenBy { it.first.importanceRank }
-        )
-        ?.first
-        ?: return null
-    return if (
-        isCityNameVisibleOnMap(
-            city = nearestCity,
-            cityPoints = cityPoints,
-            viewport = viewport,
-            viewportWidthPx = viewportWidthPx,
-            viewportHeightPx = viewportHeightPx,
-            metersPerPixel = metersPerPixel
-        )
-    ) {
-        null
-    } else {
-        nearestCity.name
-    }
-}
-
-private fun isCityNameVisibleOnMap(
-    city: CityPoint,
-    cityPoints: List<CityPoint>,
-    viewport: GeoBounds,
-    viewportWidthPx: Float,
-    viewportHeightPx: Float,
-    metersPerPixel: Float
-): Boolean {
-    if (!city.isVisibleAt(metersPerPixel) || !city.preProjectionSampledAt(metersPerPixel)) return false
-    val crowdedCityLimit = crowdedCityLimitForViewport(viewportWidthPx, viewportHeightPx)
-    val visibleCityLabels = cityPoints
-        .asSequence()
-        .filter { it.isVisibleAt(metersPerPixel) }
-        .filter { it.preProjectionSampledAt(metersPerPixel) }
-        .filter { viewport.contains(it.longitude, it.latitude, paddingDegrees = 0.8) }
-        .map { it to viewport.offsetFor(it.longitude, it.latitude, viewportWidthPx, viewportHeightPx) }
-        .toList()
-    val cityStep = if (visibleCityLabels.size <= crowdedCityLimit * 2) {
-        1
-    } else {
-        citySampleStep(metersPerPixel)
-    }
-    val cityLimit = if (visibleCityLabels.size <= crowdedCityLimit * 2 || metersPerPixel <= 240f) {
-        Int.MAX_VALUE
-    } else {
-        cityLimitForZoom(metersPerPixel, crowdedCityLimit)
-    }
-    return visibleCityLabels
-        .asSequence()
-        .filter { (visibleCity, _) ->
-            cityStep == 1 || visibleCity.importanceRank <= 1 || visibleCity.stableSampleIndex() % cityStep == 0
-        }
-        .toList()
-        .distributedAcrossViewport(
-            width = viewportWidthPx,
-            height = viewportHeightPx,
-            comparator = compareBy<Pair<CityPoint, Offset>> { it.first.importanceRank }
-                .thenBy { it.first.stableSampleIndex() }
-        )
-        .take(cityLimit)
-        .any { it.first == city }
-}
-
-private fun approximateGeoDistanceScore(
-    longitudeA: Double,
-    latitudeA: Double,
-    longitudeB: Double,
-    latitudeB: Double
-): Double {
-    val latitudeFactor = cos(Math.toRadians((latitudeA + latitudeB) / 2.0)).coerceAtLeast(0.2)
-    val deltaLongitude = wrappedLongitudeDelta(longitudeA, longitudeB) * latitudeFactor
-    val deltaLatitude = latitudeB - latitudeA
-    return deltaLongitude * deltaLongitude + deltaLatitude * deltaLatitude
-}
-
-private fun isWholeEarthViewport(viewport: GeoBounds, metersPerPixel: Float): Boolean {
-    return metersPerPixel >= 22_000f ||
-        viewport.latitudeSpan() >= 168.0 ||
-        (viewport.longitudeSpan() >= 260.0 && viewport.latitudeSpan() >= 120.0)
-}
-
-private fun normalizeLongitude(longitude: Double): Double {
-    var normalized = longitude
-    while (normalized > 180.0) normalized -= 360.0
-    while (normalized < -180.0) normalized += 360.0
-    return normalized
-}
-
-private fun labelBox(
-    text: String,
-    point: Offset,
-    paint: Paint,
-    kind: LabelKind,
-    xOffset: Float,
-    yOffset: Float
-): LabelBox {
-    val width = paint.measureText(text)
-    val height = paint.textSize
-    val textX = point.x + xOffset - if (
-        kind == LabelKind.Country ||
-        kind == LabelKind.Continent ||
-        kind == LabelKind.Admin
-    ) {
-        width / 2f
-    } else {
-        0f
-    }
-    val textY = point.y + yOffset
-    return LabelBox(
-        left = textX,
-        top = textY - height,
-        right = textX + width,
-        bottom = textY + height * 0.25f,
-        textX = textX,
-        textY = textY,
-        kind = kind
-    )
-}
-
-private fun cityLabelPlacement(
-    text: String,
-    point: Offset,
-    paint: Paint,
-    placedLabels: List<LabelBox>,
-    occupiedBoxes: List<LabelBox>,
-    width: Float,
-    height: Float,
-    renderPadding: Float,
-    normalXOffset: Float,
-    normalYOffset: Float
-): CityLabelPlacement? {
-    val normalBox = labelBox(text, point, paint, LabelKind.City, normalXOffset, normalYOffset)
-    if (
-        normalBox.isInsideRenderBand(width, height, renderPadding) &&
-        isLabelPlaceable(normalBox, placedLabels, occupiedBoxes, padding = 5f)
-    ) {
-        return CityLabelPlacement(box = normalBox, pinned = false)
-    }
-
-    val candidates = cityPinCandidateOffsets(paint.measureText(text), paint.textSize)
-    candidates.forEach { offset ->
-        val box = centeredCityLabelBox(text, point + offset, paint)
-        if (
-            box.isInsideRenderBand(width, height, renderPadding) &&
-            isLabelPlaceable(box, placedLabels, occupiedBoxes, padding = 7f)
-        ) {
-            return CityLabelPlacement(box = box, pinned = true)
-        }
-    }
-    return null
-}
-
-private fun cityPinCandidateOffsets(textWidth: Float, textHeight: Float): List<Offset> {
-    val horizontal = textWidth / 2f + 36f
-    val nearVertical = textHeight + 24f
-    val farVertical = textHeight + 48f
-    return listOf(
-        Offset(0f, -nearVertical),
-        Offset(0f, farVertical),
-        Offset(horizontal, -textHeight * 0.45f),
-        Offset(-horizontal, -textHeight * 0.45f),
-        Offset(horizontal, textHeight * 1.2f),
-        Offset(-horizontal, textHeight * 1.2f),
-        Offset(0f, -farVertical),
-        Offset(0f, farVertical + 24f),
-        Offset(horizontal + 36f, 0f),
-        Offset(-horizontal - 36f, 0f)
-    )
-}
-
-private fun centeredCityLabelBox(
-    text: String,
-    baselineCenter: Offset,
-    paint: Paint
-): LabelBox {
-    val width = paint.measureText(text)
-    val height = paint.textSize
-    val textX = baselineCenter.x - width / 2f
-    val textY = baselineCenter.y
-    return LabelBox(
-        left = textX,
-        top = textY - height,
-        right = textX + width,
-        bottom = textY + height * 0.25f,
-        textX = textX,
-        textY = textY,
-        kind = LabelKind.City
-    )
-}
-
-private fun LabelBox.connectorPointToward(point: Offset): Offset {
-    return Offset(
-        x = point.x.coerceIn(left, right),
-        y = point.y.coerceIn(top, bottom)
-    )
-}
-
-private fun Offset.isNearViewport(width: Float, height: Float, padding: Float): Boolean {
-    return x >= -padding && x <= width + padding && y >= -padding && y <= height + padding
-}
-
-private fun LabelBox.isInsideRenderBand(width: Float, height: Float, padding: Float): Boolean {
-    return right >= -padding && left <= width + padding && bottom >= -padding && top <= height + padding
-}
-
-private fun isLabelPlaceable(
-    candidate: LabelBox,
-    placedLabels: List<LabelBox>,
-    occupiedBoxes: List<LabelBox>,
-    padding: Float
-): Boolean {
-    if (placedLabels.any { it.intersects(candidate, padding = padding) }) return false
-    if (occupiedBoxes.any { it.intersects(candidate, padding = padding) }) return false
-    return true
-}
-
-private fun LabelBox.intersects(other: LabelBox, padding: Float): Boolean {
-    return left - padding < other.right &&
-        right + padding > other.left &&
-        top - padding < other.bottom &&
-        bottom + padding > other.top
-}
-
-private fun buildUserOccupationBoxes(
-    positionedUsers: List<PositionedOrbitUser>,
-    width: Float,
-    height: Float
-): List<LabelBox> {
-    if (positionedUsers.isEmpty()) return emptyList()
-    return positionedUsers.mapNotNull { user ->
-        if (!user.display.isNearViewport(width, height, 120f)) return@mapNotNull null
-        val headRadius = if (user.user.isSelf) 32f else 28f
-        val headBox = LabelBox(
-            left = user.display.x - headRadius,
-            top = user.display.y - headRadius,
-            right = user.display.x + headRadius,
-            bottom = user.display.y + headRadius,
-            textX = user.display.x,
-            textY = user.display.y,
-            kind = LabelKind.City
-        )
-        val label = user.label
-        if (label == null) {
-            listOf(headBox)
-        } else {
-            val nameWidth = label.length * 7.5f
-            val nameBox = LabelBox(
-                left = user.display.x - nameWidth / 2f - 8f,
-                top = user.display.y + headRadius + 4f,
-                right = user.display.x + nameWidth / 2f + 8f,
-                bottom = user.display.y + headRadius + 26f,
-                textX = user.display.x,
-                textY = user.display.y,
-                kind = LabelKind.City
-            )
-            val distanceBox = LabelBox(
-                left = user.display.x - 64f,
-                top = user.display.y + headRadius + 22f,
-                right = user.display.x + 64f,
-                bottom = user.display.y + headRadius + 42f,
-                textX = user.display.x,
-                textY = user.display.y,
-                kind = LabelKind.City
-            )
-            if (label == "Eu") listOf(headBox, nameBox) else listOf(headBox, nameBox, distanceBox)
-        }
-    }.flatten()
-}
-
-private suspend fun PointerInputScope.detectStableMapTransformGestures(
-    onGesture: (centroid: Offset, panChange: Offset, zoomChange: Float) -> Unit,
-    onDoubleTap: (position: Offset) -> Unit
-) {
-    var lastTapPosition: Offset? = null
-    var lastTapUptimeMillis = 0L
-    val tapSlop = 10.dp.toPx()
-    val doubleTapDistance = 48.dp.toPx()
-    val doubleTapTimeoutMillis = 320L
-    awaitEachGesture {
-        var previousSinglePointer: Offset? = null
-        var previousCentroid: Offset? = null
-        var previousSpan: Float? = null
-        var resumedSinglePointerAfterPinch = false
-        var tapStartPosition: Offset? = null
-        var latestSinglePointer: Offset? = null
-        var maxTapMove = 0f
-        var hadMultiplePointers = false
-        while (true) {
-            val event = awaitPointerEvent()
-            val pressedChanges = event.changes.filter { it.pressed }
-            if (pressedChanges.isEmpty()) {
-                val tapPosition = latestSinglePointer ?: tapStartPosition
-                val eventUptimeMillis = event.changes.maxOfOrNull { it.uptimeMillis } ?: lastTapUptimeMillis
-                if (!hadMultiplePointers && tapPosition != null && maxTapMove <= tapSlop) {
-                    val previousTapPosition = lastTapPosition
-                    val isDoubleTap = previousTapPosition != null &&
-                        eventUptimeMillis - lastTapUptimeMillis in 1..doubleTapTimeoutMillis &&
-                        tapPosition.distanceTo(previousTapPosition) <= doubleTapDistance
-                    if (isDoubleTap) {
-                        onDoubleTap(tapPosition)
-                        lastTapPosition = null
-                        lastTapUptimeMillis = 0L
-                    } else {
-                        lastTapPosition = tapPosition
-                        lastTapUptimeMillis = eventUptimeMillis
-                    }
-                }
-                break
-            }
-
-            if (pressedChanges.size == 1) {
-                val pointer = pressedChanges.first()
-                val currentPosition = pointer.position
-                if (resumedSinglePointerAfterPinch) {
-                    previousSinglePointer = currentPosition
-                    previousCentroid = null
-                    previousSpan = null
-                    latestSinglePointer = null
-                    tapStartPosition = null
-                    resumedSinglePointerAfterPinch = false
-                    pressedChanges.forEach { it.consume() }
-                    continue
-                }
-                if (tapStartPosition == null) {
-                    tapStartPosition = currentPosition
-                }
-                latestSinglePointer = currentPosition
-                maxTapMove = maxOf(
-                    maxTapMove,
-                    tapStartPosition?.distanceTo(currentPosition) ?: 0f
-                )
-                val oldPosition = previousSinglePointer
-                if (oldPosition != null && maxTapMove > tapSlop) {
-                    onGesture(
-                        currentPosition,
-                        currentPosition - oldPosition,
-                        1f
-                    )
-                }
-                previousSinglePointer = currentPosition
-                previousCentroid = null
-                previousSpan = null
-                pressedChanges.forEach { it.consume() }
-                continue
-            }
-
-            hadMultiplePointers = true
-            resumedSinglePointerAfterPinch = true
-            tapStartPosition = null
-            latestSinglePointer = null
-            previousSinglePointer = null
-            val centroid = pressedChanges
-                .map { it.position }
-                .averageOffset()
-            val span = pressedChanges
-                .map { it.position.distanceTo(centroid) }
-                .average()
-                .toFloat()
-                .coerceAtLeast(1f)
-            val oldCentroid = previousCentroid
-            val oldSpan = previousSpan
-            if (oldCentroid != null && oldSpan != null && oldSpan > 0f) {
-                val zoomChange = (span / oldSpan).coerceIn(0.86f, 1.16f)
-                onGesture(
-                    centroid,
-                    centroid - oldCentroid,
-                    zoomChange
-                )
-            }
-            previousCentroid = centroid
-            previousSpan = span
-            pressedChanges.forEach { it.consume() }
-        }
-    }
-}
-
-private fun wrapHorizontalMapPan(panX: Float, worldWidthPx: Float): Float {
-    if (worldWidthPx <= 0f) return panX
-    var wrapped = panX % worldWidthPx
-    val halfWorld = worldWidthPx / 2f
-    if (wrapped > halfWorld) wrapped -= worldWidthPx
-    if (wrapped < -halfWorld) wrapped += worldWidthPx
-    return wrapped
-}
-
-private fun horizontalWorldCopyOffsets(width: Float, worldWidthPx: Float, panX: Float): List<Float> {
-    if (worldWidthPx <= 0f) return listOf(0f)
-    val halfWorld = worldWidthPx / 2f
-    val halfViewport = width / 2f
-    return buildList {
-        if (-halfViewport - panX < -halfWorld) add(-worldWidthPx)
-        add(0f)
-        if (halfViewport - panX > halfWorld) add(worldWidthPx)
-    }
-}
-
-private fun clampVerticalMapPan(
-    origin: Location,
-    centerY: Float,
-    height: Float,
-    metersPerPixel: Float,
-    panY: Float
-): Float {
-    val latScale = 111_320.0
-    val northMeters = (90.0 - origin.latitude) * latScale
-    val southMeters = (-90.0 - origin.latitude) * latScale
-    val minPanY = height - centerY + (southMeters / metersPerPixel).toFloat()
-    val maxPanY = (northMeters / metersPerPixel).toFloat() - centerY
-    if (minPanY > maxPanY) return (minPanY + maxPanY) / 2f
-    return panY.coerceIn(minPanY, maxPanY)
-}
-
-private fun wrappedLongitudeDelta(originLongitude: Double, targetLongitude: Double): Double {
-    var delta = targetLongitude - originLongitude
-    while (delta > 180.0) delta -= 360.0
-    while (delta < -180.0) delta += 360.0
-    return delta
-}
-
-private fun offlineMapPalette(useDarkMapColors: Boolean): OfflineMapPalette {
-    return if (useDarkMapColors) {
-        OfflineMapPalette(
-            ocean = Color(0xFF071B33),
-            land = Color(0xFF153D2A).copy(alpha = 0.84f),
-            grid = Color.White.copy(alpha = 0.10f),
-            boundary = Color.White.copy(alpha = 0.28f),
-            stateBoundary = Color(0xFFC9F2D1).copy(alpha = 0.36f),
-            cityLabel = Color(0xFFD8EBF8),
-            cityDot = Color(0xFF8FCBFF),
-            pointer = Color(0xFF9FD3FF)
-        )
-    } else {
-        OfflineMapPalette(
-            ocean = Color(0xFFD8F0FF),
-            land = Color(0xFFE7F3D4).copy(alpha = 0.92f),
-            grid = Color(0xFF5A91B8).copy(alpha = 0.16f),
-            boundary = Color(0xFF2F6F93).copy(alpha = 0.34f),
-            stateBoundary = Color(0xFF3D7D3C).copy(alpha = 0.42f),
-            cityLabel = Color(0xFF17425F),
-            cityDot = Color(0xFF1976A8),
-            pointer = Color(0xFF1976A8).copy(alpha = 0.74f)
-        )
-    }
-}
-
-private fun separateNearbyUsers(
-    users: List<OrbitUser>,
-    center: Offset,
-    pan: Offset,
-    metersPerPixel: Float,
-    worldWidthPx: Float,
-    width: Float,
-    height: Float
-): List<PositionedOrbitUser> {
-    if (users.isEmpty()) return emptyList()
-    val clusteredAnchorDistance = 118f
-    val anchoredUsers = users
-        .sortedBy { it.distanceMeters }
-        .map { user ->
-            AnchoredOrbitUser(
-                user = user,
-                anchor = user.screenPoint(center, pan, metersPerPixel, worldWidthPx)
-            )
-        }
-    val clusters = buildOrbitUserClusters(anchoredUsers, clusteredAnchorDistance)
-    val placed = mutableListOf<PositionedOrbitUser>()
-    val avatarRadius = 48f
-    clusters.forEach { cluster ->
-        val clusterCenter = cluster
-            .map { it.anchor }
-            .averageOffset()
-        val isDenseCluster = cluster.size >= 4 ||
-            (cluster.size >= 3 && cluster.maxAnchorDistance() < 54f)
-        val forcePins = cluster.size > 1
-        cluster.sortedBy { it.user.username }.forEachIndexed { memberIndex, anchored ->
-            val hasNearbyDisplay = placed.any { positioned ->
-                anchored.anchor.distanceTo(positioned.display) < clusteredAnchorDistance
-            }
-            val display = if (isDenseCluster) {
-                anchored.anchor
-            } else if (!forcePins && !hasNearbyDisplay) {
-                anchored.anchor
-            } else {
-                bestSeparatedPoint(
-                    anchor = anchored.anchor,
-                    clusterCenter = clusterCenter,
-                    placed = placed.map { it.display },
-                    seed = stablePinSeed(anchored.user.username),
-                    memberIndex = memberIndex,
-                    memberCount = cluster.size,
-                    width = width,
-                    height = height,
-                    radius = avatarRadius
-                )
-            }
-            placed += PositionedOrbitUser(
-                user = anchored.user,
-                anchor = anchored.anchor,
-                display = display,
-                needsPointer = !isDenseCluster && (forcePins || display.distanceTo(anchored.anchor) > 8f),
-                label = when {
-                    isDenseCluster && anchored.user.isSelf -> "Eu"
-                    isDenseCluster -> null
-                    else -> anchored.user.displayName
-                }
-            )
-        }
-    }
-    return placed
-}
-
-private fun stablePinSeed(value: String): Int {
-    return value.hashCode().absoluteValue
-}
-
-private fun List<AnchoredOrbitUser>.maxAnchorDistance(): Float {
-    var maxDistance = 0f
-    forEachIndexed { index, user ->
-        for (otherIndex in index + 1 until size) {
-            val distance = user.anchor.distanceTo(this[otherIndex].anchor)
-            if (distance > maxDistance) maxDistance = distance
-        }
-    }
-    return maxDistance
-}
-
-private fun bestSeparatedPoint(
-    anchor: Offset,
-    clusterCenter: Offset,
-    placed: List<Offset>,
-    seed: Int,
-    memberIndex: Int,
-    memberCount: Int,
-    width: Float,
-    height: Float,
-    radius: Float
-): Offset {
-    val isCluster = memberCount > 1
-    val origin = if (isCluster) clusterCenter else anchor
-    val preferredAngle = if (isCluster) {
-        -90.0 + (360.0 / memberCount.coerceAtLeast(1)) * memberIndex + (seed % 17)
-    } else {
-        null
-    }
-    val distances = if (isCluster) {
-        listOf(96f, 128f, 160f)
-    } else {
-        listOf(84f, 116f, 148f)
-    }
-    val angles = preferredAngle?.let { angle ->
-        listOf(angle, angle - 34.0, angle + 34.0, angle - 68.0, angle + 68.0, angle + 180.0)
-    } ?: listOf(0.0, 60.0, 120.0, 180.0, 240.0, 300.0)
-    val candidates = buildList {
-        distances.forEach { distance ->
-            angles.forEachIndexed { angleIndex, rawAngle ->
-                val angle = Math.toRadians(rawAngle + (seed % 3) * 20.0 + angleIndex * 4.0)
-                add(
-                    Offset(
-                        x = origin.x + (cos(angle) * distance).toFloat(),
-                        y = origin.y + (sin(angle) * distance).toFloat()
-                    ).coerceInside(width, height, radius)
-                )
-            }
-        }
-    }
-    return candidates.minByOrNull { candidate ->
-        val overlapPenalty = placed.sumOf { placedPoint ->
-            val distance = candidate.distanceTo(placedPoint)
-            if (distance < 86f) ((86f - distance) * 12f).toDouble() else 0.0
-        }
-        val edgePenalty = when {
-            candidate.x <= radius || candidate.x >= width - radius ||
-                candidate.y <= radius || candidate.y >= height - radius -> 180.0
-            else -> 0.0
-        }
-        val desiredDistance = if (isCluster) 104f else 0f
-        val distancePenalty = kotlin.math.abs(candidate.distanceTo(anchor) - desiredDistance) * 0.25f
-        overlapPenalty + edgePenalty + distancePenalty + candidate.distanceTo(anchor) * 0.08f
-    } ?: anchor.coerceInside(width, height, radius)
-}
-
-private fun buildOrbitUserClusters(
-    users: List<AnchoredOrbitUser>,
-    distance: Float
-): List<List<AnchoredOrbitUser>> {
-    val visited = BooleanArray(users.size)
-    val clusters = mutableListOf<List<AnchoredOrbitUser>>()
-    users.forEachIndexed { startIndex, _ ->
-        if (visited[startIndex]) return@forEachIndexed
-        val clusterIndexes = mutableListOf<Int>()
-        val pending = ArrayDeque<Int>()
-        pending.add(startIndex)
-        visited[startIndex] = true
-        while (pending.isNotEmpty()) {
-            val current = pending.removeFirst()
-            clusterIndexes += current
-            users.forEachIndexed { candidateIndex, candidate ->
-                if (!visited[candidateIndex] && users[current].anchor.distanceTo(candidate.anchor) < distance) {
-                    visited[candidateIndex] = true
-                    pending.add(candidateIndex)
-                }
-            }
-        }
-        clusters += clusterIndexes.map { users[it] }
-    }
-    return clusters
-}
-
-private fun List<Offset>.averageOffset(): Offset {
-    if (isEmpty()) return Offset.Zero
-    return Offset(
-        x = sumOf { it.x.toDouble() }.toFloat() / size,
-        y = sumOf { it.y.toDouble() }.toFloat() / size
-    )
-}
-
-private fun Offset.coerceInside(width: Float, height: Float, radius: Float): Offset {
-    return Offset(
-        x = x.coerceIn(radius, (width - radius).coerceAtLeast(radius)),
-        y = y.coerceIn(radius, (height - radius).coerceAtLeast(radius))
-    )
-}
-
-private fun Offset.distanceTo(other: Offset): Float {
-    return hypot(x - other.x, y - other.y)
-}
-
-private data class AnchoredOrbitUser(
-    val user: OrbitUser,
-    val anchor: Offset
-)
-
-private data class PositionedOrbitUser(
-    val user: OrbitUser,
-    val anchor: Offset,
-    val display: Offset,
-    val needsPointer: Boolean,
-    val label: String?
-)
-
-private data class OfflineMapPalette(
-    val ocean: Color,
-    val land: Color,
-    val grid: Color,
-    val boundary: Color,
-    val stateBoundary: Color,
-    val cityLabel: Color,
-    val cityDot: Color,
-    val pointer: Color
-)
-
-private fun readableOnColor(color: Color): Color {
-    return if (color.luminance() > 0.5f) Color.Black else Color.White
-}
-
-private const val worldCircumferenceMeters = 40_075_000f
-private const val worldHeightMeters = 20_037_500f
-private const val focusedProfilePrecisionMeters = 20f
-private const val focusedProfilePrecisionPixels = 72f
-private const val continentOnlyMetersPerPixel = 12_500f
-private const val countryBoundaryMetersPerPixel = 16_000f
-private const val stateBoundaryMetersPerPixel = 3_600f
-private const val adminLabelMetersPerPixel = 2_400f
-private const val brazilMunicipalityMetersPerPixel = 720f
-private const val brazilDistrictMetersPerPixel = 220f
-private const val brazilSubdistrictMetersPerPixel = 110f
-private const val brazilSubdistrictTitleMetersPerPixel = 90f
-private const val cityLabelMetersPerPixel = 720f
-private const val cityTitleMetersPerPixel = 180f
-
-private val continentLabels = listOf(
-    ContinentLabel("América do Norte", -101.0, 52.0),
-    ContinentLabel("América do Sul", -60.0, -17.0),
-    ContinentLabel("Europa", 15.0, 52.0),
-    ContinentLabel("África", 20.0, 3.0),
-    ContinentLabel("Ásia", 88.0, 39.0),
-    ContinentLabel("Oceania", 135.0, -25.0),
-    ContinentLabel("Antártida", 20.0, -78.0)
-)
-
-
-private enum class LabelKind {
-    Continent,
-    Country,
-    Admin,
-    City
-}
-
-private data class LabelBox(
-    val left: Float,
-    val top: Float,
-    val right: Float,
-    val bottom: Float,
-    val textX: Float,
-    val textY: Float,
-    val kind: LabelKind
-)
-
-private data class CityLabelPlacement(
-    val box: LabelBox,
-    val pinned: Boolean
-)
-
-internal data class OrbitUser(
-    val username: String,
-    val displayName: String,
-    val emoji: String,
-    val mapColorArgb: Int,
-    val distanceMeters: Float,
-    val xMeters: Float,
-    val yMeters: Float,
-    val hasLocation: Boolean,
-    val locationUpdatedAt: Long,
-    val isActive: Boolean,
-    val isSelf: Boolean = false,
-    val lastActivityLabel: String
-) {
-    fun screenPoint(center: Offset, pan: Offset, metersPerPixel: Float): Offset {
-        return Offset(
-            x = center.x + pan.x + xMeters / metersPerPixel,
-            y = center.y + pan.y - yMeters / metersPerPixel
-        )
-    }
-
-    fun screenPoint(center: Offset, pan: Offset, metersPerPixel: Float, worldWidthPx: Float): Offset {
-        return Offset(
-            x = center.x + wrapHorizontalMapPan(pan.x + xMeters / metersPerPixel, worldWidthPx),
-            y = center.y + pan.y - yMeters / metersPerPixel
-        )
-    }
-
-    fun distanceLabel(): String {
-        if (!hasLocation) return "sem localização"
-        return "${formatDistance(distanceMeters)} (${formatElapsedAgo(locationUpdatedAt)})"
-    }
-
-    fun distanceOnlyLabel(): String {
-        if (!hasLocation) return "sem localização"
-        return formatDistance(distanceMeters)
-    }
-
-    fun mapStatusLabel(): String {
-        return when {
-            !hasLocation -> "sem localização"
-            isActive -> "Disponível"
-            else -> "Visto ${formatElapsedTime(locationUpdatedAt)}"
-        }
-    }
-}
-
-private fun Offset.isInside(width: Float, height: Float, padding: Float): Boolean {
-    return x >= padding && x <= width - padding && y >= padding && y <= height - padding
-}
-
-private fun buildOwnPublicMapUser(
-    origin: Location,
-    distanceOrigin: Location?,
-    publicRoute: String,
-    myName: String,
-    myEmoji: String,
-    profileMapColor: Color,
-    sharedLocation: ChatViewModel.SharedRouteLocation?
-): OrbitUser? {
-    if (publicRoute.isBlank() || sharedLocation == null) return null
-    val target = Location(LocationManager.GPS_PROVIDER).apply {
-        latitude = sharedLocation.latitude
-        longitude = sharedLocation.longitude
-        sharedLocation.accuracyMeters?.let { accuracy = it }
-        time = sharedLocation.updatedAt
-    }
-    val distance = (distanceOrigin ?: origin).distanceTo(target).coerceAtLeast(1f)
-    val mapPosition = mapOffsetMeters(origin, target)
-    return OrbitUser(
-        username = publicRoute,
-        displayName = myName,
-        emoji = myEmoji,
-        mapColorArgb = profileMapColor.toArgb(),
-        distanceMeters = distance,
-        xMeters = mapPosition.x,
-        yMeters = mapPosition.y,
-        hasLocation = true,
-        locationUpdatedAt = sharedLocation.updatedAt,
-        isActive = true,
-        isSelf = true,
-        lastActivityLabel = "Sua localização"
-    )
-}
-
-internal fun buildMapUsers(
-    origin: Location,
-    distanceOrigin: Location?,
-    ownRoute: String,
-    contacts: List<ChatViewModel.ContactPreview>,
-    sharedLocationForRoute: (String) -> ChatViewModel.SharedRouteLocation?,
-    isRouteActive: (String) -> Boolean = { false },
-    mapColorForRoute: (String) -> Int = { 0xFF6750A4.toInt() },
-    conversationForRoute: (String) -> ChatViewModel.ConversationPreview? = { null }
-): List<OrbitUser> {
-    val cleanOwnRoute = ownRoute.normalizedRouteKey()
-    if (contacts.isEmpty()) return emptyList()
-    return contacts
-        .map { contact ->
-        val sharedLocation = sharedLocationForRoute(contact.username)
-        val target = sharedLocation?.let { location ->
-            Location(LocationManager.GPS_PROVIDER).apply {
-                latitude = location.latitude
-                longitude = location.longitude
-                location.accuracyMeters?.let { accuracy = it }
-                time = location.updatedAt
-            }
-        }
-        val distance = target?.let { (distanceOrigin ?: origin).distanceTo(it).coerceAtLeast(1f) } ?: 0f
-        val mapPosition = target?.let { mapOffsetMeters(origin, it) } ?: Offset.Zero
-        val isSelfRoute = cleanOwnRoute.isNotBlank() && contact.username.normalizedRouteKey() == cleanOwnRoute
-        OrbitUser(
-            username = contact.username,
-            displayName = contact.displayName,
-            emoji = contact.emoji,
-            mapColorArgb = mapColorForRoute(contact.username),
-            distanceMeters = distance,
-            xMeters = mapPosition.x,
-            yMeters = mapPosition.y,
-            hasLocation = target != null,
-            locationUpdatedAt = sharedLocation?.updatedAt ?: 0L,
-            isActive = isRouteActive(contact.username),
-            isSelf = isSelfRoute,
-            lastActivityLabel = conversationForRoute(contact.username)?.let { preview ->
-                if (preview.lastTimestamp > 0L) {
-                    "Última atividade no chat: ${formatElapsedTime(preview.lastTimestamp)}"
-                } else {
-                    preview.previewLine.ifBlank { "Sem atividade no chat" }
-                }
-            } ?: "Sem atividade no chat"
-        )
-    }.sortedWith(compareBy<OrbitUser> { !it.hasLocation }.thenBy { it.distanceMeters }.thenBy { it.displayName })
-}
-
-private fun String.normalizedRouteKey(): String {
-    return trim().lowercase(Locale.ROOT)
-}
-
-private fun mapOffsetMeters(origin: Location, target: Location): Offset {
-    val latScale = 111_320.0
-    val lonScale = (111_320.0 * cos(Math.toRadians(origin.latitude))).coerceAtLeast(1e-6)
-    val xMeters = wrappedLongitudeDelta(origin.longitude, target.longitude) * lonScale
-    val yMeters = (target.latitude - origin.latitude) * latScale
-    return Offset(xMeters.toFloat(), yMeters.toFloat())
-}
-
-internal fun formatDistance(distanceMeters: Float): String {
-    return if (distanceMeters < 1_000f) {
-        "${distanceMeters.roundToInt()} m"
-    } else {
-        String.format(Locale.US, "%.1f km", distanceMeters / 1_000f)
-    }
-}
-
-internal fun formatElapsedTime(timestamp: Long): String {
-    if (timestamp <= 0L) return "há pouco"
-    val elapsedSeconds = ((System.currentTimeMillis() - timestamp).coerceAtLeast(0L) / 1_000L).coerceAtLeast(1L)
-    return when {
-        elapsedSeconds < 60L -> "há pouco"
-        elapsedSeconds < 3_600L -> {
-            val minutes = elapsedSeconds / 60L
-            "$minutes ${if (minutes == 1L) "minuto" else "minutos"}"
-        }
-        elapsedSeconds < 86_400L -> {
-            val hours = elapsedSeconds / 3_600L
-            "$hours ${if (hours == 1L) "hora" else "horas"}"
-        }
-        else -> {
-            val days = elapsedSeconds / 86_400L
-            "$days ${if (days == 1L) "dia" else "dias"}"
-        }
-    }
-}
-
-private fun formatElapsedAgo(timestamp: Long): String {
-    if (timestamp <= 0L) return "agora"
-    val elapsedSeconds = ((System.currentTimeMillis() - timestamp).coerceAtLeast(0L) / 1_000L).coerceAtLeast(1L)
-    return when {
-        elapsedSeconds < 60L -> "agora"
-        elapsedSeconds < 3_600L -> {
-            val minutes = elapsedSeconds / 60L
-            "$minutes ${if (minutes == 1L) "minuto" else "minutos"} atrás"
-        }
-        elapsedSeconds < 86_400L -> {
-            val hours = elapsedSeconds / 3_600L
-            "$hours ${if (hours == 1L) "hora" else "horas"} atrás"
-        }
-        else -> {
-            val days = elapsedSeconds / 86_400L
-            "$days ${if (days == 1L) "dia" else "dias"} atrás"
-        }
-    }
-}
-
-private fun genericMapOrigin(): Location {
-    return Location(LocationManager.GPS_PROVIDER).apply {
-        latitude = 0.0
-        longitude = 0.0
-        time = 0L
-    }
-}
-
-internal fun Context.hasLocationPermission(): Boolean {
-    return ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
-        ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
-}
-
-internal fun Context.isGpsEnabled(): Boolean {
-    val locationManager = getSystemService(Context.LOCATION_SERVICE) as? LocationManager ?: return false
-    return locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)
-}
-
-@SuppressLint("MissingPermission")
-@Composable
-internal fun rememberGpsLocation(context: Context, enabled: Boolean): Location? {
-    var location by remember { mutableStateOf<Location?>(null) }
-    DisposableEffect(context, enabled) {
-        if (!enabled) {
-            location = null
-            return@DisposableEffect onDispose {}
-        }
-        val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
-            ?: return@DisposableEffect onDispose {}
-        val listener = object : LocationListener {
-            override fun onLocationChanged(newLocation: Location) {
-                location = newLocation
-            }
-        }
-        val providers = listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)
-            .filter { locationManager.isProviderEnabled(it) }
-        location = providers
-            .mapNotNull { provider -> locationManager.getLastKnownLocation(provider) }
-            .maxByOrNull { it.time }
-        providers.forEach { provider ->
-            locationManager.requestLocationUpdates(
-                provider,
-                6_000L,
-                250f,
-                listener,
-                Looper.getMainLooper()
-            )
-        }
-        onDispose {
-            locationManager.removeUpdates(listener)
-        }
-    }
-    return location
 }

@@ -51,6 +51,7 @@ object ThemePreference {
             .putString(THEME_MODE_KEY, mode.name)
             .apply()
         _themeMode.value = mode
+        AppearancePreference.syncThemeMode(mode)
     }
 
     private fun parseThemeMode(value: String?): ThemeMode? {

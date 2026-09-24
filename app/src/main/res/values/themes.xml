@@ -3,7 +3,7 @@
 
     <style name="Theme.Chat.Starting" parent="Theme.SplashScreen">
         <item name="windowSplashScreenBackground">@color/splash_background</item>
-        <item name="windowSplashScreenAnimatedIcon">@mipmap/ic_launcher</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_launcher_foreground_art</item>
         <item name="postSplashScreenTheme">@style/Theme.Chat</item>
         <item name="android:windowBackground">@color/splash_background</item>
     </style>

@@ -20,7 +20,10 @@ internal data class CityPoint(
     val name: String,
     val longitude: Double,
     val latitude: Double,
-    val importanceRank: Int
+    val importanceRank: Int,
+    val population: Long,
+    val isCountryCapital: Boolean,
+    val minZoom: Float
 )
 
 internal data class BrazilPlacePoint(

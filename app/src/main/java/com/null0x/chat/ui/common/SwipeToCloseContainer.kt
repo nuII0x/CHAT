@@ -14,6 +14,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -24,10 +25,23 @@ import androidx.compose.ui.unit.IntOffset
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 
+class SwipeToCloseState internal constructor() {
+    internal var closeRequests by mutableIntStateOf(0)
+        private set
+
+    fun requestClose() {
+        closeRequests++
+    }
+}
+
+@Composable
+fun rememberSwipeToCloseState(): SwipeToCloseState = remember { SwipeToCloseState() }
+
 @Composable
 fun SwipeToCloseContainer(
     onClose: () -> Unit,
     modifier: Modifier = Modifier,
+    state: SwipeToCloseState = rememberSwipeToCloseState(),
     content: @Composable () -> Unit
 ) {
     BoxWithConstraints(modifier = modifier.fillMaxSize().clipToBounds()) {
@@ -38,6 +52,7 @@ fun SwipeToCloseContainer(
         val animatedOffset = remember(maxWidth) { Animatable(screenWidthPx) }
         val closeThreshold = screenWidthPx * 0.18f
         val flingThreshold = 700f
+        var closing by remember { androidx.compose.runtime.mutableStateOf(false) }
 
         LaunchedEffect(screenWidthPx) {
             animatedOffset.snapTo(screenWidthPx)
@@ -45,6 +60,16 @@ fun SwipeToCloseContainer(
                 targetValue = 0f,
                 animationSpec = tween(durationMillis = 320, easing = FastOutSlowInEasing)
             )
+        }
+
+        LaunchedEffect(state.closeRequests) {
+            if (state.closeRequests == 0 || closing) return@LaunchedEffect
+            closing = true
+            animatedOffset.animateTo(
+                targetValue = screenWidthPx,
+                animationSpec = tween(durationMillis = 170, easing = FastOutSlowInEasing)
+            )
+            onClose()
         }
 
         Box(
@@ -70,6 +95,8 @@ fun SwipeToCloseContainer(
                         if (shouldClose) {
                             val target = if (direction >= 0f) screenWidthPx else -screenWidthPx
                             scope.launch {
+                                if (closing) return@launch
+                                closing = true
                                 animatedOffset.animateTo(target, animationSpec = tween(durationMillis = 170))
                                 onClose()
                             }

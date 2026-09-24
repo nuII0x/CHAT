@@ -49,6 +49,8 @@ internal fun WindowDispositionScaffold(
     val focusManager = LocalFocusManager.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val contentColor = readableContentColor(windowColor)
+    val swipeToCloseState = rememberSwipeToCloseState()
+    val requestAnimatedClose = { swipeToCloseState.requestClose() }
     DisposableEffect(hideKeyboard) {
         if (hideKeyboard) {
             focusManager.clearFocus(force = true)
@@ -73,10 +75,13 @@ internal fun WindowDispositionScaffold(
         }
     }
     Dialog(
-        onDismissRequest = onBack,
+        onDismissRequest = requestAnimatedClose,
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
-        SwipeToCloseContainer(onClose = onBack) {
+        SwipeToCloseContainer(
+            state = swipeToCloseState,
+            onClose = onBack
+        ) {
             Surface(
                 modifier = Modifier.fillMaxSize(),
                 color = windowColor
@@ -98,7 +103,7 @@ internal fun WindowDispositionScaffold(
                                 .padding(start = 8.dp, end = 8.dp, top = 8.dp, bottom = 4.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            IconButton(onClick = onBack) {
+                            IconButton(onClick = requestAnimatedClose) {
                                 Icon(
                                     imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                                     contentDescription = "Voltar",

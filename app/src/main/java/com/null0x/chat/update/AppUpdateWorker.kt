@@ -18,6 +18,7 @@ import com.null0x.chat.R
 import com.null0x.chat.network.TorHttp
 import org.json.JSONObject
 import java.io.File
+import java.security.MessageDigest
 
 class AppUpdateWorker(
     appContext: Context,
@@ -54,6 +55,10 @@ class AppUpdateWorker(
         val state = AppUpdateManager.refreshState(context)
         val apkUrl = state.apkUrl.takeIf { AppUpdateManager.canUseUpdateDownloadUrl(it) }
             ?: return Result.failure()
+        val expectedSha256 = state.apkSha256.lowercase().takeIf { SHA256_REGEX.matches(it) }
+            ?: return Result.failure()
+        val expectedSize = state.apkSize.takeIf { it in 1..MAX_APK_BYTES }
+            ?: return Result.failure()
         val targetFile = File(
             AppUpdateManager.updatesDir(context),
             "NoChat-${state.availableVersionName.ifBlank { state.availableVersionCode.toString() }}.apk"
@@ -63,7 +68,8 @@ class AppUpdateWorker(
 
         return try {
             setForeground(createForegroundInfo(context, "Baixando atualização...", -1, true))
-            val connection = TorHttp.openDirectConnection(
+            val connection = TorHttp.openConnection(
+                context = context,
                 rawUrl = apkUrl,
                 connectTimeoutMs = 15_000,
                 readTimeoutMs = 45_000
@@ -76,7 +82,11 @@ class AppUpdateWorker(
                 else -> return Result.retry()
             }
             val totalBytes = connection.contentLengthLong.takeIf { it > 0L } ?: -1L
+            if (totalBytes > MAX_APK_BYTES || (totalBytes > 0L && totalBytes != expectedSize)) {
+                error("Tamanho do APK difere do manifesto")
+            }
             targetFile.parentFile?.mkdirs()
+            val digest = MessageDigest.getInstance("SHA-256")
             connection.inputStream.use { input ->
                 tempFile.outputStream().use { output ->
                     val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
@@ -87,6 +97,10 @@ class AppUpdateWorker(
                         if (read < 0) break
                         output.write(buffer, 0, read)
                         copiedBytes += read
+                        if (copiedBytes > expectedSize || copiedBytes > MAX_APK_BYTES) {
+                            error("APK excede o tamanho declarado")
+                        }
+                        digest.update(buffer, 0, read)
                         val progress = if (totalBytes > 0L) {
                             ((copiedBytes * 100L) / totalBytes).toInt().coerceIn(0, 100)
                         } else {
@@ -114,6 +128,18 @@ class AppUpdateWorker(
             if (tempFile.length() <= 0L) {
                 error("APK baixado vazio")
             }
+            if (tempFile.length() != expectedSize) {
+                error("Tamanho do APK invalido")
+            }
+            val actualSha256 = digest.digest().joinToString("") { "%02x".format(it.toInt() and 0xFF) }
+            if (!actualSha256.equals(expectedSha256, ignoreCase = true)) {
+                error("Hash do APK invalido")
+            }
+            AppUpdateVerifier.verifyArchive(
+                context = context,
+                apkFile = tempFile,
+                expectedVersionCode = state.availableVersionCode
+            ).getOrThrow()
             if (targetFile.exists()) targetFile.delete()
             if (!tempFile.renameTo(targetFile)) {
                 tempFile.copyTo(targetFile, overwrite = true)
@@ -151,12 +177,16 @@ class AppUpdateWorker(
         val versionName = json.optString("versionName").trim()
         val apkUrl = json.optString("apkUrl").trim()
         val releaseNotes = json.optString("releaseNotes").trim()
+        val apkSha256 = json.optString("apkSha256").trim().lowercase()
+        val apkSize = json.optLong("apkSize", 0L)
         require(versionCode > 0) { "versionCode inválido no manifest" }
         require(versionName.isNotBlank()) { "versionName inválido no manifest" }
         require(AppUpdateManager.canUseUpdateDownloadUrl(apkUrl)) {
-            "apkUrl precisa ser http ou https"
+            "apkUrl precisa ser um endereco onion v3"
         }
-        return RemoteUpdateManifest(versionCode, versionName, apkUrl, releaseNotes)
+        require(SHA256_REGEX.matches(apkSha256)) { "apkSha256 invalido no manifest" }
+        require(apkSize in 1..MAX_APK_BYTES) { "apkSize invalido no manifest" }
+        return RemoteUpdateManifest(versionCode, versionName, apkUrl, releaseNotes, apkSha256, apkSize)
     }
 
     private fun showUpdateAvailableNotification(context: Context, manifest: RemoteUpdateManifest) {
@@ -278,5 +308,7 @@ class AppUpdateWorker(
         private const val INSTALL_READY_NOTIFICATION_ID = 4803
         private const val DOWNLOAD_ACTION_REQUEST = 4804
         private const val INSTALL_ACTION_REQUEST = 4805
+        private const val MAX_APK_BYTES = 512L * 1024L * 1024L
+        private val SHA256_REGEX = Regex("^[a-f0-9]{64}$")
     }
 }

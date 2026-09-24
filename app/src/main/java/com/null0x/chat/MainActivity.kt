@@ -81,6 +81,7 @@ import com.null0x.chat.ui.theme.AppearancePreference
 import com.null0x.chat.ui.theme.ThemeMode
 import com.null0x.chat.ui.theme.ThemePreference
 import com.null0x.chat.update.AppUpdateManager
+import com.null0x.chat.util.AppLogger
 import com.null0x.chat.viewmodel.ChatViewModel
 
 class MainActivity : ComponentActivity() {
@@ -117,6 +118,7 @@ class MainActivity : ComponentActivity() {
         val splashScreen = installSplashScreen()
         splashScreen.setKeepOnScreenCondition { !initialContentReady }
         super.onCreate(savedInstanceState)
+        AppLogger.i(this, "Aplicativo iniciado | ${AppLogger.deviceInfo()}")
         WindowCompat.setDecorFitsSystemWindows(window, false)
         AppSecurityManager.initialize(this)
         val initialOpenChatUsername = MessageNotifier.consumeOpenChatUsername(this, intent)

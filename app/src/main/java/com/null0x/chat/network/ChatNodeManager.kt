@@ -2,7 +2,6 @@ package com.null0x.chat.network
 
 import android.content.Context
 import android.util.Base64
-import android.util.Log
 import com.null0x.chat.AppVisibility
 import com.null0x.chat.model.DeliveryState
 import com.null0x.chat.model.Message
@@ -28,6 +27,7 @@ import com.null0x.chat.storage.ChatStore
 import com.null0x.chat.storage.LocalStoreCipher
 import com.null0x.chat.util.normalizeProfileEmojiInput
 import com.null0x.chat.util.normalizeProfileNameInput
+import com.null0x.chat.util.AppLogger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -1081,6 +1081,12 @@ object ChatNodeManager {
             return Result.failure(IllegalStateException("Servidor local ainda nao esta pronto"))
         }
 
+        if (!node.isOutgoingTransportReady()) {
+            store?.updateDeliveryStatus(cleanPeer, messageId, DeliveryState.Pending)
+            listeners.forEach { it.onOutgoingDeliveryStateChanged(cleanPeer, messageId, DeliveryState.Pending) }
+            return Result.failure(IllegalStateException("Rede Tor ainda nao esta pronta"))
+        }
+
         val timestamp = store?.load(cleanPeer)
             ?.firstOrNull { it.isMine && it.id == messageId }
             ?.timestamp
@@ -1097,12 +1103,13 @@ object ChatNodeManager {
     }
 
     private fun requestTorRecoveryAfterSendFailure(error: Throwable?) {
+        if (!shouldRecoverTorAfterSendFailure(error)) return
         val context = appContext ?: return
         val now = System.currentTimeMillis()
         if (now - lastTransportRecoveryAtMs < 60_000L) return
         lastTransportRecoveryAtMs = now
         val reason = error?.message.orEmpty()
-        Log.w("${AppBranding.APP_NAME}Transport", "Falha ao enviar via Tor; tentando recuperar transporte: $reason")
+        AppLogger.w(context, "Falha ao enviar via Tor; tentando recuperar transporte", error)
         TorManager.recoverAfterTransportFailure(context, reason)
     }
 
@@ -1309,4 +1316,13 @@ object ChatNodeManager {
         val timestamp: Long?,
         val text: String
     )
+}
+
+internal fun shouldRecoverTorAfterSendFailure(error: Throwable?): Boolean {
+    var cause = error
+    while (cause != null) {
+        if (cause is java.net.ConnectException) return true
+        cause = cause.cause
+    }
+    return false
 }

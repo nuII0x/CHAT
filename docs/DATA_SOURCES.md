@@ -35,6 +35,8 @@ Transformacoes aplicadas:
 - Conversao para JSON/GeoJSON compacto.
 - Reducao/simplificacao de pontos para renderizacao offline em Android.
 - Selecao de campos necessarios para exibicao no mapa.
+- A base mundial de localidades usa `ne_10m_populated_places_simple`, versao 5.1.2.
+- Os campos compactos de cidade preservam escala cartografica, populacao, capital nacional e zoom minimo para priorizacao progressiva dos rotulos.
 - As massas de terra e fronteiras mundiais podem ser regeneradas por `scripts/generate_map_assets.py`.
 
 Observacao de licenca:
@@ -71,6 +73,44 @@ Observacao de licenca:
 - Verificar a licenca atual do repositorio antes de distribuir releases publicas.
 - Se a licenca nao estiver explicita ou mudar, substituir por fonte oficial ou por base com licenca claramente compativel.
 
+### GeoNames - localidades de grandes economias
+
+Arquivo combinado no app:
+
+- `app/src/main/assets/map/ne_populated_places.json`
+
+Fonte:
+
+- Download: https://download.geonames.org/export/dump/cities500.zip
+- Licenca: Creative Commons Attribution 4.0
+
+Escopo e transformacoes:
+
+- Localidades com mais de 500 habitantes e sedes administrativas ate PPLA3.
+- Recorte dos Estados Unidos, China, Alemanha, Japao, India, Reino Unido, Franca, Italia e Canada.
+- O Brasil permanece coberto pela base municipal especifica ja documentada.
+- Apenas nome, coordenadas, populacao, prioridade e zoom minimo sao mantidos.
+- Entradas coincidentes com o Natural Earth sao deduplicadas pelo nome e coordenadas arredondadas.
+- O gerador rejeita o asset combinado se ele ultrapassar 15 MB.
+- O recorte usa como criterio as dez maiores economias no ranking de PIB nominal de 2023 do Banco Mundial, incluindo o Brasil.
+- Ranking: https://datacatalogfiles.worldbank.org/ddh-published/0038130/DR0046441/GDP.pdf
+
+### U.S. Census Bureau - localidades dos Estados Unidos
+
+Arquivo combinado no app:
+
+- `app/src/main/assets/map/ne_populated_places.json`
+
+Fonte:
+
+- Gazetteer nacional de Places 2025: https://www2.census.gov/geo/docs/maps-data/data/gazetteer/2025_Gazetteer/2025_Gaz_place_national.zip
+
+Transformacoes:
+
+- Inclusao dos nomes oficiais e pontos internos representativos de todos os `Places` publicados no arquivo nacional.
+- Conversao das coordenadas para o formato compacto usado pelo mapa.
+- Deduplicacao contra Natural Earth e GeoNames antes da escrita do asset offline.
+
 ### IBGE - Malha Municipal Digital 2025
 
 Arquivo no app:
@@ -106,24 +146,6 @@ Caso seja necessario reduzir risco juridico ou aumentar precisao, preferir fonte
 
 - IBGE - Malhas territoriais: https://www.ibge.gov.br/geociencias/organizacao-do-territorio/malhas-territoriais.html
 - IBGE - Localidades/estrutura territorial: https://servicodados.ibge.gov.br/api/docs/localidades
-
-## Modelos de IA
-
-O app possui suporte a modelo GGUF local configuravel. O URL padrao ou recomendado do modelo deve ser revisado no codigo antes de cada release.
-
-Arquivo relacionado:
-
-- `app/src/main/java/com/null0x/chat/ai/NullAiModelStore.kt`
-
-Fonte atualmente usada como recomendacao tecnica:
-
-- Qwen2.5 0.5B Instruct GGUF no Hugging Face: https://huggingface.co/bartowski/Qwen2.5-0.5B-Instruct-GGUF
-
-Observacao de licenca:
-
-- Modelos de IA podem ter licencas proprias e restricoes especificas.
-- Antes de distribuir um APK que baixe ou recomende um modelo, revisar a licenca do modelo no Hugging Face.
-- Nao incluir pesos de modelo no repositorio sem confirmar permissao de redistribuicao.
 
 ## Checklist Antes de Release
 

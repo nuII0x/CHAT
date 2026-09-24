@@ -30,9 +30,6 @@ class P2PNode(
         private const val OUTGOING_SOCKET_TIMEOUT_MS = 12_000
         private const val SOCKS_CONNECT_TIMEOUT_MS = 10_000
         private const val OUTGOING_CONNECTION_IDLE_MS = 35_000L
-        private const val MAX_INCOMING_CIPHER_CHARS = 192 * 1024
-        private const val MAX_INCOMING_PLAIN_CHARS = 64 * 1024
-        private val ONION_HOST_REGEX = Regex("^[a-z2-7]{56}\\.onion$")
     }
 
     private var tcpJob: Job? = null
@@ -70,6 +67,10 @@ class P2PNode(
     }
 
     fun isServerReady(): Boolean = serverReady
+
+    fun isOutgoingTransportReady(): Boolean {
+        return socksEnabled && socksPort in 1..65535 && publicRoute.isNotBlank()
+    }
 
     fun start(
         scope: CoroutineScope,
@@ -129,7 +130,7 @@ class P2PNode(
                 val fromRoute = publicRoute.ifBlank {
                     throw IllegalStateException("Rota onion local ainda nao esta pronta")
                 }
-                val encrypted = SimpleCipher.encrypt("$fromRoute|$text")
+                val encrypted = P2PTransportCodec.encode(fromRoute, text)
                 sendEncryptedLine(endpoint, encrypted)
             }
         }
@@ -265,14 +266,14 @@ class P2PNode(
     ) {
         socket.soTimeout = INCOMING_SOCKET_TIMEOUT_MS
         val reader = BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.UTF_8))
-        val firstLine = readBoundedLine(reader, MAX_INCOMING_CIPHER_CHARS) ?: return
+        val firstLine = readBoundedLine(reader, P2PTransportCodec.MAX_CIPHER_CHARS) ?: return
         if (isHttpRequestLine(firstLine)) {
             handleHttpSocket(socket, reader, firstLine, onHttpRequest)
             return
         }
         handleEncryptedLine(firstLine, onMessage)
         while (true) {
-            val line = readBoundedLine(reader, MAX_INCOMING_CIPHER_CHARS) ?: break
+            val line = readBoundedLine(reader, P2PTransportCodec.MAX_CIPHER_CHARS) ?: break
             handleEncryptedLine(line, onMessage)
         }
     }
@@ -281,14 +282,8 @@ class P2PNode(
         line: String,
         onMessage: (fromUsername: String, text: String) -> Unit
     ) {
-        val plain = SimpleCipher.decrypt(line) ?: return
-        if (plain.length > MAX_INCOMING_PLAIN_CHARS) return
-        val separator = plain.indexOf('|')
-        if (separator <= 0) return
-        val fromUser = plain.substring(0, separator)
-        val message = plain.substring(separator + 1)
-        if (RouteEndpoint.parse(fromUser) == null) return
-        onMessage(fromUser, message)
+        val message = P2PTransportCodec.decode(line) ?: return
+        onMessage(message.fromRoute, message.text)
     }
 
     private fun handleHttpSocket(
@@ -311,7 +306,7 @@ class P2PNode(
                 headers[line.substring(0, separator).trim().lowercase()] = line.substring(separator + 1).trim()
             }
         }
-        val contentLength = headers["content-length"]?.toIntOrNull()?.coerceIn(0, MAX_INCOMING_PLAIN_CHARS) ?: 0
+        val contentLength = headers["content-length"]?.toIntOrNull()?.coerceIn(0, P2PTransportCodec.MAX_PLAIN_CHARS) ?: 0
         val body = if (contentLength > 0) {
             val buffer = CharArray(contentLength)
             var offset = 0
@@ -366,26 +361,6 @@ class P2PNode(
             429 -> "Too Many Requests"
             503 -> "Service Unavailable"
             else -> "OK"
-        }
-    }
-
-    private data class RouteEndpoint(val host: String, val port: Int) {
-        fun maskedHost(): String {
-            return "${host.take(6)}...${host.takeLast(6)}:$port"
-        }
-
-        companion object {
-            fun parse(route: String): RouteEndpoint? {
-                val clean = route.trim()
-                if (!clean.startsWith("onion:", ignoreCase = true)) return null
-                val value = clean.substringAfter(':')
-                val separator = value.lastIndexOf(':')
-                if (separator <= 0 || separator == value.lastIndex) return null
-                val host = value.substring(0, separator).lowercase()
-                val port = value.substring(separator + 1).toIntOrNull() ?: return null
-                if (!ONION_HOST_REGEX.matches(host) || port !in 1..65535) return null
-                return RouteEndpoint(host, port)
-            }
         }
     }
 

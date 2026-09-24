@@ -6,7 +6,6 @@ import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
 import android.provider.Settings
 import android.widget.Toast
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -91,8 +90,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.luminance
@@ -121,6 +118,7 @@ import com.null0x.chat.ui.profile.RouteProfileScreen
 import com.null0x.chat.security.SensitiveClipboard
 import com.null0x.chat.security.AppSecurityManager
 import com.null0x.chat.ui.theme.themeBackgroundColor
+import com.null0x.chat.ui.theme.AppearancePreference
 import com.null0x.chat.ui.theme.ThemePreference
 import com.null0x.chat.viewmodel.ChatViewModel
 import kotlinx.coroutines.delay
@@ -169,6 +167,7 @@ fun HomeScreen(
     val networkAvailable by TorManager.networkAvailableState.collectAsState()
     val knownRoutesRefreshing by ChatNodeManager.knownRoutesRefreshing.collectAsState()
     val themeMode by ThemePreference.themeMode.collectAsState()
+    val appearance by AppearancePreference.appearance.collectAsState()
     val systemDarkTheme = isSystemInDarkTheme()
     val homeBackgroundColor = themeBackgroundColor(themeMode, systemDarkTheme)
     SystemBarsColorEffect(
@@ -319,6 +318,7 @@ fun HomeScreen(
         mapOf(
             HomeTab.Chats to conversations.sumOf { it.unreadCount },
             HomeTab.Contacts to pendingContactRequests.size + if (vm.routeLookup?.isLocalOwner == false) 1 else 0,
+            HomeTab.Market to 0,
             HomeTab.Map to 0,
             HomeTab.Profile to profileAttentionCount(vm.profileName, vm.profileBioText),
             HomeTab.Settings to 0
@@ -605,11 +605,7 @@ fun HomeScreen(
                     selectedChatsCount = selectedChatUsernames.size,
                     onDeleteSelectedChats = {
                         selectedChatUsernames.forEach { username ->
-                            if (vm.isNullAiConversation(username)) {
-                                vm.disableNullAi()
-                            } else {
-                                vm.removeConversation(username)
-                            }
+                            vm.removeConversation(username)
                         }
                         selectedChatUsernames = emptySet()
                     },
@@ -735,6 +731,10 @@ fun HomeScreen(
                             selectedContactUsername = selectedContactUsername,
                             onSelectContactForDeletion = { selectedContactUsername = it }
                         )
+                        HomeTab.Market -> MarketScreen(
+                            torReady = serviceReady,
+                            networkAvailable = networkAvailable
+                        )
                         HomeTab.Map -> MapTab(
                             active = tab == HomeTab.Map,
                             preheat = pagerState.currentPage == HomeTab.Map.ordinal ||
@@ -802,6 +802,8 @@ fun HomeScreen(
                             bottomPadding = 24.dp,
                             themeMode = themeMode,
                             onThemeModeChange = { ThemePreference.setThemeMode(context, it) },
+                            accentColor = appearance.accentColor,
+                            onAccentColorChange = { AppearancePreference.setAccentColor(context, it) },
                             keepViewedMessages = vm.isKeepViewedMessagesEnabled(),
                             onKeepViewedMessagesChange = vm::updateKeepViewedMessagesPreference,
                             screenshotsEnabled = vm.isScreenshotsEnabled(),
@@ -810,9 +812,6 @@ fun HomeScreen(
                             onShowChatPresenceStatusChange = vm::updateChatPresenceStatusVisibility,
                             showChatLastActivity = vm.showChatLastActivity,
                             onShowChatLastActivityChange = vm::updateChatLastActivityVisibility,
-                            nullAiEnabled = vm.nullAiEnabled,
-                            nullAiUnavailableReason = vm.nullAiUnavailableReason(),
-                            onNullAiEnabledChange = vm::updateNullAiEnabled,
                             contacts = contacts,
                             locationSharingMode = vm.locationSharingMode,
                             locationSharingAllowedRoutes = vm.locationSharingAllowedRoutes,
@@ -1077,7 +1076,7 @@ private fun ConversationsPanelSelection(
                     locked = item.locked,
                     highlighted = highlightedUsernames.contains(item.username),
                     pointed = pointedUsername == item.username,
-                    active = if (item.isAi) false else isRouteActive(item.username),
+                    active = !item.isSelfChat && isRouteActive(item.username),
                     imagePath = profileImagePathForRoute(item.username),
                     onClick = {
                         if (selectedChatUsernames.isNotEmpty()) {
@@ -1136,17 +1135,13 @@ private fun ConversationRowSelectable(
                     modifier = Modifier.weight(1f),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    if (item.isAi) {
-                        NullAiNetworkAvatar(backgroundColor = Color(item.mapColorArgb))
-                    } else {
-                        InitialAvatar(
-                            text = item.displayName,
-                            emoji = item.emoji,
-                            backgroundColor = Color(item.mapColorArgb),
-                            active = active,
-                            imagePath = imagePath
-                        )
-                    }
+                    InitialAvatar(
+                        text = item.displayName,
+                        emoji = item.emoji,
+                        backgroundColor = Color(item.mapColorArgb),
+                        active = active,
+                        imagePath = imagePath
+                    )
                     Spacer(Modifier.width(11.dp))
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
@@ -1183,19 +1178,17 @@ private fun ConversationRowSelectable(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     SnapCountBadge(unread = item.unreadCount)
-                    if (!item.isAi) {
-                        Box(
-                            modifier = Modifier.size(36.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            if (locked) {
-                                Icon(
-                                    imageVector = Icons.Filled.Lock,
-                                    contentDescription = "Conversa trancada",
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            }
+                    Box(
+                        modifier = Modifier.size(36.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (locked) {
+                            Icon(
+                                imageVector = Icons.Filled.Lock,
+                                contentDescription = "Conversa trancada",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(18.dp)
+                            )
                         }
                     }
                 }
@@ -2026,55 +2019,6 @@ private fun ContactRow(
                 }
             }
             ListSeparator(modifier = Modifier.padding(start = 68.dp))
-        }
-    }
-}
-
-@Composable
-private fun NullAiNetworkAvatar(
-    backgroundColor: Color,
-    modifier: Modifier = Modifier
-) {
-    val contentColor = readableProfileAvatarContentColor(backgroundColor)
-    Box(
-        modifier = modifier.size(52.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        Surface(
-            shape = CircleShape,
-            color = backgroundColor,
-            modifier = Modifier.size(42.dp)
-        ) {
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                val w = size.width
-                val h = size.height
-                val nodes = listOf(
-                    Offset(w * 0.24f, h * 0.50f),
-                    Offset(w * 0.48f, h * 0.34f),
-                    Offset(w * 0.48f, h * 0.66f),
-                    Offset(w * 0.74f, h * 0.24f),
-                    Offset(w * 0.74f, h * 0.50f),
-                    Offset(w * 0.74f, h * 0.76f)
-                )
-                val lines = listOf(0 to 1, 0 to 2, 1 to 3, 1 to 4, 2 to 4, 2 to 5)
-                val lineColor = contentColor.copy(alpha = 0.68f)
-                lines.forEach { (from, to) ->
-                    drawLine(
-                        color = lineColor,
-                        start = nodes[from],
-                        end = nodes[to],
-                        strokeWidth = 2.4.dp.toPx(),
-                        cap = StrokeCap.Round
-                    )
-                }
-                nodes.forEachIndexed { index, offset ->
-                    drawCircle(
-                        color = contentColor,
-                        radius = if (index == 0) 3.6.dp.toPx() else 3.1.dp.toPx(),
-                        center = offset
-                    )
-                }
-            }
         }
     }
 }

@@ -14,7 +14,7 @@ Este arquivo serve para anotar ideias, melhorias, correções e ajustes futuros 
 
 - [ ] Criar release no GitHub.
 - [ ] Gerar APK assinado.
-- [ ] Adicionar sistema de atualização via GitHub Releases.
+- [ ] Publicar o APK e o manifesto de atualização exclusivamente no serviço onion do projeto.
 - [ ] Resolver como distribuir o app via torrent automaticamente dentro do app mesmo.
 
 ## Instruções de instalação
@@ -81,18 +81,13 @@ O versionamento segue o modelo x.y.z
 - Preparacao das preferencias de privacidade por conversa.
 - Correcoes de comportamento ao alternar entre Wi-Fi, dados moveis e Tor.
 
-### v1.0.2 — Mapa, ajustes e Null IA experimental
+### v1.0.2 — Mapa, ajustes e organizacao
 
 - Inclusao das telas de ajustes e organizacao das preferencias do app.
 - Melhorias no mapa offline, dados territoriais e visualizacao de regioes.
-- Primeira integracao experimental da Null IA local com modelos GGUF.
-- Download/importacao de modelo local e preparacao do motor `llama.cpp`.
 - Ajustes de versionamento automatico e metadados de atualizacao.
 
 ### v1.0.3 — Em breve
 
-- Null IA mais leve, com prompt reduzido, memoria curta e limpeza imediata ao apagar conversa.
 - Ferramentas locais para calculos, datas e conversoes usadas como contexto do modelo.
-- Pos-processamento para preservar respostas numericas exatas sem substituir a resposta da IA.
-- Otimizacoes no caminho nativo do `llama.cpp`, com contexto reutilizavel e limites de tempo mais coerentes.
 - Refinos de privacidade para evitar vestigios locais quando o usuario limpa ou remove uma conversa.

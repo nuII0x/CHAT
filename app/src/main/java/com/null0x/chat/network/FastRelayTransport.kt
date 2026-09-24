@@ -1,8 +1,8 @@
 package com.null0x.chat.network
 
 import android.content.Context
-import android.util.Log
 import com.null0x.chat.security.identity.RouteIdentityRegistry
+import com.null0x.chat.util.AppLogger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -186,7 +186,7 @@ object FastRelayTransport {
                         }
                     }
                 } catch (error: Throwable) {
-            Log.w("FastRelayTransport", "descoberta da rota Tor falhou: ${error.message.orEmpty()}")
+                    AppLogger.w(appContext, "Descoberta da rota Tor falhou", error)
                 }
                 delay(1_500)
             }

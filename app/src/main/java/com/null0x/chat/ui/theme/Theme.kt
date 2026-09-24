@@ -5,12 +5,13 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 
-private val DarkColorScheme = darkColorScheme(
-    primary = AppOnSurfaceDark,
-    onPrimary = AppBackgroundDark,
+private fun darkAppColorScheme(accent: Color) = darkColorScheme(
+    primary = accent,
+    onPrimary = readableContentColor(accent),
     primaryContainer = AppPrimaryContainerDark,
     onPrimaryContainer = AppOnSurfaceDark,
     secondary = AppOnSurfaceDark,
@@ -39,9 +40,9 @@ private val DarkColorScheme = darkColorScheme(
     onErrorContainer = AppOnSurfaceDark
 )
 
-private val LightColorScheme = lightColorScheme(
-    primary = AppOnSurfaceLight,
-    onPrimary = AppSurfaceLight,
+private fun lightAppColorScheme(accent: Color) = lightColorScheme(
+    primary = accent,
+    onPrimary = readableContentColor(accent),
     primaryContainer = AppPrimaryContainerLight,
     onPrimaryContainer = AppOnSurfaceLight,
     secondary = AppOnSurfaceLight,
@@ -136,10 +137,13 @@ fun ChatTheme(
     content: @Composable () -> Unit
 ) {
     val systemDarkTheme = isSystemInDarkTheme()
+    val accent = AppearancePreference.appearance.collectAsState().value.accentColor.color
+    val darkScheme = darkAppColorScheme(accent)
+    val lightScheme = lightAppColorScheme(accent)
     val colorScheme = when (themeMode) {
-        ThemeMode.SYSTEM -> if (systemDarkTheme) DarkColorScheme else LightColorScheme
-        ThemeMode.LIGHT -> LightColorScheme
-        ThemeMode.DARK -> DarkColorScheme
+        ThemeMode.SYSTEM -> if (systemDarkTheme) darkScheme else lightScheme
+        ThemeMode.LIGHT -> lightScheme
+        ThemeMode.DARK -> darkScheme
     }
 
     MaterialTheme(

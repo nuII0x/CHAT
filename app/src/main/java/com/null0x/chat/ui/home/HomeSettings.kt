@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -67,6 +68,7 @@ import com.null0x.chat.ui.common.primalisBareOutlinedTextFieldColors
 import com.null0x.chat.ui.maskedRouteLabel
 import com.null0x.chat.ui.theme.ThemeMode
 import com.null0x.chat.ui.theme.ThemePreference
+import com.null0x.chat.ui.theme.AccentColor
 import com.null0x.chat.ui.theme.readableContentColor
 import com.null0x.chat.ui.theme.themeBackgroundColor
 import com.null0x.chat.ui.theme.themeDialogColor
@@ -84,6 +86,8 @@ internal fun SettingsTab(
     bottomPadding: androidx.compose.ui.unit.Dp,
     themeMode: ThemeMode,
     onThemeModeChange: (ThemeMode) -> Unit,
+    accentColor: AccentColor,
+    onAccentColorChange: (AccentColor) -> Unit,
     keepViewedMessages: Boolean,
     onKeepViewedMessagesChange: (Boolean) -> Unit,
     screenshotsEnabled: Boolean,
@@ -92,9 +96,6 @@ internal fun SettingsTab(
     onShowChatPresenceStatusChange: (Boolean) -> Unit,
     showChatLastActivity: Boolean,
     onShowChatLastActivityChange: (Boolean) -> Unit,
-    nullAiEnabled: Boolean,
-    nullAiUnavailableReason: String,
-    onNullAiEnabledChange: (Boolean) -> Unit,
     contacts: List<ChatViewModel.ContactPreview>,
     locationSharingMode: ChatViewModel.LocationSharingMode,
     locationSharingAllowedRoutes: Set<String>,
@@ -119,6 +120,8 @@ internal fun SettingsTab(
     var showChatsWindow by rememberSaveable { mutableStateOf(false) }
     var showBlockedWindow by rememberSaveable { mutableStateOf(false) }
     var showAppearancesSheet by rememberSaveable { mutableStateOf(false) }
+    var showThemeSheet by rememberSaveable { mutableStateOf(false) }
+    var showAccentSheet by rememberSaveable { mutableStateOf(false) }
     var showLocationWindow by rememberSaveable { mutableStateOf(false) }
     var showRestoreIdentity by rememberSaveable { mutableStateOf(false) }
     var showPrivateInbox by rememberSaveable { mutableStateOf(false) }
@@ -254,16 +257,6 @@ internal fun SettingsTab(
                     title = "Chats",
                     subtitle = "Presença, histórico e captura de tela",
                     onClick = { showChatsWindow = true }
-                )
-            }
-            item {
-                val nullAiAvailable = nullAiUnavailableReason.isBlank()
-                SettingsSwitchRow(
-                    title = "Null IA",
-                    subtitle = nullAiUnavailableReason.ifBlank { "Disponível na lista de conversas" },
-                    checked = nullAiEnabled && nullAiAvailable,
-                    enabled = nullAiAvailable,
-                    onCheckedChange = onNullAiEnabledChange
                 )
             }
             item {
@@ -515,10 +508,30 @@ internal fun SettingsTab(
     if (showAppearancesSheet) {
         AppearanceBottomSheet(
             currentThemeMode = themeMode,
-            onThemeModeChange = { selected ->
-                onThemeModeChange(selected)
+            currentAccentColor = accentColor,
+            onOpenTheme = {
+                showAppearancesSheet = false
+                showThemeSheet = true
+            },
+            onOpenAccent = {
+                showAppearancesSheet = false
+                showAccentSheet = true
             },
             onDismiss = { showAppearancesSheet = false }
+        )
+    }
+    if (showThemeSheet) {
+        ThemeBottomSheet(
+            currentThemeMode = themeMode,
+            onThemeModeChange = onThemeModeChange,
+            onDismiss = { showThemeSheet = false }
+        )
+    }
+    if (showAccentSheet) {
+        AccentColorBottomSheet(
+            currentAccentColor = accentColor,
+            onAccentColorChange = onAccentColorChange,
+            onDismiss = { showAccentSheet = false }
         )
     }
 }
@@ -527,7 +540,9 @@ internal fun SettingsTab(
 @Composable
 private fun AppearanceBottomSheet(
     currentThemeMode: ThemeMode,
-    onThemeModeChange: (ThemeMode) -> Unit,
+    currentAccentColor: AccentColor,
+    onOpenTheme: () -> Unit,
+    onOpenAccent: () -> Unit,
     onDismiss: () -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -550,26 +565,91 @@ private fun AppearanceBottomSheet(
                 color = MaterialTheme.colorScheme.onSurface
             )
             Text(
-                text = "Escolha como o app deve seguir o tema.",
+                text = "Personalize as cores e o tema do aplicativo.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             Spacer(modifier = Modifier.height(4.dp))
-            ThemeModeSheetOption(
-                title = "Claro",
-                selected = currentThemeMode == ThemeMode.LIGHT,
-                onClick = { onThemeModeChange(ThemeMode.LIGHT) }
+            SettingsRow(
+                title = "Cor de destaque",
+                subtitle = currentAccentColor.label,
+                onClick = onOpenAccent
             )
-            ThemeModeSheetOption(
-                title = "Escuro",
-                selected = currentThemeMode == ThemeMode.DARK,
-                onClick = { onThemeModeChange(ThemeMode.DARK) }
+            SettingsRow(
+                title = "Tema",
+                subtitle = themeModeLabel(currentThemeMode),
+                onClick = onOpenTheme
             )
-            ThemeModeSheetOption(
-                title = "Sistema",
-                selected = currentThemeMode == ThemeMode.SYSTEM,
-                onClick = { onThemeModeChange(ThemeMode.SYSTEM) }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ThemeBottomSheet(
+    currentThemeMode: ThemeMode,
+    onThemeModeChange: (ThemeMode) -> Unit,
+    onDismiss: () -> Unit
+) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = MaterialTheme.colorScheme.surface,
+        tonalElevation = 0.dp
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(start = 18.dp, end = 18.dp, bottom = 28.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text("Tema", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+            ThemeModeSheetOption("Claro", currentThemeMode == ThemeMode.LIGHT) { onThemeModeChange(ThemeMode.LIGHT) }
+            ThemeModeSheetOption("Escuro", currentThemeMode == ThemeMode.DARK) { onThemeModeChange(ThemeMode.DARK) }
+            ThemeModeSheetOption("Sistema", currentThemeMode == ThemeMode.SYSTEM) { onThemeModeChange(ThemeMode.SYSTEM) }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AccentColorBottomSheet(
+    currentAccentColor: AccentColor,
+    onAccentColorChange: (AccentColor) -> Unit,
+    onDismiss: () -> Unit
+) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = MaterialTheme.colorScheme.surface,
+        tonalElevation = 0.dp
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(start = 18.dp, end = 18.dp, bottom = 28.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text("Cor de destaque", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+            Text(
+                "Usada em botões, seleções e textos destacados.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+            AccentColor.entries.forEach { option ->
+                Surface(
+                    modifier = Modifier.fillMaxWidth().clickable { onAccentColorChange(option) },
+                    shape = RoundedCornerShape(14.dp),
+                    color = if (currentAccentColor == option) option.color.copy(alpha = 0.14f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.42f),
+                    tonalElevation = 0.dp
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Surface(modifier = Modifier.size(28.dp), shape = CircleShape, color = option.color) {}
+                        Text(option.label, modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
+                        RadioButton(selected = currentAccentColor == option, onClick = { onAccentColorChange(option) })
+                    }
+                }
+            }
         }
     }
 }
@@ -1053,11 +1133,26 @@ internal fun BlockedContactsScreen(
         item { SectionTitle("Contatos bloqueados") }
         if (blockedContacts.isEmpty()) {
             item {
-                SettingsRow(
-                    title = "Nenhum contato bloqueado",
-                    subtitle = "Quando você bloquear alguém, ele vai aparecer aqui",
-                    onClick = { }
-                )
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 24.dp, vertical = 32.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = "Nenhum contato bloqueado",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        textAlign = TextAlign.Center
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        text = "Quando você bloquear alguém, ele vai aparecer aqui",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center
+                    )
+                }
             }
         } else {
             itemsIndexed(blockedContacts, key = { _, item -> item.username }) { _, item ->

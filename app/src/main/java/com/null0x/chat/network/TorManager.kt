@@ -52,12 +52,12 @@ object TorManager {
     val diagnostics: StateFlow<List<String>> = _diagnostics.asStateFlow()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val onionHostRegex = Regex("^[a-z2-7]{56}\\.onion$")
-    private const val START_TIMEOUT_MS = 90_000L
-    private const val HOSTNAME_TIMEOUT_MS = 30_000L
+    private const val START_TIMEOUT_MS = 58_000L
+    private const val HOSTNAME_TIMEOUT_MS = 8_000L
     private const val HOSTNAME_CHECK_INTERVAL_MS = 250L
     private const val DEFAULT_SOCKS_PORT = 9050
     private const val MIN_RESTART_DELAY_MS = 5_000L
-    private const val MAX_RESTART_DELAY_MS = 5 * 60_000L
+    private const val MAX_RESTART_DELAY_MS = 15_000L
     private const val MAX_DIAGNOSTICS = 80
     private const val WAITING_NETWORK_MESSAGE = "Aguardando rede..."
     private const val TOR_IDENTITY_PREFS = "tor_identity"

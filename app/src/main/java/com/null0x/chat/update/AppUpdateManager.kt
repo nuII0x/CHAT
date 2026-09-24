@@ -11,27 +11,33 @@ import androidx.work.Data
 import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import com.null0x.chat.BuildConfig
+import com.null0x.chat.network.TorHttp
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.io.File
+import java.util.concurrent.TimeUnit
 
 object AppUpdateManager {
-    // Troque pelo endereço onion real do seu servidor de atualização.
-    const val APP_UPDATE_MANIFEST_URL = "http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.onion/update.json"
+    val APP_UPDATE_MANIFEST_URL: String
+        get() = "http://${BuildConfig.UPDATE_ONION_HOST}/update.json"
     const val ACTION_DOWNLOAD_UPDATE = "com.null0x.chat.action.DOWNLOAD_UPDATE"
     const val ACTION_INSTALL_UPDATE = "com.null0x.chat.action.INSTALL_UPDATE"
 
     private const val PrefsName = "app_updates"
     private const val CheckWorkName = "app_update_check"
+    private const val PeriodicCheckWorkName = "app_update_periodic_check"
     private const val DownloadWorkName = "app_update_download"
     private const val AutoDownloadEnabledKey = "auto_download_enabled"
     private const val AvailableVersionCodeKey = "available_version_code"
     private const val AvailableVersionNameKey = "available_version_name"
     private const val ApkUrlKey = "apk_url"
     private const val ReleaseNotesKey = "release_notes"
+    private const val ApkSha256Key = "apk_sha256"
+    private const val ApkSizeKey = "apk_size"
     private const val DownloadedApkPathKey = "downloaded_apk_path"
     private const val LastCheckedAtKey = "last_checked_at"
     private const val StatusKey = "status"
@@ -49,7 +55,11 @@ object AppUpdateManager {
     val state: StateFlow<AppUpdateState?> = _state.asStateFlow()
 
     fun initialize(context: Context) {
-        refreshState(context)
+        val appContext = context.applicationContext
+        refreshState(appContext)
+        if (isAutoDownloadEnabled(appContext)) {
+            enqueuePeriodicCheck(appContext)
+        }
     }
 
     fun refreshState(context: Context): AppUpdateState {
@@ -57,7 +67,7 @@ object AppUpdateManager {
     }
 
     fun isAutoDownloadEnabled(context: Context): Boolean {
-        return prefs(context).getBoolean(AutoDownloadEnabledKey, false)
+        return prefs(context).getBoolean(AutoDownloadEnabledKey, true)
     }
 
     fun setAutoDownloadEnabled(context: Context, enabled: Boolean) {
@@ -65,10 +75,28 @@ object AppUpdateManager {
         prefs(appContext).edit().putBoolean(AutoDownloadEnabledKey, enabled).apply()
         refreshState(appContext)
         if (enabled) {
+            enqueuePeriodicCheck(appContext)
             enqueueCheck(appContext)
         } else {
             WorkManager.getInstance(appContext).cancelUniqueWork(CheckWorkName)
+            WorkManager.getInstance(appContext).cancelUniqueWork(PeriodicCheckWorkName)
         }
+    }
+
+    private fun enqueuePeriodicCheck(context: Context) {
+        val request = PeriodicWorkRequestBuilder<AppUpdateWorker>(12, TimeUnit.HOURS)
+            .setInputData(Data.Builder().putString(InputModeKey, InputModeCheck).build())
+            .setConstraints(
+                Constraints.Builder()
+                    .setRequiredNetworkType(NetworkType.CONNECTED)
+                    .build()
+            )
+            .build()
+        WorkManager.getInstance(context.applicationContext).enqueueUniquePeriodicWork(
+            PeriodicCheckWorkName,
+            androidx.work.ExistingPeriodicWorkPolicy.KEEP,
+            request
+        )
     }
 
     fun enqueueCheck(context: Context) {
@@ -112,20 +140,11 @@ object AppUpdateManager {
     }
 
     fun canUseUpdateUrl(rawUrl: String): Boolean {
-        return runCatching {
-            val uri = Uri.parse(rawUrl.trim())
-            val host = uri.host.orEmpty().lowercase()
-            (uri.scheme.equals("http", ignoreCase = true) || uri.scheme.equals("https", ignoreCase = true)) &&
-                host.endsWith(".onion") &&
-                host.length == 62
-        }.getOrDefault(false)
+        return TorHttp.isOnionUrl(rawUrl)
     }
 
     fun canUseUpdateDownloadUrl(rawUrl: String): Boolean {
-        return runCatching {
-            val uri = Uri.parse(rawUrl.trim())
-            uri.scheme.equals("http", ignoreCase = true) || uri.scheme.equals("https", ignoreCase = true)
-        }.getOrDefault(false)
+        return TorHttp.isOnionUrl(rawUrl)
     }
 
     fun installDownloadedUpdate(context: Context): Result<Unit> {
@@ -177,6 +196,8 @@ object AppUpdateManager {
                 .putInt(AvailableVersionCodeKey, manifest.versionCode)
                 .putString(AvailableVersionNameKey, manifest.versionName)
                 .putString(ApkUrlKey, manifest.apkUrl)
+                .putString(ApkSha256Key, manifest.apkSha256)
+                .putLong(ApkSizeKey, manifest.apkSize)
                 .putString(ReleaseNotesKey, manifest.releaseNotes)
                 .putString(StatusKey, StatusAvailable)
                 .putString(DownloadedApkPathKey, "")
@@ -185,6 +206,8 @@ object AppUpdateManager {
                 .putInt(AvailableVersionCodeKey, 0)
                 .putString(AvailableVersionNameKey, "")
                 .putString(ApkUrlKey, "")
+                .putString(ApkSha256Key, "")
+                .putLong(ApkSizeKey, 0L)
                 .putString(ReleaseNotesKey, "")
                 .putString(DownloadedApkPathKey, "")
                 .putString(StatusKey, StatusIdle)
@@ -219,10 +242,12 @@ object AppUpdateManager {
         return AppUpdateState(
             currentVersionCode = BuildConfig.VERSION_CODE,
             currentVersionName = BuildConfig.VERSION_NAME,
-            autoDownloadEnabled = prefs.getBoolean(AutoDownloadEnabledKey, false),
+            autoDownloadEnabled = prefs.getBoolean(AutoDownloadEnabledKey, true),
             availableVersionCode = prefs.getInt(AvailableVersionCodeKey, 0),
             availableVersionName = prefs.getString(AvailableVersionNameKey, "").orEmpty(),
             apkUrl = prefs.getString(ApkUrlKey, "").orEmpty(),
+            apkSha256 = prefs.getString(ApkSha256Key, "").orEmpty(),
+            apkSize = prefs.getLong(ApkSizeKey, 0L),
             releaseNotes = prefs.getString(ReleaseNotesKey, "").orEmpty(),
             downloadedApkPath = prefs.getString(DownloadedApkPathKey, "").orEmpty(),
             lastCheckedAt = prefs.getLong(LastCheckedAtKey, 0L),
@@ -241,6 +266,8 @@ data class AppUpdateState(
     val availableVersionCode: Int,
     val availableVersionName: String,
     val apkUrl: String,
+    val apkSha256: String,
+    val apkSize: Long,
     val releaseNotes: String,
     val downloadedApkPath: String,
     val lastCheckedAt: Long,
@@ -257,5 +284,7 @@ internal data class RemoteUpdateManifest(
     val versionCode: Int,
     val versionName: String,
     val apkUrl: String,
-    val releaseNotes: String
+    val releaseNotes: String,
+    val apkSha256: String,
+    val apkSize: Long
 )

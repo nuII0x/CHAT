@@ -80,8 +80,7 @@ object ProfileImageCache {
     }
 
     private fun isSupportedRemoteUrl(url: String): Boolean {
-        return url.startsWith("https://", ignoreCase = true) ||
-            url.startsWith("http://", ignoreCase = true)
+        return TorHttp.isOnionUrl(url)
     }
 
     private fun sha256(text: String): String {

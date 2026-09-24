@@ -6,6 +6,7 @@ import kotlinx.coroutines.delay
 import java.net.HttpURLConnection
 import java.net.InetSocketAddress
 import java.net.Proxy
+import java.net.URI
 import java.net.URL
 
 object TorHttp {
@@ -18,6 +19,7 @@ object TorHttp {
         connectTimeoutMs: Int,
         readTimeoutMs: Int
     ): HttpURLConnection {
+        require(isOnionUrl(rawUrl)) { "Destino precisa ser um endereco onion v3" }
         waitUntilReady(context)
         val proxy = Proxy(
             Proxy.Type.SOCKS,
@@ -26,22 +28,20 @@ object TorHttp {
         return (URL(rawUrl).openConnection(proxy) as HttpURLConnection).apply {
             connectTimeout = connectTimeoutMs
             readTimeout = readTimeoutMs
-            instanceFollowRedirects = true
+            instanceFollowRedirects = false
             useCaches = false
         }
     }
 
-    fun openDirectConnection(
-        rawUrl: String,
-        connectTimeoutMs: Int,
-        readTimeoutMs: Int
-    ): HttpURLConnection {
-        return (URL(rawUrl).openConnection() as HttpURLConnection).apply {
-            connectTimeout = connectTimeoutMs
-            readTimeout = readTimeoutMs
-            instanceFollowRedirects = true
-            useCaches = false
-        }
+    internal fun isOnionUrl(rawUrl: String): Boolean {
+        return runCatching {
+            val uri = URI(rawUrl.trim())
+            val host = uri.host.orEmpty().lowercase()
+            (uri.scheme.equals("http", ignoreCase = true) ||
+                uri.scheme.equals("https", ignoreCase = true)) &&
+                ONION_V3_HOST.matches(host) &&
+                uri.userInfo == null
+        }.getOrDefault(false)
     }
 
     private suspend fun waitUntilReady(context: Context) {
@@ -56,4 +56,6 @@ object TorHttp {
         }
         throw IllegalStateException("Tor indisponivel")
     }
+
+    private val ONION_V3_HOST = Regex("^[a-z2-7]{56}\\.onion$")
 }

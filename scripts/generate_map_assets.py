@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import json
 import math
+import argparse
 import struct
 import tempfile
 import urllib.request
+import urllib.error
 import zipfile
 from collections import defaultdict
 from pathlib import Path
@@ -32,19 +34,49 @@ NE_50M_COUNTRY_BOUNDARIES_URL = (
     "https://naciscdn.org/naturalearth/50m/cultural/"
     "ne_50m_admin_0_boundary_lines_land.zip"
 )
+NE_10M_POPULATED_PLACES_URL = (
+    "https://naciscdn.org/naturalearth/10m/cultural/"
+    "ne_10m_populated_places_simple.zip"
+)
+GEONAMES_CITIES_URL = "https://download.geonames.org/export/dump/cities500.zip"
+US_CENSUS_PLACES_URL = (
+    "https://www2.census.gov/geo/docs/maps-data/data/gazetteer/"
+    "2025_Gazetteer/2025_Gaz_place_national.zip"
+)
+ECONOMIC_COUNTRY_CODES = {"US", "CN", "DE", "JP", "IN", "GB", "FR", "IT", "CA"}
 
 COORD_PRECISION = 5
 BRAZIL_STATE_TOLERANCE_DEGREES = 0.01
 COUNTRY_BOUNDARY_TOLERANCE_DEGREES = 0.015
+MAX_CITY_ASSET_BYTES = 15 * 1024 * 1024
 
 Point = tuple[float, float]
 Ring = list[Point]
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--cities-only", action="store_true")
+    args = parser.parse_args()
     ASSET_DIR.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="nullchat-map-") as temp_dir_raw:
         temp_dir = Path(temp_dir_raw)
+
+        populated_places_zip = download(NE_10M_POPULATED_PLACES_URL, temp_dir)
+        geonames_zip = download(GEONAMES_CITIES_URL, temp_dir)
+        us_places_zip = download(US_CENSUS_PLACES_URL, temp_dir)
+        natural_earth_places = populated_places_for_json(read_zipped_dbf(populated_places_zip))
+        economic_places = economic_places_for_json(read_geonames_cities(geonames_zip))
+        official_places = us_census_places_for_json(read_zipped_tabular(us_places_zip))
+        city_asset = ASSET_DIR / "ne_populated_places.json"
+        write_compact_json(
+            city_asset,
+            merge_populated_places(natural_earth_places, economic_places, official_places),
+        )
+        if city_asset.stat().st_size > MAX_CITY_ASSET_BYTES:
+            raise RuntimeError("Generated city asset exceeds the 15 MB project limit")
+        if args.cities_only:
+            return
 
         ibge_shapes = read_zipped_shapefile(download(IBGE_UF_2025_URL, temp_dir))
         write_compact_json(
@@ -81,13 +113,203 @@ def main() -> None:
         old_country_asset.unlink()
 
 
+def read_zipped_dbf(zip_path: Path) -> list[dict[str, str]]:
+    with zipfile.ZipFile(zip_path) as archive:
+        dbf_name = next((name for name in archive.namelist() if name.lower().endswith(".dbf")), None)
+        if dbf_name is None:
+            raise RuntimeError(f"No .dbf file found in {zip_path}")
+        data = archive.read(dbf_name)
+    if len(data) < 32:
+        raise RuntimeError(f"Invalid DBF file in {zip_path}")
+
+    record_count = struct.unpack("<I", data[4:8])[0]
+    header_size = struct.unpack("<H", data[8:10])[0]
+    record_size = struct.unpack("<H", data[10:12])[0]
+    fields: list[tuple[str, int]] = []
+    offset = 32
+    while offset + 32 <= header_size and data[offset] != 0x0D:
+        descriptor = data[offset : offset + 32]
+        name = descriptor[:11].split(b"\0", 1)[0].decode("ascii").strip().upper()
+        fields.append((name, descriptor[16]))
+        offset += 32
+
+    records: list[dict[str, str]] = []
+    for index in range(record_count):
+        record = data[header_size + index * record_size : header_size + (index + 1) * record_size]
+        if len(record) != record_size or record[:1] == b"*":
+            continue
+        values: dict[str, str] = {}
+        field_offset = 1
+        for name, length in fields:
+            raw = record[field_offset : field_offset + length]
+            values[name] = raw.decode("utf-8", errors="replace").strip()
+            field_offset += length
+        records.append(values)
+    return records
+
+
+def populated_places_for_json(records: list[dict[str, str]]) -> list[dict[str, object]]:
+    places: list[dict[str, object]] = []
+    for record in records:
+        name = record.get("NAME", "").strip()
+        try:
+            latitude = float(record.get("LATITUDE", ""))
+            longitude = float(record.get("LONGITUDE", ""))
+        except ValueError:
+            continue
+        if not name:
+            continue
+        feature = record.get("FEATURECLA", "").lower()
+        places.append(
+            {
+                "n": name,
+                "lat": round(latitude, COORD_PRECISION),
+                "lon": round(longitude, COORD_PRECISION),
+                "rank": int(float(record.get("SCALERANK", "9") or 9)),
+                "pop": int(float(record.get("POP_MAX", "0") or 0)),
+                "cap": 1 if record.get("ADM0CAP", "0") == "1" or "admin-0 capital" in feature else 0,
+                "min": float(record.get("MIN_ZOOM", "9") or 9),
+            }
+        )
+    return places
+
+
+def read_geonames_cities(zip_path: Path) -> list[list[str]]:
+    with zipfile.ZipFile(zip_path) as archive:
+        text_name = next((name for name in archive.namelist() if name.endswith(".txt")), None)
+        if text_name is None:
+            raise RuntimeError(f"No city text file found in {zip_path}")
+        with archive.open(text_name) as source:
+            return [
+                line.decode("utf-8").rstrip("\n").split("\t")
+                for line in source
+            ]
+
+
+def read_zipped_tabular(zip_path: Path) -> list[dict[str, str]]:
+    with zipfile.ZipFile(zip_path) as archive:
+        text_name = next((name for name in archive.namelist() if name.lower().endswith(".txt")), None)
+        if text_name is None:
+            raise RuntimeError(f"No tabular text file found in {zip_path}")
+        with archive.open(text_name) as source:
+            lines = (line.decode("utf-8-sig").rstrip("\r\n") for line in source)
+            header = next(lines).split("\t")
+            return [dict(zip(header, line.split("\t"))) for line in lines if line]
+
+
+def economic_places_for_json(records: list[list[str]]) -> list[dict[str, object]]:
+    places: list[dict[str, object]] = []
+    for fields in records:
+        if len(fields) < 15 or fields[8] not in ECONOMIC_COUNTRY_CODES:
+            continue
+        try:
+            latitude = float(fields[4])
+            longitude = float(fields[5])
+            population = int(fields[14] or 0)
+        except ValueError:
+            continue
+        name = fields[1].strip()
+        if not name:
+            continue
+        feature_code = fields[7]
+        is_capital = feature_code == "PPLC"
+        places.append(
+            {
+                "n": name,
+                "lat": round(latitude, COORD_PRECISION),
+                "lon": round(longitude, COORD_PRECISION),
+                "rank": economic_place_rank(population, is_capital),
+                "pop": population,
+                "cap": 1 if is_capital else 0,
+                "min": economic_place_min_zoom(population, is_capital),
+            }
+        )
+    return places
+
+
+def us_census_places_for_json(records: list[dict[str, str]]) -> list[dict[str, object]]:
+    places: list[dict[str, object]] = []
+    for record in records:
+        name = record.get("NAME", "").strip()
+        try:
+            latitude = float(record.get("INTPTLAT", ""))
+            longitude = float(record.get("INTPTLONG", ""))
+        except ValueError:
+            continue
+        if not name:
+            continue
+        places.append(
+            {
+                "n": name,
+                "lat": round(latitude, COORD_PRECISION),
+                "lon": round(longitude, COORD_PRECISION),
+                "rank": 2,
+                "pop": 0,
+                "cap": 0,
+                "min": 10.0,
+            }
+        )
+    return places
+
+
+def economic_place_rank(population: int, is_capital: bool) -> int:
+    if is_capital or population >= 5_000_000:
+        return 0
+    if population >= 500_000:
+        return 1
+    return 2
+
+
+def economic_place_min_zoom(population: int, is_capital: bool) -> float:
+    if is_capital or population >= 5_000_000:
+        return 4.5
+    if population >= 1_000_000:
+        return 6.0
+    if population >= 200_000:
+        return 7.0
+    if population >= 50_000:
+        return 8.0
+    if population >= 10_000:
+        return 9.0
+    return 10.0
+
+
+def merge_populated_places(
+    natural_earth_places: list[dict[str, object]],
+    economic_places: list[dict[str, object]],
+    official_places: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    merged = list(natural_earth_places)
+    seen = {
+        (str(place["n"]).casefold(), round(float(place["lat"]), 2), round(float(place["lon"]), 2))
+        for place in natural_earth_places
+    }
+    for place in economic_places + official_places:
+        key = (str(place["n"]).casefold(), round(float(place["lat"]), 2), round(float(place["lon"]), 2))
+        if key not in seen:
+            merged.append(place)
+            seen.add(key)
+    return merged
+
+
 def download(url: str, temp_dir: Path) -> Path:
     target = temp_dir / Path(url).name
-    print(f"Downloading {url}")
+    partial = target.with_suffix(target.suffix + ".partial")
     request = urllib.request.Request(url, headers={"User-Agent": "Null0xChat-map-assets/1.0"})
-    with urllib.request.urlopen(request, timeout=120) as response:
-        target.write_bytes(response.read())
-    return target
+    last_error: Exception | None = None
+    for attempt in range(1, 4):
+        print(f"Downloading {url} (attempt {attempt}/3)")
+        try:
+            with urllib.request.urlopen(request, timeout=300) as response, partial.open("wb") as output:
+                while chunk := response.read(1024 * 1024):
+                    output.write(chunk)
+            partial.replace(target)
+            return target
+        except (OSError, TimeoutError, urllib.error.URLError) as error:
+            last_error = error
+            if partial.exists():
+                partial.unlink()
+    raise RuntimeError(f"Failed to download {url} after 3 attempts") from last_error
 
 
 def read_zipped_shapefile(zip_path: Path) -> list[list[Ring]]:

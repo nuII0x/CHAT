@@ -1,5 +1,7 @@
 # Atualizações via Onion
 
+> A implementação executável e o guia atual ficam em `tools/onion-update-server/README.md`. Este documento resume a integração.
+
 O app procura um `update.json` em um endereço `.onion` e baixa o APK pelo Tor. Não use CDN pública para o APK nem para o JSON.
 
 ## Estrutura do diretório
@@ -17,6 +19,8 @@ Exemplo de `update.json`:
   "versionCode": 123,
   "versionName": "1.2.3",
   "apkUrl": "http://SEU_ENDERECO_ONION.onion/NullChat-1.2.3.apk",
+  "apkSha256": "SHA256_DO_APK_COM_64_CARACTERES",
+  "apkSize": 12345678,
   "releaseNotes": "Correções e melhorias."
 }
 ```
@@ -24,6 +28,8 @@ Exemplo de `update.json`:
 O `versionCode` precisa ser maior que o `versionCode` instalado no aparelho.
 
 ## Servir no PC
+
+Prefira o servidor local sem logs incluído em `tools/onion-update-server/server.py`. Ele escuta somente em `127.0.0.1:8088`; o Tor publica essa porta sem abrir portas no roteador.
 
 Instale Tor e Nginx:
 

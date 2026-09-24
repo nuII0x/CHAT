@@ -1,0 +1,6 @@
+SocksPort 0
+Log notice syslog
+DataDirectory /var/lib/null-market/tor
+HiddenServiceDir /var/lib/null-market/onion
+HiddenServiceVersion 3
+HiddenServicePort 80 127.0.0.1:8899

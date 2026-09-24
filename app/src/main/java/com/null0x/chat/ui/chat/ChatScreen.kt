@@ -132,7 +132,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.map
-import com.null0x.chat.ai.NullAiModelStore
 import com.null0x.chat.model.DeliveryState
 import com.null0x.chat.model.Message
 import com.null0x.chat.network.TorManager
@@ -163,11 +162,6 @@ private val MessageBarThickness = 4.dp
 private val MessageBodyInset = 4.dp
 private const val ChatSettingsRoute = "chat_settings"
 private const val BlockDecisionHelpRoute = "block_decision_help"
-private const val NullAiEmptyNotice =
-    "Aviso: Esse chat aqui é só um experimento, feito mais pra brincar e testar umas coisas. " +
-        "A IA pode dar umas viajadas, entender meio errado, responder de um jeito confuso ou até mandar informação errada. " +
-        "Então, não leva tudo tão a sério, beleza? Se for algo importante, melhor dar uma conferida em fontes confiáveis antes de tomar qualquer decisão."
-
 @Composable
 fun ChatScreen(
     vm: ChatViewModel,
@@ -205,30 +199,6 @@ fun ChatScreen(
     val keyboardController = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    val scope = rememberCoroutineScope()
-    var nullAiModelLabel by remember { mutableStateOf(NullAiModelStore.currentModel(context).label) }
-    var nullAiModelUrl by rememberSaveable { mutableStateOf(NullAiModelStore.modelDownloadUrl(context)) }
-    var nullAiAutoDownload by rememberSaveable { mutableStateOf(NullAiModelStore.isAutoDownloadEnabled(context)) }
-    val nullAiModelPickerLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocument()
-    ) { source ->
-        if (source == null) return@rememberLauncherForActivityResult
-        scope.launch {
-            NullAiModelStore.importModel(context, source)
-                .onSuccess { model ->
-                    nullAiModelLabel = model.label
-                    vm.updateNullAiEnabled(true)
-                    Toast.makeText(context, "Modelo da Null IA importado", Toast.LENGTH_SHORT).show()
-                }
-                .onFailure { error ->
-                    Toast.makeText(
-                        context,
-                        error.message ?: "Falha ao importar modelo GGUF",
-                        Toast.LENGTH_SHORT
-                    ).show()
-                }
-        }
-    }
     val composerFocusRequester = remember { FocusRequester() }
     val mediaPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -338,16 +308,16 @@ fun ChatScreen(
     }
 
     val headerUser = peers.getOrNull(pagerState.currentPage)?.trim().orEmpty().ifBlank { vm.targetUsername }
-    val isNullAiChat = vm.isNullAiConversation(headerUser)
-    val chatTitle = if (isNullAiChat) {
-        vm.nullAiDisplayName()
+    val isSelfChat = vm.isSelfConversation(headerUser)
+    val chatTitle = if (isSelfChat) {
+        vm.selfChatDisplayName()
     } else {
         vm.chatTitleFor(headerUser).ifBlank { maskedRouteLabel(headerUser) }
     }
     val headerConversation = remember(headerUser, vm.conversationPreviews()) {
         vm.conversationPreviews().firstOrNull { it.username == headerUser }
     }
-    val headerUserAvailable = !isNullAiChat && vm.showChatPresenceStatus && vm.isPartnerOnline(headerUser)
+    val headerUserAvailable = !isSelfChat && vm.showChatPresenceStatus && vm.isPartnerOnline(headerUser)
     val chatPresenceLabel = if (headerUserAvailable) {
         "disponível"
     } else {
@@ -358,30 +328,14 @@ fun ChatScreen(
     } else {
         ""
     }
-    val chatHeaderSubtitle = if (isNullAiChat) {
-        vm.nullAiSubtitle()
-    } else {
-        listOfNotNull(
-            chatPresenceLabel.takeIf { it.isNotBlank() },
-            chatLastActivityLabel.takeIf { it.isNotBlank() }
-        ).joinToString(" • ")
-    }
+    val chatHeaderSubtitle = listOfNotNull(
+        chatPresenceLabel.takeIf { it.isNotBlank() },
+        chatLastActivityLabel.takeIf { it.isNotBlank() }
+    ).joinToString(" • ")
     val unreadHintCount = vm.unreadEntryCountFor(headerUser)
     val currentChatLoaded = vm.isCurrentChatLoaded()
     val currentMessages = vm.messagesFor(vm.targetUsername)
-    val nullAiConversationAvailable = !isNullAiChat ||
-        (vm.nullAiEnabled && vm.nullAiPrepareError.isBlank())
-    val displayedMessages = if (isNullAiChat && vm.nullAiPrepareError.isNotBlank()) {
-        currentMessages + Message(
-            id = "null-ai-prepare-error",
-            text = vm.nullAiPrepareError,
-            isMine = false,
-            timestamp = System.currentTimeMillis(),
-            delivery = DeliveryState.Delivered
-        )
-    } else {
-        currentMessages
-    }
+    val displayedMessages = currentMessages
 
     LaunchedEffect(headerUser) {
         val draft = vm.draftFor(headerUser)
@@ -397,8 +351,8 @@ fun ChatScreen(
         }
     }
 
-    LaunchedEffect(headerUser, unreadHintCount, nullAiConversationAvailable) {
-        if (!nullAiConversationAvailable || unreadHintCount <= 0) return@LaunchedEffect
+    LaunchedEffect(headerUser, unreadHintCount) {
+        if (unreadHintCount <= 0) return@LaunchedEffect
         val focusKey = "$headerUser:$unreadHintCount"
         if (focusKey != unreadComposerFocusKey) {
             showTextInput = true
@@ -409,14 +363,6 @@ fun ChatScreen(
 
     LaunchedEffect(context) {
         TorManager.ensureNetworkMonitoring(context)
-    }
-
-    LaunchedEffect(isNullAiChat) {
-        if (!isNullAiChat) return@LaunchedEffect
-        while (true) {
-            vm.refreshNullAiDownloadState()
-            delay(2_000)
-        }
     }
 
     DisposableEffect(Unit) {
@@ -473,16 +419,9 @@ fun ChatScreen(
         }
     }
 
-    LaunchedEffect(nullAiConversationAvailable) {
-        if (!nullAiConversationAvailable) {
-            showTextInput = false
-            keyboardController?.hide()
-        }
-    }
-
     LaunchedEffect(headerUser, input) {
         val target = headerUser.trim()
-        if (target.isBlank() || vm.isNullAiConversation(target)) return@LaunchedEffect
+        if (target.isBlank()) return@LaunchedEffect
         if (input.isBlank()) {
             vm.updateLocalTyping(target, false)
             return@LaunchedEffect
@@ -494,7 +433,7 @@ fun ChatScreen(
 
     LaunchedEffect(headerUser) {
         val target = headerUser.trim()
-        if (target.isBlank() || vm.isNullAiConversation(target)) return@LaunchedEffect
+        if (target.isBlank()) return@LaunchedEffect
         while (true) {
             vm.refreshLocalChatPresence(target)
             delay(15_000)
@@ -614,10 +553,8 @@ fun ChatScreen(
                                     showProfile = true
                                 },
                                 onCopyRoute = {
-                                    if (!isNullAiChat) {
-                                        SensitiveClipboard.copy(context, "Rota contato", maskedRouteLabel(headerUser))
-                                        Toast.makeText(context, "Token sensível copiado por 60 segundos", Toast.LENGTH_SHORT).show()
-                                    }
+                                    SensitiveClipboard.copy(context, "Rota contato", maskedRouteLabel(headerUser))
+                                    Toast.makeText(context, "Token sensível copiado por 60 segundos", Toast.LENGTH_SHORT).show()
                                 }
                             )
                         }
@@ -650,7 +587,7 @@ fun ChatScreen(
                             messages = if (user == vm.targetUsername) displayedMessages else vm.messagesFor(user),
                             privacyNotices = vm.privacyNotices(),
                             loaded = currentChatLoaded && user == vm.targetUsername,
-                            emptyStateText = if (vm.isNullAiConversation(user)) NullAiEmptyNotice else "Sem mensagens ainda",
+                            emptyStateText = "Sem mensagens ainda",
                             unreadHintCount = unreadHintCount,
                             selectableMessageIds = selectableMessageIds,
                             onMessageLongPress = { selectedMessage = it },
@@ -677,7 +614,7 @@ fun ChatScreen(
                     .ifBlank { compactOnionRoute(vm.chatTitleFor(headerUser)).take(1).ifBlank { "?" }.uppercase() }
                 val markerBackgroundColor = Color(vm.publicProfileFor(headerUser).mapColorArgb)
                 val markerImagePath = vm.profileImagePathFor(headerUser)
-                val showPresenceBadge = !isNullAiChat && vm.isPartnerChatOpen(headerUser)
+                val showPresenceBadge = !isSelfChat && vm.isPartnerChatOpen(headerUser)
                 if (marker.isNotBlank() && showPresenceBadge) {
                     PartnerMarkerBadge(
                         text = vm.chatTitleFor(headerUser).ifBlank { headerUser },
@@ -705,7 +642,7 @@ fun ChatScreen(
                     commentOwnerTitle = commentTarget?.let { message ->
                         if (message.isMine) "Voce" else chatTitleForMessage(vm, headerUser)
                     }.orEmpty(),
-                    enabled = nullAiConversationAvailable,
+                    enabled = true,
                     placeholder = "Mensagem",
                     onInputChange = {
                         input = it
@@ -719,7 +656,7 @@ fun ChatScreen(
                     },
                     onSend = {
                         val text = input.trim()
-                        if (text.isNotBlank() && nullAiConversationAvailable) {
+                        if (text.isNotBlank()) {
                             vm.updateLocalTyping(headerUser, false)
                             vm.sendTo(headerUser, commentTarget?.let { formatCommentMessage(it, text, vm, headerUser) } ?: text)
                             commentTarget = null
@@ -735,32 +672,30 @@ fun ChatScreen(
                     onClearComment = { commentTarget = null }
                 )
 
-                if (!isNullAiChat) {
-                    FloatingMediaButtonOverlay(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(bottom = ChatDockBottomLift),
-                        buttonAlignment = if (showTextInput) Alignment.BottomEnd else Alignment.BottomCenter,
-                        buttonOffsetX = if (showTextInput) ChatDockMediaOpenEndOffset else ChatDockButtonOffset,
-                        isAudioRecording = isAudioRecording,
-                        onAudioRecordingStateChange = { isAudioRecording = it },
-                        onMediaClick = {
-                            openEphemeralMediaRecorder()
-                        },
-                        onAudioHoldStart = {
-                            ContextCompat.checkSelfPermission(
-                                context,
-                                Manifest.permission.RECORD_AUDIO
-                            ) == PackageManager.PERMISSION_GRANTED
-                        },
-                        onAudioRecorded = {
-                            vm.sendEphemeralMediaTo(headerUser, ChatViewModel.EphemeralMediaType.AUDIO)
-                        },
-                        onAudioPermissionNeeded = {
-                            audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                        }
-                    )
-                }
+                FloatingMediaButtonOverlay(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(bottom = ChatDockBottomLift),
+                    buttonAlignment = if (showTextInput) Alignment.BottomEnd else Alignment.BottomCenter,
+                    buttonOffsetX = if (showTextInput) ChatDockMediaOpenEndOffset else ChatDockButtonOffset,
+                    isAudioRecording = isAudioRecording,
+                    onAudioRecordingStateChange = { isAudioRecording = it },
+                    onMediaClick = {
+                        openEphemeralMediaRecorder()
+                    },
+                    onAudioHoldStart = {
+                        ContextCompat.checkSelfPermission(
+                            context,
+                            Manifest.permission.RECORD_AUDIO
+                        ) == PackageManager.PERMISSION_GRANTED
+                    },
+                    onAudioRecorded = {
+                        vm.sendEphemeralMediaTo(headerUser, ChatViewModel.EphemeralMediaType.AUDIO)
+                    },
+                    onAudioPermissionNeeded = {
+                        audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                    }
+                )
 
                 ChatBottomActions(
                     modifier = Modifier
@@ -768,7 +703,7 @@ fun ChatScreen(
                         .padding(end = 8.dp, bottom = ChatDockBottomLift),
                     themeMode = themeMode,
                     chatLocked = vm.isConversationLocked(headerUser),
-                    chatLockEnabled = !isNullAiChat,
+                    chatLockEnabled = true,
                     onLockChat = {
                         vm.setConversationLocked(headerUser, true)
                         keyboardController?.hide()
@@ -778,13 +713,8 @@ fun ChatScreen(
                     onClear = { vm.clearConversation(headerUser) },
                     onOpenSettings = {
                         keyboardController?.hide()
-                        if (isNullAiChat) {
-                            profileRoute = headerUser
-                            showProfile = true
-                        } else {
-                            chatSettingsRoute = ChatSettingsRoute
-                            showChatSettings = true
-                        }
+                        chatSettingsRoute = ChatSettingsRoute
+                        showChatSettings = true
                     },
                     settingsEnabled = true
                 )
@@ -828,67 +758,33 @@ fun ChatScreen(
                 vm.requestPublicProfile(profileTarget)
             }
         }
-        if (vm.isNullAiConversation(profileTarget)) {
-            NullAiProfileScreen(
-                modelLabel = nullAiModelLabel,
-                modelUrl = nullAiModelUrl,
-                autoDownloadEnabled = nullAiAutoDownload,
-                nullAiEnabled = vm.nullAiEnabled,
-                unavailableReason = vm.nullAiUnavailableReason(),
-                downloading = vm.nullAiModelDownloading,
-                onNullAiEnabledChange = vm::updateNullAiEnabled,
-                onModelPicked = { nullAiModelPickerLauncher.launch(arrayOf("*/*")) },
-                onModelUrlChange = { url ->
-                    nullAiModelUrl = url
-                    NullAiModelStore.setModelDownloadUrl(context, url)
-                },
-                onAutoDownloadChange = { enabled ->
-                    nullAiAutoDownload = enabled
-                    NullAiModelStore.setAutoDownloadEnabled(context, enabled)
-                    vm.refreshNullAiDownloadState()
-                },
-                onDownloadNow = {
-                    if (nullAiModelUrl.isBlank()) {
-                        Toast.makeText(context, "Informe a URL do modelo", Toast.LENGTH_SHORT).show()
-                    } else if (!NullAiModelStore.shouldDownloadCurrentUrl(context)) {
-                        Toast.makeText(context, "Modelo já configurado para este link", Toast.LENGTH_SHORT).show()
-                    } else {
-                        NullAiModelStore.enqueueModelDownloadNow(context)
-                        vm.refreshNullAiDownloadState()
-                        Toast.makeText(context, "Download iniciado", Toast.LENGTH_SHORT).show()
-                    }
-                },
-                onBack = { showProfile = false }
-            )
-        } else {
-            RouteProfileScreen(
-                profile = profile,
-                profileImagePath = vm.profileImagePathFor(profileTarget),
-                onBack = { showProfile = false },
-                onSaveLocalName = { route, name -> vm.setLocalNameForRoute(route, name) },
-                contactBlocked = vm.isContactBlocked(profileTarget),
-                onSendMessage = {
-                    showProfile = false
-                },
-                onRecordMedia = {
-                    showProfile = false
-                    cameraOpenedFromProfile = true
-                    openEphemeralMediaRecorder()
-                },
-                onRemoveContact = {
-                    vm.removeContact(profileTarget)
-                    showProfile = false
-                },
-                onBlockContact = {
-                    vm.blockContact(profileTarget)
-                    showProfile = false
-                    onBack()
-                },
-                onUnblockContact = {
-                    vm.unblockContact(profileTarget)
-                }
-            )
-        }
+        RouteProfileScreen(
+            profile = profile,
+            profileImagePath = vm.profileImagePathFor(profileTarget),
+            onBack = { showProfile = false },
+            onSaveLocalName = { route, name -> vm.setLocalNameForRoute(route, name) },
+            contactBlocked = vm.isContactBlocked(profileTarget),
+            onSendMessage = {
+                showProfile = false
+            },
+            onRecordMedia = {
+                showProfile = false
+                cameraOpenedFromProfile = true
+                openEphemeralMediaRecorder()
+            },
+            onRemoveContact = {
+                vm.removeContact(profileTarget)
+                showProfile = false
+            },
+            onBlockContact = {
+                vm.blockContact(profileTarget)
+                showProfile = false
+                onBack()
+            },
+            onUnblockContact = {
+                vm.unblockContact(profileTarget)
+            }
+        )
     }
 
     AnimatedVisibility(
@@ -933,7 +829,7 @@ fun ChatScreen(
 }
 
 private fun chatTitleForMessage(vm: ChatViewModel, route: String): String {
-    return if (vm.isNullAiConversation(route)) "Null IA" else vm.chatTitleFor(route)
+    return vm.chatTitleFor(route)
 }
 
 private fun formatCommentMessage(
@@ -1212,149 +1108,6 @@ private fun ChatBottomActions(
 }
 
 @Composable
-private fun NullAiProfileScreen(
-    modelLabel: String,
-    modelUrl: String,
-    autoDownloadEnabled: Boolean,
-    nullAiEnabled: Boolean,
-    unavailableReason: String,
-    downloading: Boolean,
-    onNullAiEnabledChange: (Boolean) -> Unit,
-    onModelPicked: () -> Unit,
-    onModelUrlChange: (String) -> Unit,
-    onAutoDownloadChange: (Boolean) -> Unit,
-    onDownloadNow: () -> Unit,
-    onBack: () -> Unit
-) {
-    var urlDraft by rememberSaveable(modelUrl) { mutableStateOf(modelUrl) }
-    val focusManager = LocalFocusManager.current
-    val keyboardController = LocalSoftwareKeyboardController.current
-    val environmentAvailable = unavailableReason.isBlank()
-    WindowDispositionScaffold(
-        title = "Null IA",
-        subtitle = unavailableReason.ifBlank { if (downloading) "Baixando modelo..." else "" },
-        onBack = onBack,
-        windowColor = MaterialTheme.colorScheme.background
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 16.dp, vertical = 18.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp)
-        ) {
-            Text(
-                text = "Estado",
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            if (!environmentAvailable) {
-                Surface(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(16.dp),
-                    color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.70f)
-                ) {
-                    Text(
-                        text = unavailableReason,
-                        modifier = Modifier.padding(14.dp),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onErrorContainer
-                    )
-                }
-            }
-            ChatSettingsRow(
-                title = "Chat local",
-                subtitle = unavailableReason.ifBlank {
-                    if (nullAiEnabled) "Disponível na lista de conversas" else "Oculto da lista de conversas"
-                },
-                checked = nullAiEnabled && environmentAvailable,
-                enabled = environmentAvailable,
-                onCheckedChange = onNullAiEnabledChange
-            )
-            Text(
-                text = "Modelo",
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Surface(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable(enabled = environmentAvailable, onClick = onModelPicked),
-                shape = RoundedCornerShape(14.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
-            ) {
-                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("Arquivo GGUF", fontWeight = FontWeight.SemiBold)
-                    Text(
-                        text = modelLabel,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-            }
-            OutlinedTextField(
-                value = urlDraft,
-                onValueChange = { urlDraft = it.take(512) },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                label = { Text("URL do GGUF") },
-                placeholder = { Text("https://.../modelo.gguf") },
-                shape = RoundedCornerShape(14.dp),
-                keyboardOptions = KeyboardOptions(
-                    capitalization = KeyboardCapitalization.None,
-                    autoCorrectEnabled = false,
-                    keyboardType = KeyboardType.Uri,
-                    imeAction = ImeAction.Done
-                ),
-                keyboardActions = KeyboardActions(
-                    onDone = {
-                        onModelUrlChange(urlDraft.trim().take(512))
-                        focusManager.clearFocus()
-                        keyboardController?.hide()
-                    }
-                ),
-                colors = primalisBareOutlinedTextFieldColors()
-            )
-            TextButton(
-                enabled = urlDraft.trim() != modelUrl,
-                onClick = {
-                    onModelUrlChange(urlDraft.trim().take(512))
-                    focusManager.clearFocus()
-                    keyboardController?.hide()
-                },
-                modifier = Modifier.align(Alignment.End)
-            ) {
-                Text("Salvar URL")
-            }
-            Text(
-                text = "Download",
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            ChatSettingsRow(
-                title = "Baixar automaticamente",
-                subtitle = if (autoDownloadEnabled) "Baixa quando houver Wi-Fi" else "Desligado",
-                checked = autoDownloadEnabled,
-                enabled = environmentAvailable,
-                onCheckedChange = onAutoDownloadChange
-            )
-            OutlinedButton(
-                onClick = onDownloadNow,
-                enabled = environmentAvailable,
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(14.dp)
-            ) {
-                Text(if (downloading) "Baixando modelo..." else "Baixar agora")
-            }
-        }
-    }
-}
-
-@Composable
 private fun ChatSettingsScreen(
     chatTitle: String,
     keepViewedMessages: Boolean,
@@ -1495,7 +1248,7 @@ private fun BlockContactConfirmationDialog(
         icon = Icons.Filled.Lock,
         confirmLabel = "Bloquear",
         dismissLabel = "Manter",
-        neutralLabel = "Saiba mais",
+        neutralLabel = "Talvez",
         onNeutral = onMaybe,
         onConfirm = onConfirmBlock,
         onDismiss = onDismiss,
@@ -1733,15 +1486,7 @@ private fun MessageList(
     val timelineItems = remember(messages, privacyNotices) {
         val rawItems = buildList {
             messages.forEach { message ->
-                val timingText = message.text
-                    .removePrefix(ChatViewModel.NULL_AI_TIMING_NOTICE_PREFIX)
-                    .takeIf { it.length != message.text.length }
-                    ?.trim()
-                if (timingText != null) {
-                    add(TimelineItem.TimingNoticeItem(message.id, message.timestamp, timingText))
-                } else {
-                    add(TimelineItem.MessageItem(message))
-                }
+                add(TimelineItem.MessageItem(message))
             }
             privacyNotices
                 .sortedBy { it.timestamp }
@@ -1922,7 +1667,6 @@ private fun MessageList(
                     }
                     is TimelineItem.DateHeaderItem -> DateHeaderDivider(item.text)
                     is TimelineItem.PrivacyNoticeItem -> PrivacyNoticeDivider(item.notice.text)
-                    is TimelineItem.TimingNoticeItem -> PrivacyNoticeDivider(item.text)
                 }
             }
         }
@@ -1985,12 +1729,6 @@ private sealed class TimelineItem {
         override val id: String = "privacy:${notice.id}"
         override val timestamp: Long = notice.timestamp
     }
-
-    data class TimingNoticeItem(
-        override val id: String,
-        override val timestamp: Long,
-        val text: String
-    ) : TimelineItem()
 
     data class DateHeaderItem(
         val key: String,

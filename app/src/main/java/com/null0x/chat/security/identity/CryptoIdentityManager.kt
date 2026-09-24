@@ -21,10 +21,29 @@ data class IdentityCreationResult(
 )
 
 class CryptoIdentityManager(
-    private val appContext: android.content.Context,
+    private val mnemonicProvider: (MnemonicLanguage) -> MnemonicManager,
     private val keyStore: EncryptedKeyStore,
     private val secureRandom: SecureRandom = SecureRandom()
 ) {
+    constructor(
+        appContext: android.content.Context,
+        keyStore: EncryptedKeyStore,
+        secureRandom: SecureRandom = SecureRandom()
+    ) : this(
+        mnemonicProvider = { language -> MnemonicManager.fromAssets(appContext, language) },
+        keyStore = keyStore,
+        secureRandom = secureRandom
+    )
+
+    constructor(
+        mnemonicManager: MnemonicManager,
+        keyStore: EncryptedKeyStore,
+        secureRandom: SecureRandom = SecureRandom()
+    ) : this(
+        mnemonicProvider = { mnemonicManager },
+        keyStore = keyStore,
+        secureRandom = secureRandom
+    )
 
     data class KeyDerivationParams(
         val n: Int = 16_384,
@@ -177,7 +196,7 @@ class CryptoIdentityManager(
     }
 
     private fun mnemonicManager(language: MnemonicLanguage): MnemonicManager {
-        return MnemonicManager.fromAssets(appContext, language)
+        return mnemonicProvider(language)
     }
 
     private fun signingSeedFrom(seed: ByteArray): ByteArray {

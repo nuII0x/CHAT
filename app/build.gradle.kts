@@ -15,6 +15,13 @@ plugins {
 val keystoreProperties = Properties()
 val keystorePropertiesFile = rootProject.file("keystore.properties")
 val versionFile = rootProject.file("version.properties")
+val updateOnionHost = providers.gradleProperty("appUpdateOnionHost")
+    .orElse(providers.environmentVariable("NULLCHAT_UPDATE_ONION_HOST"))
+    .getOrElse("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.onion")
+
+if (!Regex("^[a-z2-7]{56}\\.onion$").matches(updateOnionHost)) {
+    throw GradleException("appUpdateOnionHost precisa ser um hostname onion v3 valido")
+}
 
 if (keystorePropertiesFile.exists()) {
     keystoreProperties.load(keystorePropertiesFile.inputStream())
@@ -127,15 +134,9 @@ android {
         targetSdk = 34
         versionCode = versionForThisBuild.versionCode()
         versionName = versionForThisBuild.versionName()
+        buildConfigField("String", "UPDATE_ONION_HOST", "\"$updateOnionHost\"")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-
-        externalNativeBuild {
-            cmake {
-                cppFlags += listOf("-std=c++17")
-                arguments += listOf("-DANDROID_STL=c++_shared")
-            }
-        }
 
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a")
@@ -182,12 +183,6 @@ android {
     packaging {
         jniLibs {
             useLegacyPackaging = true
-        }
-    }
-
-    externalNativeBuild {
-        cmake {
-            path = file("src/main/cpp/CMakeLists.txt")
         }
     }
 }

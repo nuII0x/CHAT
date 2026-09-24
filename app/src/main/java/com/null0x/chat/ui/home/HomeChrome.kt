@@ -489,8 +489,8 @@ internal fun BottomDock(
     val dockColor = themeBackgroundColor(baseThemeMode, systemDarkTheme)
     val dockContentColor = readableContentColor(dockColor)
     val idleIconTint = dockContentColor.copy(alpha = 0.78f)
-    val selectedIconTint = dockSelectedIconTint(baseThemeMode, systemDarkTheme)
-    val selectedBackground = dockSelectedBackgroundColor(baseThemeMode, systemDarkTheme)
+    val selectedIconTint = MaterialTheme.colorScheme.primary
+    val selectedBackground = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
     val accumulatedDockDragX = remember { mutableStateOf(0f) }
     val density = LocalDensity.current
     val keyboardLift = if (searchActive) {
@@ -719,7 +719,6 @@ internal fun BottomDock(
                     )
                 }
             }
-            Spacer(modifier = Modifier.width(48.dp))
         }
     }
 }
